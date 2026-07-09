@@ -1,0 +1,23 @@
+When deactivating this environment, remember to run deactivate first:
+$ deactivate
+
+And then purge modules AFTERWARDS (if desired)
+$ ml purge
+
+Otherwise, there may be undefined behavior
+Host: c178
+Job ID: 19023530
+HF_HOME=/scratch/user/shig/SphereDiff/hf_cache
+Python: /scratch/user/shig/virtual_envs/spherediff/bin/python
+/scratch/user/shig/virtual_envs/spherediff/bin/python
+torch 2.7.0+cu126
+cuda 12.6
+HF_HOME=/scratch/user/shig/SphereDiff/hf_cache
+Downloading SANA: Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers
+Cached at: /scratch/user/shig/SphereDiff/hf_cache/hub/models--Efficient-Large-Model--Sana_1600M_1024px_BF16_diffusers/snapshots/e18f82ddb8233fa4d979c2613f41a3ca4c5fc730
+Downloading FLUX: black-forest-labs/FLUX.1-dev
+Cached at: /scratch/user/shig/SphereDiff/hf_cache/hub/models--black-forest-labs--FLUX.1-dev/snapshots/3de623fc3c33e44ffbe2bad470d0f45bccf2eb21
+Downloading LTX: a-r-r-o-w/LTX-Video-0.9.1-diffusers
+Cached at: /scratch/user/shig/SphereDiff/hf_cache/hub/models--a-r-r-o-w--LTX-Video-0.9.1-diffusers/snapshots/d1f5a9f462ff42bb3d5b0a4468c058ea4acd27bb
+Downloading HUNYUAN: hunyuanvideo-community/HunyuanVideo
+Cached at: /scratch/user/shig/SphereDiff/hf_cache/hub/models--hunyuanvideo-community--HunyuanVideo/snapshots/e8c2aaa66fe3742a32c11a6766aecbf07c56e773
