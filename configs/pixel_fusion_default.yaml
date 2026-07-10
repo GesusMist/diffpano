@@ -1,0 +1,36 @@
+pixel_fusion_enabled: true # true enables ERP pixel fusion; false preserves the original latent write-back path.
+pixel_fusion_every_n_steps: 1 # Integer >= 1; run fusion every N denoising steps while inside the ratio window.
+pixel_fusion_start_ratio: 0.0 # Float from 0.0 to 1.0; first normalized denoising-step ratio eligible for fusion.
+pixel_fusion_end_ratio: 1.0 # Float from 0.0 to 1.0; last normalized denoising-step ratio eligible for fusion.
+
+warp_mode: lpw # Options: standard or lpw (Laplacian-pyramid warping).
+aggregation_mode: detail_preserving_average # Options: average, weighted_average, or detail_preserving_average.
+weight_mode: distance_to_boundary # Options: uniform, cosine, gaussian, or distance_to_boundary; ignored by average.
+
+lpw_num_levels: 1 # Integer >= 1; number of Gaussian/Laplacian levels used when warp_mode is lpw.
+lpw_lod_mode: jacobian # Options: jacobian for projection-derived LOD or none to force zero LOD.
+lpw_lod_interpolation: nearest # Options: linear or nearest; controls LOD-to-pyramid-level confidence.
+erp_vertical_padding_mode: reflect # Options: reflect or replicate; ERP horizontal padding is always circular.
+
+dpa_alpha: 0.0 # Float, normally 0.0 to 1.0; 0 is weighted average and 1 applies full DPA detail correction.
+dpa_power: 1.0 # Nonnegative float; controls how strongly coefficient magnitude influences DPA detail weights.
+dpa_eps: 1.0e-6 # Positive float; numerical floor for DPA, masks, normalization, and invalid-coverage checks.
+
+reinjection_mode: noise_consistent # Options: noise_consistent, replace, weighted_replace, or residual.
+reinjection_strength: 1.0 # Float, normally 0.0 to 1.0; 0 keeps the original update and 1 applies the full fused update.
+
+time_travel_enabled: false # Must remain false: true currently raises NotImplementedError because time travel is not wired.
+time_travel_every_n_steps: 1 # Integer >= 1 reserved for time travel; inactive while time_travel_enabled is false.
+time_travel_jump_length: 1 # Positive integer reserved for the number of scheduler steps jumped backward.
+time_travel_num_repeats: 1 # Positive integer reserved for repeated denoising passes after each jump.
+time_travel_strength: 1.0 # Float reserved for scheduler-consistent renoising strength; currently inactive.
+
+vae_chunk_size: 4 # Integer >= 1; views per VAE encode/decode chunk, lowered to reduce peak GPU memory.
+save_intermediates: false # true includes the fused ERP tensor in diagnostic output; false omits it.
+save_masks: false # true saves validity, contributor-count, accumulated-weight, and overlap masks.
+save_diagnostics: false # true saves masks, camera directions, latent delta norm, and stage timings.
+measure_performance: false # true uses CUDA synchronization for accurate timings but adds runtime overhead.
+diagnostics_dir: null # null disables diagnostic file writing; otherwise provide an absolute or repo-relative directory path.
+
+projection_chunk_size: 1 # Integer >= 1; number of same-sized views projected per ERP accumulation chunk.
+vae_sample_posterior: false # false uses deterministic posterior mean/mode; true samples the VAE posterior when available.

@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 from tools_mpark.dictaction import DictAction
 
 import pipelines_ours
+from output_metadata import save_output_metadata
 
 
 @dataclass
@@ -64,8 +65,8 @@ def main(args: TestConfig):
         pipe.enable_vae_tiling() if hasattr(pipe, "enable_vae_tiling") else pipe.vae.enable_tiling()
     if args.enable_model_cpu_offload:
         pipe.enable_model_cpu_offload()
-
-    pipe.to(device, dtype=dtype)
+    else:
+        pipe.to(device, dtype=dtype)
 
     if pipe.scheduler.config.get('solver_order', 1) > 1:  # (added) cannot use multi-step solver
         print("Warning: solver_order > 1 is not supported. Setting solver_order to 1.")
@@ -83,7 +84,9 @@ def main(args: TestConfig):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     image = output.images[0]
     image.save(filename)
+    metadata_filename = save_output_metadata(args, pipe, call_kwargs, filename)
     print(f"Saved image to {filename}")
+    print(f"Saved parameters to {metadata_filename}")
 
 
 if __name__ == "__main__":

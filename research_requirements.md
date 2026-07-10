@@ -1,1078 +1,561 @@
-You are working inside an existing SphereDiff repository. The repository, pretrained models, environment, and inference dependencies are already available locally.
+You are working inside an existing SphereDiff repository. The environment, pretrained models, and inference dependencies are already available.
 
-We maintain the untouched original SphereDiff implementation in another repository. Therefore, you do not need to preserve the original latent-blending behavior as a runtime baseline in this repository.
+The untouched SphereDiff baseline is stored in another repository. You do not need to preserve latent-space fusion as a runtime option here.
 
-However, you must preserve the current SphereDiff software architecture as much as possible.
+Your task is to replace SphereDiff’s latent-space aggregation with ERP-based pixel-space fusion inspired by LookingGlass, while making the smallest possible changes to the existing architecture.
 
-The implementation principle is:
+# 1. Non-negotiable requirements
+
+1. Preserve SphereDiff’s existing model calls, prompt conditioning, scheduler, spherical latent representation, camera definitions, and dynamic sampling.
+2. Modify only the view aggregation/write-back path unless a small adapter is required.
+3. Reuse existing geometry, projection, VAE, scheduler, and logging utilities.
+4. Do not introduce a new pipeline framework or rewrite unrelated code.
+5. Implement every new feature as a separate function or small module with an explicit configuration flag for ablation studies.
+6. Add clear comments around new geometry, tensor shapes, scheduler conversions, and write-back logic.
+7. ERP is the temporary canonical pixel space. Do not implement a spherical-pixel representation in this version.
+
+# 2. Inspect before editing
+
+Before changing code, identify and report:
+
+* inference entry point;
+* denoising loop;
+* original dynamic sampler and its state;
+* view extraction function;
+* current latent aggregation/write-back function;
+* perspective/ERP/spherical projection utilities;
+* VAE scaling and image-range conventions;
+* scheduler type, timestep representation, and prediction type;
+* current configuration and SLURM arguments;
+* exact files that need modification.
+
+Then make the smallest targeted patch.
+
+# 3. Required pipeline
+
+Keep the original SphereDiff dynamic-sampling loop.
+
+For each denoising timestep or dynamic-sampling update group:
 
 ```text
-minimum modification to existing code
-+ reuse existing SphereDiff modules
-+ add new research functionality through small modular functions
-+ avoid large-scale refactoring
-+ avoid duplicating existing projection, scheduler, model, or view-management code
+original dynamic sampler selects perspective patches
+→ original view extraction
+→ original model prediction
+→ convert prediction to predicted-clean view latents x0
+→ optional pixel-space fusion
+→ convert fused clean latents to the representation expected by write-back
+→ original spherical-latent write-back
 ```
 
-The research goal is to replace SphereDiff’s latent-space blending with pixel-space, detail-preserving blending inspired by LookingGlass, while retaining SphereDiff’s spherical multi-view denoising framework.
-
-Every added research feature must be implemented as a separate function or small module with explicit parameters controlling whether it is enabled. This is required for ablation studies.
-
-# 1. Main design
-
-Keep SphereDiff’s existing overall pipeline:
+Pixel-space fusion must perform:
 
 ```text
-spherical/global latent state
-→ extract perspective-view latent
-→ denoise each perspective view
-→ aggregate the updated views
-→ continue to next diffusion timestep
+predicted-clean view latents x0
+→ VAE decode to RGB
+→ perspective-to-ERP warp
+→ joint fusion of all overlapping patches
+→ ERP-to-perspective warp for the same sampled patches
+→ VAE encode to fused clean latents
+→ scheduler-consistent reinjection
 ```
 
-Modify only the aggregation portion.
+Do not decode arbitrary noisy latents unless the existing scheduler explicitly defines that as correct. Pixel fusion should normally operate on the predicted-clean sample.
 
-The new main pipeline should be:
+# 4. Preserve dynamic sampling
 
-```text
-spherical/global latent state
-→ extract perspective-view latent
-→ denoise each perspective view
-→ decode denoised view latents into RGB
-→ project RGB views into a canonical ERP canvas
-→ perform pixel-space fusion
-→ extract fused RGB perspective views from ERP
-→ encode fused RGB views back into latent space
-→ write/reinject these latents into SphereDiff’s existing spherical latent state
-→ continue to the next diffusion timestep
-```
+Do not replace SphereDiff’s dynamic sampler with fixed views, all-view processing, raster traversal, or a new view scheduler.
 
-Do not redesign SphereDiff’s model invocation, camera definitions, view extraction system, prompt conditioning, scheduler setup, or spherical latent representation unless a minimal adapter is necessary.
+The new fusion module must consume exactly the patches selected by the original dynamic sampler.
 
-# 2. Minimal-modification requirement
+The sampled patch count, camera directions, order, and sampler state may vary across timesteps.
 
-Before editing any file, inspect the repository and identify:
+If the current code processes sampled patches one at a time, minimally buffer the patches belonging to the same update group so their overlaps can be fused jointly before write-back. Do not change which patches are sampled.
 
-1. the inference entry point;
-2. the main denoising loop;
-3. where perspective views are extracted from the spherical latent representation;
-4. where denoised views are currently written back or blended;
-5. the existing projection and inverse-projection utilities;
-6. the existing VAE encode/decode utilities;
-7. scheduler type and prediction type;
-8. configuration and command-line structure.
+For time travel, rerun the original dynamic sampler at each repeated denoising step.
 
-Then make the smallest possible patch.
+# 5. ERP canonical space
 
-Prefer this pattern:
+ERP is a temporary canvas created only for the current fusion call.
 
-```python
-if pixel_fusion_config.enabled:
-    updated_views = apply_pixel_space_fusion(...)
-else:
-    updated_views = existing_view_update
-```
+Do not maintain a persistent ERP image across timesteps in the first implementation. SphereDiff’s spherical latent remains the persistent global state.
 
-Do not move the denoising loop into a new framework unless absolutely necessary.
-
-Do not introduce a new pipeline class if the existing pipeline class can be extended with one or two helper calls.
-
-Do not rewrite projection code already available in SphereDiff.
-
-Do not rewrite the spherical latent representation.
-
-Do not replace existing camera metadata structures.
-
-Do not introduce unnecessary abstractions that change how the rest of SphereDiff operates.
-
-# 3. Scope of the first implementation
-
-Implement the following components:
-
-1. RGB decoding of denoised perspective-view latents.
-2. Projection of RGB perspective views into ERP space.
-3. Simple weighted RGB fusion in ERP space.
-4. LookingGlass-inspired Laplacian-pyramid detail-preserving fusion.
-5. Extraction of fused RGB perspective views from ERP.
-6. VAE re-encoding of fused RGB views.
-7. Reinjection of fused view latents into SphereDiff’s existing spherical latent state.
-8. Optional pixel fusion at selected denoising steps.
-9. Optional time travel.
-10. Configurable diagnostics and intermediate output.
-
-The canonical pixel representation should initially be ERP.
-
-Do not implement a separate complex spherical-pixel storage format at this stage. Instead, encapsulate ERP projection and sampling operations cleanly enough that another spherical representation could be introduced later.
-
-# 4. Feature-control requirements
-
-Every added component must be independently configurable.
-
-At minimum, expose the following options:
-
-```python
-pixel_fusion_enabled: bool
-pixel_fusion_mode: str
-pixel_fusion_every_n_steps: int
-pixel_fusion_start_ratio: float
-pixel_fusion_end_ratio: float
-
-blend_weight_mode: str
-laplacian_levels: int
-high_frequency_mode: str
-high_frequency_temperature: float
-
-reinjection_mode: str
-reinjection_strength: float
-
-spherical_area_weighting_enabled: bool
-
-time_travel_enabled: bool
-time_travel_every_n_steps: int
-time_travel_jump_length: int
-time_travel_num_repeats: int
-
-save_intermediates: bool
-save_masks: bool
-save_diagnostics: bool
-```
-
-Suggested fusion modes:
-
-```python
-"rgb_average"
-"rgb_weighted"
-"rgb_laplacian"
-```
-
-Suggested high-frequency modes:
-
-```python
-"weighted"
-"winner_take_most"
-```
-
-Suggested reinjection modes:
-
-```python
-"replace"
-"weighted_replace"
-"residual"
-"noise_consistent"
-```
-
-The new code does not need to keep latent blending as an available runtime mode unless retaining it requires no additional effort.
-
-# 5. Configuration design
-
-Follow the repository’s current configuration convention.
-
-If SphereDiff uses argparse, add argparse options.
-
-If it uses YAML or OmegaConf, add fields to the existing configuration.
-
-If it uses a pipeline constructor, add a small configuration dataclass or dictionary passed into the pipeline.
-
-Avoid creating a second independent configuration system.
-
-A possible lightweight configuration object is:
-
-```python
-from dataclasses import dataclass
-from typing import Literal
-
-
-@dataclass
-class PixelFusionConfig:
-    enabled: bool = True
-
-    mode: Literal[
-        "rgb_average",
-        "rgb_weighted",
-        "rgb_laplacian",
-    ] = "rgb_laplacian"
-
-    every_n_steps: int = 1
-    start_ratio: float = 0.0
-    end_ratio: float = 1.0
-
-    weight_mode: Literal[
-        "uniform",
-        "cosine",
-        "gaussian",
-        "distance_to_boundary",
-    ] = "cosine"
-
-    spherical_area_weighting_enabled: bool = True
-
-    laplacian_levels: int = 5
-    high_frequency_mode: Literal[
-        "weighted",
-        "winner_take_most",
-    ] = "winner_take_most"
-    high_frequency_temperature: float = 0.1
-
-    reinjection_mode: Literal[
-        "replace",
-        "weighted_replace",
-        "residual",
-        "noise_consistent",
-    ] = "weighted_replace"
-
-    reinjection_strength: float = 1.0
-
-    save_intermediates: bool = False
-    save_masks: bool = False
-    save_diagnostics: bool = False
-
-
-@dataclass
-class TimeTravelConfig:
-    enabled: bool = False
-    every_n_steps: int = 0
-    jump_length: int = 1
-    num_repeats: int = 1
-    strength: float = 1.0
-```
-
-Adapt names and placement to the repository style.
-
-# 6. Required functions
-
-Add small reusable functions rather than placing all logic inside the denoising loop.
-
-At minimum, implement or wrap the following functions:
-
-```python
-def should_apply_pixel_fusion(
-    step_index,
-    total_steps,
-    config,
-) -> bool:
-    ...
-```
-
-```python
-def decode_view_latents(
-    view_latents,
-    vae,
-    scaling_factor,
-    chunk_size=None,
-):
-    ...
-```
-
-```python
-def encode_view_images(
-    view_images,
-    vae,
-    scaling_factor,
-    sample_mode="mean",
-    generator=None,
-    chunk_size=None,
-):
-    ...
-```
-
-```python
-def project_views_to_erp(
-    view_images,
-    view_metadata,
-    erp_height,
-    erp_width,
-    projection_cache=None,
-):
-    ...
-```
-
-```python
-def extract_views_from_erp(
-    erp_image,
-    view_metadata,
-    output_height,
-    output_width,
-    projection_cache=None,
-):
-    ...
-```
-
-```python
-def compute_blending_weights(
-    projected_masks,
-    view_metadata,
-    mode="cosine",
-    spherical_area_weighting_enabled=True,
-):
-    ...
-```
-
-```python
-def blend_rgb_average(
-    projected_images,
-    projected_masks,
-):
-    ...
-```
-
-```python
-def blend_rgb_weighted(
-    projected_images,
-    projected_weights,
-    projected_masks,
-    eps=1e-8,
-):
-    ...
-```
-
-```python
-def laplacian_pyramid_blend(
-    projected_images,
-    projected_weights,
-    projected_masks,
-    num_levels=5,
-    high_frequency_mode="winner_take_most",
-    temperature=0.1,
-):
-    ...
-```
-
-```python
-def reinject_fused_view_latents(
-    current_view_latents,
-    fused_view_latents,
-    mode="weighted_replace",
-    strength=1.0,
-    timestep=None,
-    scheduler=None,
-    noise=None,
-):
-    ...
-```
-
-```python
-def apply_pixel_space_fusion(
-    denoised_view_latents,
-    current_view_latents,
-    view_metadata,
-    timestep,
-    vae,
-    scheduler,
-    projection_utils,
-    config,
-    generator=None,
-):
-    """
-    Returns:
-        fused_view_latents
-        fused_erp_rgb
-        diagnostics
-    """
-    ...
-```
-
-The main denoising loop should only need a small insertion similar to:
-
-```python
-if should_apply_pixel_fusion(
-    step_index,
-    len(timesteps),
-    pixel_fusion_config,
-):
-    denoised_view_latents, fused_erp, diagnostics = (
-        apply_pixel_space_fusion(
-            denoised_view_latents=denoised_view_latents,
-            current_view_latents=current_view_latents,
-            view_metadata=view_metadata,
-            timestep=t,
-            vae=self.vae,
-            scheduler=self.scheduler,
-            projection_utils=existing_projection_utils,
-            config=pixel_fusion_config,
-            generator=generator,
-        )
-    )
-```
-
-Then use SphereDiff’s existing function for writing view latents back into the spherical latent state.
-
-# 7. Reuse the existing SphereDiff geometry
-
-SphereDiff already contains mappings between:
-
-* spherical latent representation;
-* perspective latent grids;
-* camera directions;
-* field of view;
-* possibly ERP or spherical coordinates.
-
-Reuse those mappings wherever possible.
-
-Do not maintain two separate definitions of camera orientation or spherical coordinates.
-
-If existing projection utilities only support latent tensors, inspect whether they are resolution-agnostic. If they are, reuse them for RGB tensors by changing only the input spatial dimensions.
-
-If they assume latent resolution, add a small resolution parameter rather than duplicating the implementation.
-
-If RGB and latent projections require different grids, generate them through the same underlying camera-coordinate function.
-
-Cache projection grids by:
-
-```text
-view direction
-field of view
-input resolution
-output resolution
-device
-dtype
-```
-
-# 8. ERP canvas
-
-Use ERP as the canonical pixel-space fusion canvas.
-
-The ERP canvas must:
+ERP projection must:
 
 * wrap horizontally at longitude ±π;
-* correctly handle views crossing the left/right ERP boundary;
-* create a valid mask for every projected perspective image;
-* avoid NaNs in uncovered regions;
-* optionally apply spherical-area weighting;
-* use the existing panorama resolution or a configurable ERP resolution.
+* correctly handle seam-crossing patches;
+* produce a validity mask for each patch;
+* use the existing SphereDiff camera and spherical-coordinate conventions;
+* cache projection grids when view metadata and resolution are unchanged.
 
-Implement a lightweight helper only if necessary:
+When a sampled output patch reads an invalid ERP location, fall back to that patch’s original decoded predicted-clean RGB value. Do not fill invalid ERP regions with unrelated data.
 
-```python
-class ERPPixelCanvas:
-    def __init__(
-        self,
-        height,
-        width,
-        device,
-        dtype,
-    ):
-        ...
+# 6. Joint handling of overlapping patches
 
-    def project_view(
-        self,
-        rgb_view,
-        view_metadata,
-    ):
-        ...
+Several sampled patches may cover the same ERP pixel. This is expected.
 
-    def extract_view(
-        self,
-        erp_rgb,
-        view_metadata,
-        output_size,
-    ):
-        ...
-```
-
-This class should wrap the repository’s existing geometry functions. It should not become a replacement for SphereDiff’s spherical latent representation.
-
-# 9. VAE decoding and encoding
-
-Inspect the exact VAE convention used by the current SphereDiff model.
-
-Do not hard-code the latent scaling factor.
-
-Use:
+Never use sequential overwrite:
 
 ```python
-vae.config.scaling_factor
+erp[..., y, x] = patch[..., y, x]
 ```
 
-or the equivalent value used by the existing code.
+Do not use order-dependent pairwise blending.
+
+All valid contributions for the same ERP pixel, or the same ERP pyramid coefficient, must be fused jointly across the patch dimension.
+
+Use shapes equivalent to:
+
+```python
+projected_rgb:     [num_patches, 3, H_erp, W_erp]
+projected_mask:    [num_patches, 1, H_erp, W_erp]
+projected_weight:  [num_patches, 1, H_erp, W_erp]
+```
+
+The result must be independent of patch order.
+
+For ordinary weighted fusion:
+
+```python
+effective_weight = projected_mask * projected_weight
+fused = sum(projected_rgb * effective_weight, dim=patch)
+fused /= clamp_min(sum(effective_weight, dim=patch), eps)
+```
+
+Implement a central function such as:
+
+```python
+aggregate_overlap_contributions(
+    values,
+    masks,
+    weights,
+    mode,
+    ...
+)
+```
+
+It must support arbitrary patch counts and return at least:
+
+* fused values;
+* accumulated weight;
+* contributor count;
+* valid output mask.
+
+Memory-efficient sufficient-statistic accumulation is acceptable, provided the result remains joint and order-independent.
+
+# 7. Independent warp and aggregation ablations
+
+Warping and aggregation are separate components and must have separate configuration options.
+
+```python
+warp_mode:
+    "standard"
+    "lpw"
+
+aggregation_mode:
+    "average"
+    "weighted_average"
+    "detail_preserving_average"
+```
+
+Required ablations:
+
+```text
+standard warp + average
+standard warp + weighted average
+standard warp + DPA
+LPW + average
+LPW + weighted average
+LPW + DPA
+```
+
+Do not hide LPW and DPA behind one combined flag.
+
+# 8. Standard perspective–ERP warp
+
+Implement a basic perspective-to-ERP and ERP-to-perspective path using the existing SphereDiff geometry.
+
+This path is required for debugging and ablation.
+
+Support boundary weights computed in perspective-patch coordinates before projection:
+
+```python
+weight_mode:
+    "uniform"
+    "cosine"
+    "gaussian"
+    "distance_to_boundary"
+```
+
+Boundary weighting must remain independent from DPA and LPW.
+
+# 9. Laplacian Pyramid Warping
+
+Implement LookingGlass-inspired LPW for perspective patches and the ERP canonical space.
+
+When `warp_mode == "lpw"`:
+
+1. Build Gaussian/Laplacian pyramids for each predicted-clean RGB patch.
+2. Compute the local perspective-to-ERP scale or LOD from the real projection mapping, preferably from its Jacobian or image-space derivatives.
+3. Inverse-warp each patch pyramid into an ERP canonical pyramid.
+4. Preserve a validity mask and geometric confidence for every patch and pyramid level.
+5. Fuse all overlapping patch coefficients jointly at each level.
+6. Reconstruct the fused ERP RGB image.
+7. Use the corresponding forward LPW operation to sample the fused ERP result back into the sampled perspective patches.
+
+Do not approximate LPW as ordinary full-resolution warping followed by a Laplacian blend.
+
+Reuse the repository’s existing projection equations. Add resolution parameters or small wrappers rather than duplicating camera math.
+
+ERP pyramid filtering must use:
+
+* circular padding horizontally;
+* reflection or replication vertically;
+* no zero-padding seam at the left/right ERP boundary.
+
+Cache static projection grids and LOD maps.
+
+Expose at least:
+
+```python
+lpw_num_levels
+lpw_lod_mode
+lpw_lod_interpolation
+erp_vertical_padding_mode
+```
+
+`warp_mode` already controls whether LPW is enabled, so do not add a redundant `lpw_enabled` flag unless required by the existing configuration style.
+
+# 10. Detail-Preserving Average
+
+Implement DPA independently from LPW.
+
+For values `x_i`, masks `m_i`, geometric weights `w_i`, detail power `q`, and epsilon `eps`:
+
+```python
+ordinary = (
+    sum(m_i * w_i * x_i)
+    / clamp_min(sum(m_i * w_i), eps)
+)
+
+detail = (
+    sum(m_i * w_i * (abs(x_i) + eps) ** q * x_i)
+    / clamp_min(
+        sum(m_i * w_i * (abs(x_i) + eps) ** q),
+        eps,
+    )
+)
+
+output = ordinary + alpha * (detail - ordinary)
+```
+
+Use this multi-input form directly. Do not repeatedly apply a two-image DPA.
+
+Apply DPA jointly:
+
+* across all patches covering one ERP pixel for standard warping;
+* across all patches covering one ERP coefficient at each pyramid level for LPW.
+
+Expose:
+
+```python
+dpa_alpha       # 0 = ordinary weighted average, 1 = full DPA
+dpa_power       # default 1
+dpa_eps
+```
+
+A single valid contributor must be returned unchanged.
+
+# 11. VAE encode/decode
+
+Use the current model’s actual VAE conventions.
+
+Do not hard-code the latent scaling factor. Use the existing value, such as `vae.config.scaling_factor`, if that is what SphereDiff uses.
 
 Requirements:
 
-* preserve batch dimension;
-* preserve view dimension or flatten and restore it explicitly;
-* preserve dtype and device;
-* support chunking;
-* use `torch.inference_mode()`;
-* convert RGB ranges correctly;
-* use the posterior mean by default for deterministic re-encoding;
+* operate under inference/no-grad mode;
+* preserve device and dtype;
+* support configurable chunking;
+* flatten and restore batch/view dimensions explicitly;
+* use posterior mean by default for deterministic encoding;
 * optionally allow posterior sampling;
-* do not clamp latent tensors;
-* clamp RGB only when saving or when required by the VAE input contract.
+* convert RGB ranges correctly;
+* never clamp latent tensors;
+* clamp RGB only when required by the VAE contract or when saving images.
 
-Document tensor shapes clearly, for example:
+Document the actual tensor shapes in comments.
 
-```python
-view_latents: [num_views, latent_channels, latent_height, latent_width]
-view_images:  [num_views, 3, image_height, image_width]
-projected:    [num_views, 3, erp_height, erp_width]
-masks:        [num_views, 1, erp_height, erp_width]
-weights:      [num_views, 1, erp_height, erp_width]
-```
+# 12. Reinjection
 
-# 10. Simple RGB fusion baselines
+After fusion:
 
-Implement two simple pixel-space baselines.
+1. Sample or forward-warp the fused ERP result into the same dynamically sampled views.
+2. VAE-encode those RGB views into fused predicted-clean latents.
+3. Convert them into the representation expected by SphereDiff’s existing write-back path.
 
-## RGB average
+Implement separate modes:
 
 ```python
-fused = sum(image_i * mask_i) / sum(mask_i)
+reinjection_mode:
+    "noise_consistent"
+    "replace"
+    "weighted_replace"
+    "residual"
 ```
 
-## RGB weighted
+`noise_consistent` should preserve the current timestep’s noise or flow state while replacing or correcting the predicted-clean content.
+
+Derive this conversion from the scheduler and model prediction type actually used by SphereDiff. Do not assume epsilon prediction or DDPM equations.
+
+If a scheduler does not support a correct noise-consistent conversion, raise a clear error rather than silently using an incorrect approximation. Other reinjection modes should remain available for ablation.
+
+Expose:
 
 ```python
-fused = sum(image_i * weight_i * mask_i) \
-        / sum(weight_i * mask_i)
+reinjection_strength
 ```
 
-Where no view contributes, use one of the following, selected by a parameter:
+# 13. Time travel
 
-```python
-"keep_previous"
-"zero"
-"nearest_valid"
-```
+Implement time travel only after ordinary pixel fusion works.
 
-Default to keeping the previous ERP canvas where available.
-
-These simple modes are required for ablation studies and debugging.
-
-# 11. Detail-preserving fusion
-
-Implement a LookingGlass-inspired multiscale pixel-space blending method using Laplacian pyramids.
-
-Required helpers:
-
-```python
-def build_gaussian_pyramid(
-    tensor,
-    num_levels,
-):
-    ...
-```
-
-```python
-def build_laplacian_pyramid(
-    tensor,
-    num_levels,
-):
-    ...
-```
-
-```python
-def reconstruct_laplacian_pyramid(
-    levels,
-):
-    ...
-```
-
-```python
-def build_weight_pyramid(
-    weights,
-    num_levels,
-):
-    ...
-```
-
-At every pyramid level:
-
-* use smooth weighted blending for low-frequency components;
-* preserve locally reliable high-frequency detail;
-* prevent ordinary averaging from blurring textures;
-* account for masks and invalid regions.
-
-Support two high-frequency strategies.
-
-## Weighted
-
-```python
-fused_level = sum(
-    laplacian_i * normalized_weight_i
-)
-```
-
-## Winner-take-most
-
-Use a temperature-controlled softmax across views:
-
-```python
-level_weights = torch.softmax(
-    confidence / temperature,
-    dim=0,
-)
-```
-
-A low temperature should approximate selecting the locally dominant view while remaining differentiable and numerically stable.
-
-Add a separate function:
-
-```python
-def fuse_laplacian_level(
-    level_images,
-    level_weights,
-    level_masks,
-    mode,
-    temperature,
-    eps=1e-8,
-):
-    ...
-```
-
-ERP pyramid filtering must respect horizontal periodicity. Avoid zero padding at the left and right panorama boundaries. Use circular horizontal padding where applicable.
-
-Vertical padding may use reflection or replication.
-
-# 12. Weight generation
-
-Implement weight generation separately from fusion.
-
-Support:
-
-```python
-"uniform"
-"cosine"
-"gaussian"
-"distance_to_boundary"
-```
-
-The default should reduce confidence near perspective-image boundaries.
-
-Possible interface:
-
-```python
-def create_view_weight_map(
-    height,
-    width,
-    mode,
-    device,
-    dtype,
-    sigma=0.5,
-):
-    ...
-```
-
-After projection to ERP, combine:
-
-```python
-final_weight = (
-    projected_view_weight
-    * projected_valid_mask
-    * optional_spherical_area_weight
-)
-```
-
-Keep spherical-area weighting behind a separate Boolean flag.
-
-Do not combine different ablation features implicitly.
-
-# 13. Reinjection
-
-After ERP fusion:
-
-1. sample the fused ERP back into every perspective camera;
-2. encode those RGB views through the VAE;
-3. combine the re-encoded latents with the current denoised view latents;
-4. pass the result into SphereDiff’s existing write-back mechanism.
-
-Implement these independently selectable modes.
-
-## Replace
-
-```python
-output = fused_latent
-```
-
-## Weighted replacement
-
-```python
-output = (
-    1.0 - strength
-) * current_latent \
-    + strength * fused_latent
-```
-
-## Residual correction
-
-```python
-correction = fused_latent - current_latent
-output = current_latent + strength * correction
-```
-
-## Noise-consistent reinjection
-
-When possible, map the re-encoded fused latent to the noise level associated with the current diffusion timestep before writing it back.
-
-Inspect the actual scheduler and model prediction type.
-
-Do not assume DDPM epsilon prediction.
-
-Check whether the implementation uses:
+It must be optional and minimally invasive:
 
 ```text
-epsilon prediction
-v prediction
-sample/x0 prediction
-flow prediction
-```
-
-Use the scheduler’s existing formulas and APIs.
-
-If noise-consistent reinjection is unsupported for the current scheduler, implement a clear guarded error and keep the other modes operational.
-
-# 14. Time travel
-
-Implement time travel as an optional feature with minimum disturbance to the denoising loop.
-
-Do not refactor the full pipeline solely to support time travel.
-
-First inspect whether the existing denoising step can be called repeatedly over selected scheduler indices.
-
-Add only the smallest helper needed.
-
-Required behavior:
-
-```text
-denoise to current step
+reach a configured timestep
 → perform pixel fusion
-→ add scheduler-consistent noise to jump to an earlier/noisier step
-→ repeat denoising over the selected short interval
-→ optionally perform pixel fusion again
-→ resume normal denoising
+→ jump to an earlier/noisier scheduler state
+→ rerun the short denoising interval
+→ resume normal inference
 ```
 
-Parameters:
+Requirements:
+
+* use scheduler-consistent noising;
+* reuse the original denoising code;
+* rerun SphereDiff’s original dynamic sampling on every repeated step;
+* do not recursively call the full pipeline;
+* do not redesign the scheduler loop.
+
+Expose:
 
 ```python
-enabled
-every_n_steps
-jump_length
-num_repeats
-strength
+time_travel_enabled
+time_travel_every_n_steps
+time_travel_jump_length
+time_travel_num_repeats
+time_travel_strength
 ```
 
-Add:
+# 14. Configuration
+
+Create one clear configuration file using the repository’s existing style. It may be YAML, a dataclass, or the project’s current configuration system.
+
+Move relevant parameters currently hard-coded in the inference script or `a.slurm` into this configuration where practical. Keep SLURM responsible only for cluster resources, environment setup, and launching the command.
+
+At minimum expose:
 
 ```python
-def should_apply_time_travel(
-    step_index,
-    total_steps,
-    config,
-) -> bool:
-    ...
+pixel_fusion_enabled
+pixel_fusion_every_n_steps
+pixel_fusion_start_ratio
+pixel_fusion_end_ratio
+
+warp_mode
+aggregation_mode
+weight_mode
+
+lpw_num_levels
+lpw_lod_mode
+lpw_lod_interpolation
+erp_vertical_padding_mode
+
+dpa_alpha
+dpa_power
+dpa_eps
+
+reinjection_mode
+reinjection_strength
+
+time_travel_enabled
+time_travel_every_n_steps
+time_travel_jump_length
+time_travel_num_repeats
+time_travel_strength
+
+vae_chunk_size
+save_intermediates
+save_masks
+save_diagnostics
 ```
+
+Every option must be passed as a function argument or through the configuration object. Avoid hidden global state.
+
+# 15. Suggested modular functions
+
+Use small functions or wrappers. Names may follow the repository style.
+
+At minimum separate:
 
 ```python
-def add_time_travel_noise(
-    latents,
-    current_timestep,
-    target_timestep,
-    scheduler,
-    noise,
-    strength,
-):
-    ...
+should_apply_pixel_fusion(...)
+predict_clean_latents(...)
+decode_view_latents(...)
+encode_view_images(...)
+
+project_views_to_erp_standard(...)
+extract_views_from_erp_standard(...)
+
+build_gaussian_pyramid(...)
+build_laplacian_pyramid(...)
+reconstruct_laplacian_pyramid(...)
+inverse_lpw_to_erp(...)
+forward_lpw_to_views(...)
+
+create_patch_weight_map(...)
+aggregate_overlap_contributions(...)
+detail_preserving_average(...)
+
+apply_pixel_space_fusion(...)
+reinject_fused_latents(...)
+
+should_apply_time_travel(...)
+run_time_travel(...)
 ```
 
-```python
-def run_time_travel(
-    latents,
-    current_step_index,
-    timesteps,
-    denoise_step_fn,
-    fusion_fn,
-    config,
-    generator=None,
-):
-    ...
-```
-
-Reuse the existing denoising-step code. If it is currently embedded in the loop, extract only that small block into a function.
-
-Do not redesign the full pipeline.
-
-# 15. Main-loop modification target
-
-The preferred main-loop patch should be conceptually small:
-
-```python
-for step_index, t in enumerate(timesteps):
-    # Existing SphereDiff view extraction
-    view_latents = extract_existing_views(...)
-
-    # Existing model denoising
-    denoised_view_latents = denoise_existing_views(...)
-
-    # New optional RGB-space fusion
-    if should_apply_pixel_fusion(
-        step_index,
-        len(timesteps),
-        pixel_fusion_config,
-    ):
-        denoised_view_latents, fused_erp, diagnostics = (
-            apply_pixel_space_fusion(
-                denoised_view_latents,
-                view_latents,
-                view_metadata,
-                t,
-                self.vae,
-                self.scheduler,
-                existing_projection_utils,
-                pixel_fusion_config,
-                generator,
-            )
-        )
-
-    # Existing SphereDiff write-back operation
-    spherical_latent = existing_write_back(
-        spherical_latent,
-        denoised_view_latents,
-        view_metadata,
-    )
-
-    # New optional time travel
-    if should_apply_time_travel(...):
-        spherical_latent = run_time_travel(...)
-```
-
-Adapt this to the real code structure.
-
-The actual modification to the main loop should ideally be limited to a few function calls and configuration checks.
+The main denoising loop should receive only a small conditional call to `apply_pixel_space_fusion(...)`, followed by the existing write-back call.
 
 # 16. File organization
 
-Prefer adding one or two focused files rather than many new packages.
+Prefer:
 
-A possible layout is:
+* one new pixel-fusion module;
+* one configuration file;
+* one optional time-travel module;
+* minimal edits to the existing pipeline;
+* minimal edits to projection utilities only when RGB resolution or LPW support requires them.
 
-```text
-spherediff/
-    existing_pipeline_file.py          # minimal edits
-    existing_projection_file.py        # only if RGB resolution support is needed
-    pixel_fusion.py                    # new
-    time_travel.py                     # new, only if sufficiently independent
-```
-
-Possible contents of `pixel_fusion.py`:
-
-```text
-VAE decode/encode helpers
-ERP projection wrappers
-weight generation
-simple blending
-Laplacian blending
-reinjection
-diagnostics
-```
-
-Avoid distributing one feature across many unrelated files.
-
-Follow the repository’s current naming and directory conventions instead of imposing this exact structure.
+Follow the repository’s directory and naming conventions. Do not create a large new package hierarchy.
 
 # 17. Diagnostics
 
-Diagnostics must not affect generation when disabled.
+Diagnostics must be optional and must not affect generation when disabled.
 
-Add optional outputs:
-
-```python
-{
-    "fused_erp": ...,
-    "valid_mask": ...,
-    "accumulated_weight": ...,
-    "view_count": ...,
-    "dominant_view": ...,
-    "overlap_variance": ...,
-    "latent_delta_norm": ...,
-}
-```
-
-Implement:
+Useful outputs include:
 
 ```python
-def compute_fusion_diagnostics(
-    projected_images,
-    projected_weights,
-    projected_masks,
-    fused_erp,
-    current_latents=None,
-    fused_latents=None,
-):
-    ...
+fused_erp
+valid_mask
+contributor_count
+accumulated_weight
+overlap_mask
+dominant_patch_index
+overlap_variance
+latent_delta_norm
+sampled_patch_indices
+sampled_camera_directions
 ```
 
-Only compute expensive diagnostics when enabled.
+Use one centralized result writer. Do not scatter image-saving code throughout the denoising loop.
 
-# 18. Intermediate saving
+# 18. Tests
 
-Use one centralized helper instead of scattered saving calls.
+Add focused tests for:
 
-```python
-class PixelFusionResultWriter:
-    def __init__(
-        self,
-        output_dir,
-        enabled=False,
-    ):
-        ...
+1. One patch returns itself.
+2. Identical overlapping patches remain unchanged.
+3. Three or more overlapping patches are fused correctly.
+4. Changing patch order does not change the result.
+5. Invalid patches contribute zero.
+6. Invalid ERP pixels produce no NaNs.
+7. DPA with `alpha=0` equals weighted averaging.
+8. A single valid DPA contributor remains unchanged.
+9. Laplacian-pyramid reconstruction reproduces the input within tolerance.
+10. ERP horizontal seam padding is circular.
+11. A seam-crossing perspective-to-ERP-to-perspective round trip works.
+12. Reinjection strengths 0 and 1 behave correctly.
+13. Disabling pixel fusion leaves the existing path unchanged.
+14. Fixed seeds produce deterministic results.
+15. VAE encode/decode shapes and ranges are correct.
 
-    def save_erp(self, image, step_index):
-        ...
+Run one small end-to-end smoke test using the installed model.
 
-    def save_mask(self, mask, name, step_index):
-        ...
+Do not claim a test passed unless it was actually executed.
 
-    def save_diagnostics(self, diagnostics, step_index):
-        ...
-```
+# 19. Performance
 
-Only instantiate or call it when saving is enabled.
+Avoid unnecessary overhead:
 
-Do not introduce CPU synchronization during every timestep unless required.
+* decode/encode only on scheduled fusion steps;
+* use mixed precision consistent with SphereDiff;
+* support VAE chunking;
+* cache projection grids, patch weights, and LOD maps;
+* avoid CPU transfers;
+* disable diagnostics and saving by default;
+* use inference mode;
+* avoid storing every projected patch when order-independent accumulators are sufficient.
 
-# 19. Tests
-
-Add focused tests for the new functions without building a second test framework.
-
-Required tests:
-
-1. one-view fusion returns that view;
-2. identical overlapping views remain unchanged;
-3. weighted fusion normalizes correctly;
-4. zero-contribution pixels do not produce NaNs;
-5. Laplacian reconstruction approximately reproduces the original image;
-6. circular ERP seam padding works;
-7. perspective-to-ERP-to-perspective round trip;
-8. reinjection strength zero returns the current latent;
-9. reinjection strength one returns the fused latent;
-10. disabled pixel fusion does not alter its input;
-11. fixed seeds produce deterministic output;
-12. VAE encode/decode maintains expected shape and valid range.
-
-Also run one small end-to-end smoke test using the locally available model.
-
-Do not claim that tests passed unless they were actually executed.
-
-# 20. Performance
-
-The VAE encode/decode round trip is expensive.
-
-Implement:
-
-* optional VAE chunking;
-* mixed precision consistent with the current pipeline;
-* cached projection grids;
-* cached view weight maps;
-* no RGB decoding on steps where fusion is disabled;
-* no diagnostic computation when disabled;
-* no saving when disabled;
-* no unnecessary CPU transfers;
-* no gradients.
-
-Add lightweight timing measurements for:
+Measure:
 
 ```text
 vae_decode
-view_to_erp_projection
-pixel_blending
-erp_to_view_sampling
+projection_or_inverse_lpw
+overlap_fusion
+erp_reconstruction
+erp_to_view_or_forward_lpw
 vae_encode
-latent_reinjection
+reinjection
 time_travel
 ```
 
-# 21. Coding style
+# 20. Implementation order
 
-Use:
+## Phase 1: inspect and report
 
-* type hints;
-* concise docstrings;
-* explicit tensor-shape comments;
-* assertions for unexpected dimensions;
-* device- and dtype-safe tensor creation;
-* passed `torch.Generator` objects for random noise;
-* the repository’s existing logging utility.
+Report the existing architecture and exact modification points before editing.
 
-Avoid:
-
-* global mutable state;
-* hard-coded CUDA devices;
-* hard-coded latent scaling constants;
-* hard-coded view counts;
-* hard-coded ERP dimensions;
-* duplicated camera math;
-* large architecture changes;
-* changing unrelated code formatting;
-* renaming existing public functions unnecessarily.
-
-# 22. Implementation sequence
-
-Proceed in this order.
-
-## Step 1: repository analysis
-
-Before editing, report:
-
-1. inference entry point;
-2. denoising-loop file and function;
-3. current view extraction function;
-4. current view write-back/blending function;
-5. projection utilities;
-6. VAE conventions;
-7. scheduler and prediction type;
-8. exact files that require modification.
-
-## Step 2: minimal RGB fusion baseline
+## Phase 2: standard pixel-fusion baseline
 
 Implement:
 
-* configuration fields;
-* VAE decode and encode;
-* projection wrappers;
-* RGB average;
-* RGB weighted fusion;
-* reinjection;
-* minimal denoising-loop insertion.
+```text
+predicted-clean latent
+→ decode
+→ standard perspective-to-ERP warp
+→ joint average/weighted fusion
+→ ERP-to-perspective sampling
+→ encode
+→ reinject
+```
 
-Run a small smoke test.
+Run tests and a smoke test.
 
-## Step 3: detail-preserving fusion
+## Phase 3: DPA
 
-Implement:
+Add multi-input, order-independent DPA and its ablations.
 
-* Gaussian pyramid;
-* Laplacian pyramid;
-* seam-aware filtering;
-* weighted high-frequency fusion;
-* winner-take-most high-frequency fusion.
+## Phase 4: LPW
 
-Run unit tests and a smoke test.
+Add inverse/forward LPW, LOD computation, seam-aware pyramids, and per-level joint fusion.
 
-## Step 4: time travel
+## Phase 5: time travel
 
-Implement time travel through the smallest possible reuse of the current denoising-step code.
+Add optional time travel without changing the original dynamic sampler.
 
-Do not begin with time travel before basic pixel fusion works.
-
-# 23. Required final report
+# 21. Final report
 
 After implementation, report:
 
-1. modified files;
-2. newly added files;
-3. why each existing file had to be changed;
-4. approximate number of changed lines in existing files;
-5. where the new fusion call was inserted;
-6. tensor shapes at every stage;
-7. commands for:
+* modified and added files;
+* why each existing file changed;
+* approximate changed-line count in existing files;
+* exact location of the pixel-fusion call;
+* exact location of the preserved dynamic sampler;
+* tensor shapes through the fusion pipeline;
+* commands or configurations for all required ablations;
+* tests actually executed and their results;
+* smoke-test result;
+* performance timings;
+* unsupported or unvalidated behavior.
 
-   * RGB average;
-   * RGB weighted;
-   * Laplacian fusion;
-   * Laplacian fusion with winner-take-most detail;
-   * Laplacian fusion plus time travel;
-8. tests actually executed;
-9. smoke-test result;
-10. unvalidated or unsupported behavior.
-
-The most important criterion is not minimizing the total number of new lines. The most important criterion is minimizing invasive changes to SphereDiff’s existing architecture.
-
-New research logic may live in separate modules, while existing SphereDiff files should receive only small, targeted modifications.
+The priority is minimal invasive change to SphereDiff’s existing architecture, not minimizing the amount of new research code.

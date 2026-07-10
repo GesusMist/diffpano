@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=diffpano
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:2
+#SBATCH --gres=gpu:a100:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -48,6 +48,7 @@ PROMPT_NAME="${PROMPT_NAME:-ruins}"
 SUBDIR="${SUBDIR:-slurm_${SLURM_JOB_ID}}"
 MIXED_PRECISION="${MIXED_PRECISION:-bf16}"
 ENABLE_MODEL_CPU_OFFLOAD="${ENABLE_MODEL_CPU_OFFLOAD:-True}"
+PIXEL_FUSION_CONFIG_PATH="${PIXEL_FUSION_CONFIG_PATH:-}"
 
 case "$PIPELINE" in
     SANA)
@@ -103,15 +104,31 @@ echo "PRETRAINED_MODEL=$PRETRAINED_MODEL"
 echo "PROMPT_TXT_PATH=$PROMPT_TXT_PATH"
 echo "SAVE_PATH=$SAVE_PATH"
 echo "N_SPHERICAL_POINTS=$N_SPHERICAL_POINTS"
+echo "PIXEL_FUSION_CONFIG_PATH=${PIXEL_FUSION_CONFIG_PATH:-disabled}"
 
 python -c "import torch; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('cuda available', torch.cuda.is_available()); print('device count', torch.cuda.device_count())"
 
-python "$SCRIPT" --config_add \
-    "pipeline_cls=${PIPELINE_CLS}" \
-    "pretrained_model_name_or_path=${PRETRAINED_MODEL}" \
-    "variant=${VARIANT}" \
-    "mixed_precision=${MIXED_PRECISION}" \
-    "enable_model_cpu_offload=${ENABLE_MODEL_CPU_OFFLOAD}" \
-    "call_kwargs.n_spherical_points=${N_SPHERICAL_POINTS}" \
-    "call_kwargs.prompt_txt_path=${PROMPT_TXT_PATH}" \
+CONFIG_ARGS=(
+    "pipeline_cls=${PIPELINE_CLS}"
+    "pretrained_model_name_or_path=${PRETRAINED_MODEL}"
+    "variant=${VARIANT}"
+    "mixed_precision=${MIXED_PRECISION}"
+    "enable_model_cpu_offload=${ENABLE_MODEL_CPU_OFFLOAD}"
+    "call_kwargs.n_spherical_points=${N_SPHERICAL_POINTS}"
+    "call_kwargs.prompt_txt_path=${PROMPT_TXT_PATH}"
     "save_path=${SAVE_PATH}"
+)
+
+if [[ -n "$PIXEL_FUSION_CONFIG_PATH" ]]; then
+    if [[ "$PIPELINE" != "SANA" && "$PIPELINE" != "FLUX" ]]; then
+        echo "Pixel fusion is currently wired only for SANA and FLUX." >&2
+        exit 2
+    fi
+    if [[ ! -f "$PIXEL_FUSION_CONFIG_PATH" ]]; then
+        echo "Pixel-fusion config not found: $PIXEL_FUSION_CONFIG_PATH" >&2
+        exit 2
+    fi
+    CONFIG_ARGS+=("call_kwargs.pixel_fusion_config_path=${PIXEL_FUSION_CONFIG_PATH}")
+fi
+
+python "$SCRIPT" --config_add "${CONFIG_ARGS[@]}"

@@ -3,6 +3,7 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
+import torch.nn.functional as F
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.pipelines.pixart_alpha.pipeline_pixart_alpha import ASPECT_RATIO_512_BIN, ASPECT_RATIO_1024_BIN
 from diffusers.pipelines.pixart_alpha.pipeline_pixart_sigma import ASPECT_RATIO_2048_BIN
@@ -12,6 +13,14 @@ from diffusers.utils import logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 
+from .pixel_fusion import (
+    apply_pixel_space_fusion,
+    build_pixel_fusion_config,
+    predict_clean_latents,
+    run_time_travel,
+    should_apply_pixel_fusion,
+    should_apply_time_travel,
+)
 from .spherical_functions import SphericalFunctions
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -128,6 +137,8 @@ class SphericalSanaPipeline(SanaPipeline):
         weighted_average_temperature: float = 0.1,
         erp_height: int = 2048,
         erp_width: int = 4096,
+        pixel_fusion_config: Optional[Union[Dict[str, Any], str]] = None,
+        pixel_fusion_config_path: Optional[str] = None,
     ) -> Union[SanaPipelineOutput, Tuple]:
         """
         Function invoked when calling the SphericalSanaPipeline for spherical panoramic image generation.
@@ -340,6 +351,28 @@ class SphericalSanaPipeline(SanaPipeline):
         print(f'num_points_on_sphere = {num_points_on_sphere}, num_inference_steps_view_dir = {num_inference_steps_view_dir}')
 
         latents = randn_tensor(shape, generator, device, dtype=self.dtype)
+        pixel_fusion_cfg = build_pixel_fusion_config(pixel_fusion_config, pixel_fusion_config_path)
+        self.sphere_diff_run_metadata = {
+            "pixel_fusion_config": pixel_fusion_cfg.to_dict(),
+            "n_spherical_points": int(num_points_on_sphere),
+            "num_denoising_steps": len(timesteps),
+            "denoise_timesteps": timesteps.detach().cpu().tolist(),
+            "num_dynamic_view_patches_per_step": int(num_inference_steps_view_dir),
+            "view_directions": view_dir.detach().float().cpu().tolist(),
+            "view_fovs": [[float(value) for value in fov] for fov in fovs_main],
+            "view_prompt_indices": multi_prompts_indices_main.detach().cpu().tolist(),
+            "generator_initial_seeds": (
+                [item.initial_seed() for item in generator]
+                if isinstance(generator, list)
+                else [generator.initial_seed()]
+                if isinstance(generator, torch.Generator)
+                else [torch.cuda.initial_seed() if device.type == "cuda" else torch.initial_seed()]
+            ),
+            "denoise_patch_point_counts_by_step": [],
+            "pixel_fusion_applied_by_step": [],
+            "pixel_fusion_timings_seconds_by_step": [],
+            "render_patch_point_counts": [],
+        }
 
         # 7. Denoising loop
         self._num_timesteps = len(timesteps)
@@ -356,6 +389,12 @@ class SphericalSanaPipeline(SanaPipeline):
 
             latents_next = torch.zeros_like(latents)
             latents_next_cnt = torch.zeros_like(latents)
+            apply_fusion = should_apply_pixel_fusion(i, len(timesteps), pixel_fusion_cfg)
+            if should_apply_time_travel(i, len(timesteps), pixel_fusion_cfg):
+                run_time_travel()
+            fusion_records = []
+            step_patch_point_counts = []
+            step_fusion_timings = None
 
             _view_dir = view_dir
             _multi_prompts_indices = multi_prompts_indices_main
@@ -373,6 +412,7 @@ class SphericalSanaPipeline(SanaPipeline):
                     spherical_points, cur_view_dir, num_points_on_sphere, _fov,
                     temperature=weighted_average_temperature, center_first=True,
                 )
+                step_patch_point_counts.append(int(indices_new.numel()))
                 _latents = latents[..., indices_new]  # (B, C, F, N)
                 _latents = _latents.squeeze(2)
                 cur_latent_height = round(indices_new.shape[-1]**0.5)
@@ -413,17 +453,89 @@ class SphericalSanaPipeline(SanaPipeline):
 
                 # compute previous image: x_t -> x_t-1
                 self.scheduler._step_index = None  # ! important
-                _latents = self.scheduler.step(noise_pred, t, _latents, return_dict=False)[0]
+                latents_before_step = _latents
+                if apply_fusion:
+                    # Pixel fusion operates on predicted-clean view latents x0 with shape [B, C, H_lat, W_lat].
+                    clean_latents, _, _ = predict_clean_latents(self.scheduler, noise_pred, t, latents_before_step)
+                _latents = self.scheduler.step(noise_pred, t, latents_before_step, return_dict=False)[0]
 
-                _latents = rearrange(_latents, 'b c h w -> b c 1 (h w)')
-                for idx_b in range(batch_size):
-                    latents_next[idx_b, ..., indices_new] += _latents[idx_b] * weight
-                    latents_next_cnt[idx_b, ..., indices_new] += weight
+                if apply_fusion:
+                    fusion_records.append(
+                        {
+                            "clean_latents": clean_latents,
+                            "current_latents": latents_before_step,
+                            "model_output": noise_pred,
+                            "prev_latents": _latents,
+                            "indices": indices_new,
+                            "weight": weight,
+                            "view_dir": cur_view_dir,
+                            "fov": _fov,
+                        }
+                    )
+                else:
+                    _latents = rearrange(_latents, 'b c h w -> b c 1 (h w)')
+                    for idx_b in range(batch_size):
+                        latents_next[idx_b, ..., indices_new] += _latents[idx_b] * weight
+                        latents_next_cnt[idx_b, ..., indices_new] += weight
 
                 progress_bar.update()
                 progress_bar.set_description_str(f'i: {i}, j: {j_inside}')
                 progress_bar.set_postfix_str(f'num points = {len(indices_new)}')
 
+            if apply_fusion and fusion_records:
+                target_latent_size = (
+                    max(record["clean_latents"].shape[-2] for record in fusion_records),
+                    max(record["clean_latents"].shape[-1] for record in fusion_records),
+                )
+
+                def resize_view_latents(view_latents, size):
+                    if view_latents.shape[-2:] == size:
+                        return view_latents
+                    return F.interpolate(view_latents, size=size, mode="bilinear", align_corners=True)
+
+                fusion_result = apply_pixel_space_fusion(
+                    vae=self.vae,
+                    scheduler=self.scheduler,
+                    timestep=t,
+                    clean_latents=torch.cat(
+                        [resize_view_latents(record["clean_latents"], target_latent_size) for record in fusion_records], dim=0
+                    ),
+                    current_latents=torch.cat(
+                        [resize_view_latents(record["current_latents"], target_latent_size) for record in fusion_records], dim=0
+                    ),
+                    model_output=torch.cat(
+                        [resize_view_latents(record["model_output"], target_latent_size) for record in fusion_records], dim=0
+                    ),
+                    prev_latents=torch.cat(
+                        [resize_view_latents(record["prev_latents"], target_latent_size) for record in fusion_records], dim=0
+                    ),
+                    view_dirs=torch.cat([record["view_dir"] for record in fusion_records], dim=0),
+                    fovs=[record["fov"] for record in fusion_records],
+                    erp_height=erp_height,
+                    erp_width=erp_width,
+                    config=pixel_fusion_cfg,
+                    generator=generator if isinstance(generator, torch.Generator) else None,
+                )
+                if pixel_fusion_cfg.measure_performance:
+                    print(f"pixel_fusion_timings_seconds={fusion_result.timings}")
+                step_fusion_timings = dict(fusion_result.timings)
+                for idx_record, record in enumerate(fusion_records):
+                    # Convert fused previous-view latents back to SphereDiff's persistent spherical latent layout [B, C, F=1, N].
+                    batch_start = idx_record * batch_size
+                    batch_end = batch_start + batch_size
+                    fused_record = fusion_result.fused_prev_latents[batch_start:batch_end]
+                    fused_record = resize_view_latents(fused_record, record["clean_latents"].shape[-2:])
+                    fused_latents = rearrange(
+                        fused_record,
+                        'b c h w -> b c 1 (h w)',
+                    )
+                    for idx_b in range(batch_size):
+                        latents_next[idx_b, ..., record["indices"]] += fused_latents[idx_b] * record["weight"]
+                        latents_next_cnt[idx_b, ..., record["indices"]] += record["weight"]
+
+            self.sphere_diff_run_metadata["denoise_patch_point_counts_by_step"].append(step_patch_point_counts)
+            self.sphere_diff_run_metadata["pixel_fusion_applied_by_step"].append(bool(apply_fusion and fusion_records))
+            self.sphere_diff_run_metadata["pixel_fusion_timings_seconds_by_step"].append(step_fusion_timings)
             latents_next_cnt[latents_next_cnt == 0] = 1
             latents = latents_next / latents_next_cnt
 
@@ -446,6 +558,7 @@ class SphericalSanaPipeline(SanaPipeline):
                     spherical_points, cur_view_dir, num_points_on_sphere, _fov,
                     temperature=weighted_average_temperature, center_first=True,
                 )
+                self.sphere_diff_run_metadata["render_patch_point_counts"].append(int(indices_new.numel()))
                 cur_latent_height = round(indices_new.shape[-1]**0.5)
 
                 _latents = latents[..., indices_new]  # (B, C, F, N)
