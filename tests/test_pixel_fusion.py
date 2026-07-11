@@ -10,21 +10,28 @@ from pipelines_ours.pixel_fusion import (
     PixelFusionConfig,
     aggregate_overlap_contributions,
     apply_pixel_space_fusion,
+    build_exclusive_owner_map,
     circular_pad_horizontal,
     decode_view_latents,
     detail_preserving_average,
     encode_view_images,
+    exclusive_owner_diagnostics,
     extract_views_from_erp_standard,
     forward_lpw_to_views,
+    get_or_build_exclusive_owner_map,
     inverse_lpw_to_erp,
     project_views_to_erp_standard,
     predict_clean_latents,
     reconstruct_laplacian_pyramid,
     reinject_fused_latents,
+    render_views_to_erp_standard_weighted,
+    spherical_pad_erp,
     build_laplacian_pyramid,
     should_apply_pixel_fusion,
     temporary_save_fused_clean_erp_debug,
     temporary_save_original_clean_erp_debug,
+    write_back_views_exclusive,
+    write_back_views_weighted_average,
 )
 from pipelines_ours.spherical_functions import SphericalFunctions
 
@@ -89,6 +96,209 @@ class FakeDPMSolverScheduler(FakeFlowMatchScheduler):
 
 
 class PixelFusionTests(unittest.TestCase):
+    @staticmethod
+    def _exclusive_fixture(num_points=5):
+        indices = [torch.tensor([0, 1, 2]), torch.tensor([1, 2, 3]), torch.tensor([2, 4])]
+        scores = [torch.tensor([0.5, 0.8, 0.4]), torch.tensor([0.9, 0.4, 0.7]), torch.tensor([0.4, 0.5])]
+        patch_ids = [20, 10, 30]
+        owner_map = build_exclusive_owner_map(
+            num_points,
+            indices,
+            scores,
+            patch_ids,
+            device=torch.device("cpu"),
+        )
+        return indices, scores, patch_ids, owner_map
+
+    def test_exclusive_owner_map_uses_max_score_stable_ties_and_coverage(self):
+        _, _, _, owner_map = self._exclusive_fixture()
+        self.assertTrue(torch.equal(owner_map.owner_patch_id, torch.tensor([20, 10, 10, 10, 30])))
+        self.assertTrue(torch.equal(owner_map.coverage_count, torch.tensor([1, 2, 3, 1, 1])))
+        self.assertTrue(owner_map.covered_mask.all())
+        self.assertEqual(owner_map.owner_score.dtype, torch.float32)
+
+    def test_exclusive_owner_map_is_independent_of_record_order(self):
+        indices, scores, patch_ids, expected = self._exclusive_fixture()
+        order = [2, 0, 1]
+        reordered = build_exclusive_owner_map(
+            5,
+            [indices[index] for index in order],
+            [scores[index] for index in order],
+            [patch_ids[index] for index in order],
+            device=torch.device("cpu"),
+        )
+        self.assertTrue(torch.equal(reordered.owner_patch_id, expected.owner_patch_id))
+        self.assertTrue(torch.equal(reordered.owner_score, expected.owner_score))
+        self.assertTrue(torch.equal(reordered.coverage_count, expected.coverage_count))
+
+    def test_exclusive_owner_map_detects_uncovered_points(self):
+        _, _, _, owner_map = self._exclusive_fixture(num_points=6)
+        self.assertFalse(owner_map.covered_mask[-1])
+        self.assertEqual(owner_map.owner_patch_id[-1].item(), -1)
+        self.assertEqual(owner_map.coverage_count[-1].item(), 0)
+
+    def test_exclusive_writeback_selects_exact_owner_values_once(self):
+        indices, _, patch_ids, owner_map = self._exclusive_fixture()
+        patches = [
+            torch.tensor([[[[200.0, 201.0, 202.0]]]]),
+            torch.tensor([[[[101.0, 102.0, 103.0]]]]),
+            torch.tensor([[[[302.0, 304.0]]]]),
+        ]
+        result = write_back_views_exclusive(torch.zeros(1, 1, 1, 5), patches, indices, patch_ids, owner_map)
+        self.assertTrue(torch.equal(result.latents.flatten(), torch.tensor([200.0, 101.0, 102.0, 103.0, 304.0])))
+        self.assertTrue(result.exclusive_write_count.eq(1).all())
+
+    def test_non_owner_values_do_not_affect_exclusive_writeback(self):
+        indices, _, patch_ids, owner_map = self._exclusive_fixture()
+        patches = [torch.full((1, 1, 1, len(item)), float(patch_id)) for item, patch_id in zip(indices, patch_ids)]
+        first = write_back_views_exclusive(torch.zeros(1, 1, 1, 5), patches, indices, patch_ids, owner_map).latents
+        patches[0][..., 1:] = -999.0
+        patches[2][..., :1] = -999.0
+        second = write_back_views_exclusive(torch.zeros(1, 1, 1, 5), patches, indices, patch_ids, owner_map).latents
+        self.assertTrue(torch.equal(first, second))
+
+    def test_exclusive_writeback_is_independent_of_patch_order(self):
+        indices, _, patch_ids, owner_map = self._exclusive_fixture()
+        patches = [torch.full((1, 1, 1, len(item)), float(patch_id)) for item, patch_id in zip(indices, patch_ids)]
+        expected = write_back_views_exclusive(torch.zeros(1, 1, 1, 5), patches, indices, patch_ids, owner_map).latents
+        order = [1, 2, 0]
+        actual = write_back_views_exclusive(
+            torch.zeros(1, 1, 1, 5),
+            [patches[index] for index in order],
+            [indices[index] for index in order],
+            [patch_ids[index] for index in order],
+            owner_map,
+        ).latents
+        self.assertTrue(torch.equal(actual, expected))
+
+    def test_exclusive_writeback_supports_one_patch_and_sana_layout(self):
+        indices = [torch.tensor([0, 1, 2])]
+        owner_map = build_exclusive_owner_map(3, indices, [torch.ones(3)], [7], device=torch.device("cpu"))
+        patch = torch.arange(12.0).reshape(2, 2, 1, 3)
+        result = write_back_views_exclusive(torch.zeros_like(patch), [patch], indices, [7], owner_map)
+        self.assertTrue(torch.equal(result.latents, patch))
+        self.assertEqual(result.latents.shape, (2, 2, 1, 3))
+
+    def test_exclusive_writeback_supports_flux_restored_spherical_layout(self):
+        indices = [torch.tensor([0, 1, 2, 3])]
+        owner_map = build_exclusive_owner_map(4, indices, [torch.ones(4)], [3], device=torch.device("cpu"))
+        restored_flux_patch = torch.arange(64.0).reshape(1, 16, 1, 4).to(torch.bfloat16)
+        result = write_back_views_exclusive(
+            torch.zeros_like(restored_flux_patch), [restored_flux_patch], indices, [3], owner_map
+        )
+        self.assertTrue(torch.equal(result.latents, restored_flux_patch))
+        self.assertEqual(result.latents.dtype, torch.bfloat16)
+
+    def test_weighted_writeback_matches_original_accumulation(self):
+        indices = [torch.tensor([0, 1]), torch.tensor([1, 2])]
+        scores = [torch.tensor([[[1.0, 2.0]]]), torch.tensor([[[3.0, 1.0]]])]
+        patches = [torch.tensor([[[[2.0, 4.0]]]]), torch.tensor([[[[10.0, 20.0]]]])]
+        result = write_back_views_weighted_average(torch.zeros(1, 1, 1, 3), patches, indices, scores)
+        expected = torch.tensor([[[[2.0, 7.6, 20.0]]]])
+        self.assertTrue(torch.allclose(result, expected))
+
+    def test_exclusive_uncovered_error_includes_required_context(self):
+        indices, _, patch_ids, owner_map = self._exclusive_fixture(num_points=6)
+        patches = [torch.zeros(1, 1, 1, len(item)) for item in indices]
+        with self.assertRaisesRegex(RuntimeError, r"1/6 uncovered points .*3 patches; view geometry: test geometry"):
+            write_back_views_exclusive(
+                torch.zeros(1, 1, 1, 6),
+                patches,
+                indices,
+                patch_ids,
+                owner_map,
+                geometry_summary="test geometry",
+            )
+
+    def test_weighted_fallback_changes_only_uncovered_points(self):
+        indices, _, patch_ids, owner_map = self._exclusive_fixture(num_points=6)
+        patches = [torch.full((1, 1, 1, len(item)), float(patch_id)) for item, patch_id in zip(indices, patch_ids)]
+        fallback = torch.full((1, 1, 1, 6), 77.0)
+        result = write_back_views_exclusive(
+            torch.zeros_like(fallback),
+            patches,
+            indices,
+            patch_ids,
+            owner_map,
+            uncovered_mode="weighted_average_fallback",
+            weighted_average_fallback=fallback,
+        )
+        self.assertEqual(result.latents[..., -1].item(), 77.0)
+        self.assertTrue(torch.equal(result.latents.flatten()[:-1], torch.tensor([20.0, 10.0, 10.0, 10.0, 30.0])))
+
+    def test_static_owner_cache_matches_rebuild_and_invalidates_on_geometry_change(self):
+        indices, scores, patch_ids, _ = self._exclusive_fixture()
+        directions = [torch.tensor([[float(index), 0.0, 1.0]]) for index in range(3)]
+        fovs = [(80.0, 80.0)] * 3
+        config = PixelFusionConfig(exclusive_owner_map_static=True)
+        first, _, first_reused = get_or_build_exclusive_owner_map(
+            5, indices, scores, patch_ids, directions, fovs, config, device=torch.device("cpu")
+        )
+        second, _, second_reused = get_or_build_exclusive_owner_map(
+            5, indices, scores, patch_ids, directions, fovs, config, device=torch.device("cpu")
+        )
+        changed_scores = [item.clone() for item in scores]
+        changed_scores[0][0] += 0.1
+        rebuilt, _, rebuilt_reused = get_or_build_exclusive_owner_map(
+            5, indices, changed_scores, patch_ids, directions, fovs, config, device=torch.device("cpu")
+        )
+        self.assertFalse(first_reused)
+        self.assertTrue(second_reused)
+        self.assertIs(first, second)
+        self.assertFalse(rebuilt_reused)
+        self.assertIsNot(first, rebuilt)
+
+    def test_exclusive_diagnostics_report_owner_and_write_counts(self):
+        indices, _, patch_ids, owner_map = self._exclusive_fixture()
+        patches = [torch.zeros(1, 1, 1, len(item)) for item in indices]
+        result = write_back_views_exclusive(torch.zeros(1, 1, 1, 5), patches, indices, patch_ids, owner_map)
+        diagnostics = exclusive_owner_diagnostics(owner_map, result.exclusive_write_count, patch_ids)
+        for key in (
+            "owner_patch_id",
+            "owner_score",
+            "coverage_count",
+            "covered_mask",
+            "owner_patch_histogram",
+            "uncovered_count",
+            "multiply_covered_count",
+            "exclusive_write_count",
+        ):
+            self.assertIn(key, diagnostics)
+        self.assertTrue(diagnostics["exclusive_write_count"].eq(1).all())
+
+    @staticmethod
+    def asymmetric_view(size=16):
+        y = torch.linspace(-1, 1, size)
+        x = torch.linspace(-1, 1, size)
+        yy, xx = torch.meshgrid(y, x, indexing="ij")
+        checker = (((torch.arange(size)[:, None] + 2 * torch.arange(size)[None, :]) % 5) < 2).float() * 2 - 1
+        return torch.stack([xx, yy, checker * (0.25 + 0.75 * (xx > yy))], dim=0).unsqueeze(0)
+
+    def test_erp_world_grid_round_trips_exact_pixel_centers(self):
+        height, width = 16, 32
+        world = pixel_fusion_module._erp_world_grid(height, width, device=torch.device("cpu"), dtype=torch.float32)
+        grid = pixel_fusion_module._world_to_erp_grid(
+            world.reshape(height, width, 3),
+            erp_height=height,
+            erp_width=width,
+        )
+        expected_x = 2 * (torch.arange(width, dtype=torch.float32) + 0.5) / width - 1
+        expected_y = 2 * (torch.arange(height, dtype=torch.float32) + 0.5) / height - 1
+        expected_x, expected_y = torch.meshgrid(expected_x, expected_y, indexing="xy")
+        longitude_error = torch.remainder(grid[..., 0] - expected_x + 1, 2) - 1
+        self.assertLess(longitude_error.abs().max().item(), 2e-6)
+        self.assertLess((grid[..., 1] - expected_y).abs().max().item(), 2e-6)
+
+    def test_erp_impulse_sampling_targets_pixel_centers(self):
+        height, width = 8, 16
+        locations = [(1, 1), (height // 2, width // 2), (2, width - 2), (1, 6), (height - 2, 10)]
+        for y, x in locations:
+            erp = torch.zeros(1, 1, height, width)
+            erp[0, 0, y, x] = 1
+            grid = torch.tensor([[[[2 * (x + 0.5) / width - 1, 2 * (y + 0.5) / height - 1]]]])
+            sampled = pixel_fusion_module._sample_erp_image(erp, grid)
+            self.assertEqual(sampled.item(), 1.0)
+
     def test_one_patch_returns_itself_for_constant_patch(self):
         config = PixelFusionConfig(weight_mode="uniform")
         view = torch.full((1, 3, 8, 8), 0.25)
@@ -119,6 +329,35 @@ class PixelFusionTests(unittest.TestCase):
         )
         valid_error = ((extracted - view).abs() * valid).sum() / valid.sum().clamp_min(1)
         self.assertLess(valid_error.item(), 0.08)
+
+    def test_asymmetric_patch_round_trip_across_view_directions(self):
+        config = PixelFusionConfig(weight_mode="uniform", projection_chunk_size=1)
+        view = self.asymmetric_view()
+        inv_sqrt = 1 / math.sqrt(2)
+        view_dirs = [
+            torch.tensor([[0.0, 0.0, 1.0]]),
+            torch.tensor([[1.0, 0.0, 0.0]]),
+            torch.tensor([[0.0, 0.0, -1.0]]),
+            torch.tensor([[-1.0, 0.0, 0.0]]),
+            torch.tensor([[0.0, inv_sqrt, inv_sqrt]]),
+            torch.tensor([[0.0, -inv_sqrt, inv_sqrt]]),
+            SphericalFunctions.spherical_to_cartesian(torch.tensor([math.pi - 1e-4]), torch.tensor([0.0])),
+        ]
+        for view_dir in view_dirs:
+            projected, mask, weight = project_views_to_erp_standard(
+                view, view_dir, [(100, 100)], 128, 256, config
+            )
+            aggregate = aggregate_overlap_contributions(projected, mask, weight, "weighted_average")
+            extracted, valid = extract_views_from_erp_standard(
+                aggregate.fused_values,
+                aggregate.valid_output_mask,
+                view,
+                view_dir,
+                [(100, 100)],
+                config,
+            )
+            valid_error = ((extracted - view).abs() * valid).sum() / (valid.sum().clamp_min(1) * view.shape[1])
+            self.assertLess(valid_error.item(), 0.08, f"view_dir={view_dir.tolist()}")
 
     def test_bfloat16_inputs_use_float32_projection_and_fusion(self):
         config = PixelFusionConfig(weight_mode="uniform")
@@ -251,7 +490,7 @@ class PixelFusionTests(unittest.TestCase):
                 [0.0, 1.0, 0.0],
             ]
         )
-        original_sample = pixel_fusion_module._sample_with_grid
+        original_sample = pixel_fusion_module._sample_erp_image
         sampled_batch_sizes = []
 
         def checked_sample(values, grid, **kwargs):
@@ -259,7 +498,7 @@ class PixelFusionTests(unittest.TestCase):
             self.assertLessEqual(values.shape[0], config.projection_chunk_size)
             return original_sample(values, grid, **kwargs)
 
-        with mock.patch.object(pixel_fusion_module, "_sample_with_grid", side_effect=checked_sample):
+        with mock.patch.object(pixel_fusion_module, "_sample_erp_image", side_effect=checked_sample):
             extracted, valid = extract_views_from_erp_standard(
                 erp,
                 mask,
@@ -323,6 +562,55 @@ class PixelFusionTests(unittest.TestCase):
         image = torch.arange(8, dtype=torch.float32).view(1, 1, 2, 4)
         padded = circular_pad_horizontal(image, 1, vertical_padding_mode="replicate")
         self.assertTrue(torch.equal(padded[0, 0, 1], torch.tensor([3.0, 0.0, 1.0, 2.0, 3.0, 0.0])))
+
+    def test_north_and_south_pole_padding_rolls_half_turn(self):
+        height, width = 3, 8
+        erp = torch.arange(height * width, dtype=torch.float32).reshape(1, 1, height, width)
+        padded = spherical_pad_erp(erp, pad_y=1, pad_x=1)
+        north = padded[0, 0, 0, 1:-1]
+        south = padded[0, 0, -1, 1:-1]
+        self.assertTrue(torch.equal(north, torch.roll(erp[0, 0, 0], shifts=width // 2)))
+        self.assertTrue(torch.equal(south, torch.roll(erp[0, 0, -1], shifts=width // 2)))
+
+    def test_pole_padding_requires_even_erp_width(self):
+        with self.assertRaisesRegex(ValueError, "even ERP width"):
+            spherical_pad_erp(torch.zeros(1, 1, 3, 7), pad_y=1, pad_x=1)
+
+    def test_spherical_gaussian_blur_crosses_poles_at_opposite_longitude(self):
+        height, width = 8, 16
+        north = torch.zeros(1, 1, height, width)
+        north[0, 0, 0, 1] = 1
+        north_blurred = pixel_fusion_module._pyramid_blur(north, "reflect", circular_horizontal=True)
+        self.assertGreater(north_blurred[0, 0, 0, 1 + width // 2].item(), 0)
+
+        south = torch.zeros_like(north)
+        south[0, 0, -1, 3] = 1
+        south_blurred = pixel_fusion_module._pyramid_blur(south, "reflect", circular_horizontal=True)
+        self.assertGreater(south_blurred[0, 0, -1, 3 + width // 2].item(), 0)
+
+    def test_original_debug_renderer_matches_standard_weighted_projection(self):
+        config = PixelFusionConfig(
+            warp_mode="standard",
+            aggregation_mode="weighted_average",
+            weight_mode="uniform",
+            projection_chunk_size=1,
+        )
+        views = torch.cat([self.asymmetric_view(8), self.asymmetric_view(8).flip(-1)], dim=0)
+        view_dirs = torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+        fovs = [(80, 80), (80, 80)]
+        direct = pixel_fusion_module._fuse_views_to_erp_standard(views, view_dirs, fovs, 32, 64, config)
+        streamed = render_views_to_erp_standard_weighted(
+            [
+                (views[0:1], view_dirs[0:1], fovs[0]),
+                (views[1:2], view_dirs[1:2], fovs[1]),
+            ],
+            32,
+            64,
+            config,
+        )
+        self.assertIsNotNone(streamed)
+        self.assertTrue(torch.allclose(streamed.fused_values, direct.fused_values, atol=1e-6))
+        self.assertTrue(torch.equal(streamed.valid_output_mask, direct.valid_output_mask))
 
     def test_seam_crossing_round_trip_constant_patch(self):
         config = PixelFusionConfig(weight_mode="uniform")
@@ -390,7 +678,7 @@ class PixelFusionTests(unittest.TestCase):
         self.assertEqual(encoded.shape, (2, 4, 4, 4))
 
     def test_apply_pixel_space_fusion_smoke_with_fake_vae(self):
-        config = PixelFusionConfig(pixel_fusion_enabled=True, weight_mode="uniform")
+        config = PixelFusionConfig(pixel_fusion_enabled=True, weight_mode="uniform", save_diagnostics=True)
         config.projection_chunk_size = 1
         clean = torch.zeros(2, 4, 4, 4, dtype=torch.bfloat16)
         current = torch.ones_like(clean)
@@ -418,6 +706,15 @@ class PixelFusionTests(unittest.TestCase):
         self.assertEqual(result.fused_erp.dtype, torch.float32)
         self.assertEqual(result.accumulated_weight.dtype, torch.float32)
         self.assertFalse(torch.isnan(result.fused_prev_latents).any())
+        for key in (
+            "erp_grid_min",
+            "erp_grid_max",
+            "erp_pixel_center_max_error",
+            "perspective_round_trip_mean_error",
+            "perspective_round_trip_max_error",
+        ):
+            self.assertIn(key, result.diagnostics)
+        self.assertLess(result.diagnostics["erp_pixel_center_max_error"].item(), 2e-6)
 
 
 if __name__ == "__main__":

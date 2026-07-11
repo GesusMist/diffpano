@@ -45,6 +45,9 @@ python generate_static_wallpaper.py --config_add \
     call_kwargs.pixel_fusion_config.aggregation_mode=weighted_average \
     call_kwargs.pixel_fusion_config.weight_mode=distance_to_boundary \
     call_kwargs.pixel_fusion_config.reinjection_mode=noise_consistent \
+    call_kwargs.pixel_fusion_config.spherical_writeback_mode=exclusive \
+    call_kwargs.pixel_fusion_config.exclusive_uncovered_mode=error \
+    call_kwargs.pixel_fusion_config.save_owner_map=True \
     call_kwargs.pixel_fusion_config.vae_chunk_size=4 \
     call_kwargs.pixel_fusion_config.save_diagnostics=True \
     call_kwargs.pixel_fusion_config.measure_performance=True \

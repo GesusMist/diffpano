@@ -17,12 +17,18 @@ from .pixel_fusion import (
     apply_pixel_space_fusion,
     build_pixel_fusion_config,
     decode_view_latents,
+    exclusive_owner_diagnostics,
+    get_or_build_exclusive_owner_map,
     predict_clean_latents,
     run_time_travel,
+    save_exclusive_owner_diagnostics,
     should_apply_pixel_fusion,
     should_apply_time_travel,
+    summarize_patch_geometry,
     temporary_save_fused_clean_erp_debug,
     temporary_save_original_clean_erp_debug,
+    write_back_views_exclusive,
+    write_back_views_weighted_average,
 )
 from .spherical_functions import SphericalFunctions
 
@@ -404,6 +410,7 @@ class SphericalSanaPipeline(SanaPipeline):
             )
             step_patch_point_counts = []
             step_fusion_timings = None
+            exclusive_writeback_result = None
 
             _view_dir = view_dir
             _multi_prompts_indices = multi_prompts_indices_main
@@ -477,6 +484,7 @@ class SphericalSanaPipeline(SanaPipeline):
                             "prev_latents": _latents,
                             "indices": indices_new,
                             "weight": weight,
+                            "patch_id": j_inside,
                             "view_dir": cur_view_dir,
                             "fov": _fov,
                         }
@@ -541,6 +549,7 @@ class SphericalSanaPipeline(SanaPipeline):
                 if pixel_fusion_cfg.measure_performance:
                     print(f"pixel_fusion_timings_seconds={fusion_result.timings}")
                 step_fusion_timings = dict(fusion_result.timings)
+                corrected_view_latents = []
                 for idx_record, record in enumerate(fusion_records):
                     # Convert fused previous-view latents back to SphereDiff's persistent spherical latent layout [B, C, F=1, N].
                     batch_start = idx_record * batch_size
@@ -551,15 +560,82 @@ class SphericalSanaPipeline(SanaPipeline):
                         fused_record,
                         'b c h w -> b c 1 (h w)',
                     )
-                    for idx_b in range(batch_size):
-                        latents_next[idx_b, ..., record["indices"]] += fused_latents[idx_b] * record["weight"]
-                        latents_next_cnt[idx_b, ..., record["indices"]] += record["weight"]
+                    corrected_view_latents.append(fused_latents)
+
+                if pixel_fusion_cfg.spherical_writeback_mode == "weighted_average":
+                    # Original SphereDiff weighted write-back retained for ablation B.
+                    for corrected_patch, record in zip(corrected_view_latents, fusion_records):
+                        for idx_b in range(batch_size):
+                            latents_next[idx_b, ..., record["indices"]] += corrected_patch[idx_b] * record["weight"]
+                            latents_next_cnt[idx_b, ..., record["indices"]] += record["weight"]
+                else:
+                    patch_indices = [record["indices"] for record in fusion_records]
+                    patch_scores = [record["weight"] for record in fusion_records]
+                    patch_ids = [record["patch_id"] for record in fusion_records]
+                    patch_view_dirs = [record["view_dir"] for record in fusion_records]
+                    patch_fovs = [record["fov"] for record in fusion_records]
+                    owner_map, owner_cache_key, owner_map_reused = get_or_build_exclusive_owner_map(
+                        num_points_on_sphere,
+                        patch_indices,
+                        patch_scores,
+                        patch_ids,
+                        patch_view_dirs,
+                        patch_fovs,
+                        pixel_fusion_cfg,
+                        device=latents.device,
+                    )
+                    weighted_fallback = None
+                    if (
+                        pixel_fusion_cfg.exclusive_uncovered_mode == "weighted_average_fallback"
+                        and not owner_map.covered_mask.all()
+                    ):
+                        weighted_fallback = write_back_views_weighted_average(
+                            latents,
+                            corrected_view_latents,
+                            patch_indices,
+                            patch_scores,
+                        )
+                    exclusive_writeback_result = write_back_views_exclusive(
+                        latents,
+                        corrected_view_latents,
+                        patch_indices,
+                        patch_ids,
+                        owner_map,
+                        uncovered_mode=pixel_fusion_cfg.exclusive_uncovered_mode,
+                        weighted_average_fallback=weighted_fallback,
+                        geometry_summary=summarize_patch_geometry(patch_ids, patch_view_dirs, patch_fovs),
+                    )
+                    if pixel_fusion_cfg.save_owner_map:
+                        owner_diagnostics = exclusive_owner_diagnostics(
+                            owner_map,
+                            exclusive_writeback_result.exclusive_write_count,
+                            patch_ids,
+                        )
+                        save_exclusive_owner_diagnostics(
+                            owner_diagnostics,
+                            pixel_fusion_cfg,
+                            owner_cache_key,
+                            pipeline_name="sana",
+                            step_index=i,
+                        )
+                        print(
+                            "exclusive_owner_map "
+                            f"reused={owner_map_reused} "
+                            f"coverage_min={owner_diagnostics['minimum_coverage_count'].item()} "
+                            f"coverage_max={owner_diagnostics['maximum_coverage_count'].item()} "
+                            f"coverage_mean={owner_diagnostics['mean_coverage_count'].item():.4f} "
+                            f"multiply_covered_percent={owner_diagnostics['multiply_covered_percent'].item():.4f} "
+                            f"owner_histogram={owner_diagnostics['owner_patch_histogram'].cpu().tolist()}"
+                        )
 
             self.sphere_diff_run_metadata["denoise_patch_point_counts_by_step"].append(step_patch_point_counts)
             self.sphere_diff_run_metadata["pixel_fusion_applied_by_step"].append(bool(apply_fusion and fusion_records))
             self.sphere_diff_run_metadata["pixel_fusion_timings_seconds_by_step"].append(step_fusion_timings)
-            latents_next_cnt[latents_next_cnt == 0] = 1
-            latents = latents_next / latents_next_cnt
+            if exclusive_writeback_result is not None:
+                latents = exclusive_writeback_result.latents
+            else:
+                latents_next_cnt[latents_next_cnt == 0] = 1
+                latents = latents_next / latents_next_cnt
 
             # TEMPORARY DEBUG EXPORT START: remove this block with temporary_save_original_clean_erp_debug().
             if save_original_clean_debug:

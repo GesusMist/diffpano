@@ -1,9 +1,10 @@
+import hashlib
 import math
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -22,6 +23,8 @@ class ProjectionCache:
     grids: Dict[Tuple[Any, ...], Tuple[torch.Tensor, torch.Tensor]] = field(default_factory=dict)
     weights: Dict[Tuple[Any, ...], torch.Tensor] = field(default_factory=dict)
     lod_maps: Dict[Tuple[Any, ...], torch.Tensor] = field(default_factory=dict)
+    owner_maps: Dict[Tuple[Any, ...], "ExclusiveOwnerMap"] = field(default_factory=dict)
+    saved_owner_map_keys: Set[Tuple[Any, ...]] = field(default_factory=set)
 
 
 @dataclass
@@ -46,6 +49,11 @@ class PixelFusionConfig:
 
     reinjection_mode: str = "noise_consistent"
     reinjection_strength: float = 1.0
+    spherical_writeback_mode: str = "exclusive"
+    spherical_owner_mode: str = "max_center_weight"
+    exclusive_owner_map_static: bool = True
+    exclusive_uncovered_mode: str = "error"
+    save_owner_map: bool = False
 
     time_travel_enabled: bool = False
     time_travel_every_n_steps: int = 1
@@ -99,6 +107,12 @@ class PixelFusionConfig:
             raise ValueError(f"Unsupported weight_mode={self.weight_mode!r}")
         if self.reinjection_mode not in {"noise_consistent", "replace", "weighted_replace", "residual"}:
             raise ValueError(f"Unsupported reinjection_mode={self.reinjection_mode!r}")
+        if self.spherical_writeback_mode not in {"weighted_average", "exclusive"}:
+            raise ValueError(f"Unsupported spherical_writeback_mode={self.spherical_writeback_mode!r}")
+        if self.spherical_owner_mode != "max_center_weight":
+            raise ValueError(f"Unsupported spherical_owner_mode={self.spherical_owner_mode!r}")
+        if self.exclusive_uncovered_mode not in {"error", "weighted_average_fallback"}:
+            raise ValueError(f"Unsupported exclusive_uncovered_mode={self.exclusive_uncovered_mode!r}")
         if self.pixel_fusion_every_n_steps < 1:
             raise ValueError("pixel_fusion_every_n_steps must be >= 1")
         if self.vae_chunk_size < 1:
@@ -119,6 +133,20 @@ class OverlapAggregationResult:
     accumulated_weight: torch.Tensor
     contributor_count: torch.Tensor
     valid_output_mask: torch.Tensor
+
+
+@dataclass
+class ExclusiveOwnerMap:
+    owner_patch_id: torch.Tensor
+    owner_score: torch.Tensor
+    coverage_count: torch.Tensor
+    covered_mask: torch.Tensor
+
+
+@dataclass
+class ExclusiveWriteBackResult:
+    latents: torch.Tensor
+    exclusive_write_count: torch.Tensor
 
 
 @dataclass
@@ -157,6 +185,8 @@ def _coerce_config_value(key: str, value: Any) -> Any:
         "save_diagnostics",
         "measure_performance",
         "vae_sample_posterior",
+        "exclusive_owner_map_static",
+        "save_owner_map",
         "temporary_save_fused_erp_per_step",
         "temporary_save_original_clean_erp_per_step",
     }
@@ -206,6 +236,314 @@ def build_pixel_fusion_config(
             setattr(config, key, _coerce_config_value(key, value))
     config.validate()
     return config
+
+
+def _tensor_content_hash(tensor: torch.Tensor) -> str:
+    contiguous = tensor.detach().contiguous().cpu()
+    return hashlib.sha256(contiguous.numpy().tobytes()).hexdigest()
+
+
+def _exclusive_owner_cache_key(
+    num_spherical_points: int,
+    patch_indices: Sequence[torch.Tensor],
+    patch_scores: Sequence[torch.Tensor],
+    patch_ids: Sequence[int],
+    patch_view_dirs: Sequence[torch.Tensor],
+    patch_fovs: Sequence[Tuple[float, float]],
+    device: torch.device,
+) -> Tuple[Any, ...]:
+    if not (
+        len(patch_indices)
+        == len(patch_scores)
+        == len(patch_ids)
+        == len(patch_view_dirs)
+        == len(patch_fovs)
+    ):
+        raise ValueError("Owner-map cache inputs must contain one entry per patch")
+
+    patch_signatures = []
+    for patch_id, indices, scores, view_dir, fov in sorted(
+        zip(patch_ids, patch_indices, patch_scores, patch_view_dirs, patch_fovs), key=lambda item: int(item[0])
+    ):
+        indices_flat = indices.detach().reshape(-1).long()
+        scores_flat = scores.detach().reshape(-1).to(dtype=FUSION_DTYPE)
+        patch_signatures.append(
+            (
+                int(patch_id),
+                tuple(indices.shape),
+                _tensor_content_hash(indices_flat),
+                tuple(scores.shape),
+                _tensor_content_hash(scores_flat),
+                _tensor_content_hash(view_dir.detach().reshape(-1).to(dtype=FUSION_DTYPE)),
+                tuple(float(value) for value in fov),
+            )
+        )
+    return (int(num_spherical_points), str(device), tuple(patch_signatures))
+
+
+def build_exclusive_owner_map(
+    num_spherical_points: int,
+    patch_indices: Sequence[torch.Tensor],
+    patch_scores: Sequence[torch.Tensor],
+    patch_ids: Sequence[int],
+    *,
+    device: torch.device,
+) -> ExclusiveOwnerMap:
+    """Assign each covered spherical point to its highest-scoring stable patch ID."""
+
+    if num_spherical_points < 1:
+        raise ValueError("num_spherical_points must be positive")
+    if not (len(patch_indices) == len(patch_scores) == len(patch_ids)):
+        raise ValueError("patch_indices, patch_scores, and patch_ids must have equal lengths")
+    stable_patch_ids = [int(patch_id) for patch_id in patch_ids]
+    if len(set(stable_patch_ids)) != len(stable_patch_ids):
+        raise ValueError("Exclusive ownership requires unique stable patch IDs")
+
+    owner_patch_id = torch.full((num_spherical_points,), -1, dtype=torch.long, device=device)
+    owner_score = torch.full((num_spherical_points,), -torch.inf, dtype=FUSION_DTYPE, device=device)
+    coverage_count = torch.zeros((num_spherical_points,), dtype=torch.long, device=device)
+
+    entries = sorted(zip(stable_patch_ids, patch_indices, patch_scores), key=lambda item: item[0])
+    for patch_id, indices, scores in entries:
+        indices_flat = indices.detach().reshape(-1).to(device=device, dtype=torch.long)
+        scores_flat = scores.detach().reshape(-1).to(device=device, dtype=FUSION_DTYPE)
+        if indices_flat.numel() != scores_flat.numel():
+            raise ValueError(
+                f"Patch {patch_id} has {indices_flat.numel()} indices but {scores_flat.numel()} ownership scores"
+            )
+        if indices_flat.numel() == 0:
+            continue
+        if indices_flat.min().item() < 0 or indices_flat.max().item() >= num_spherical_points:
+            raise IndexError(f"Patch {patch_id} contains a spherical index outside [0, {num_spherical_points})")
+        if torch.unique(indices_flat).numel() != indices_flat.numel():
+            raise ValueError(f"Patch {patch_id} contains duplicate spherical indices")
+        if not torch.isfinite(scores_flat).all():
+            raise ValueError(f"Patch {patch_id} contains a non-finite ownership score")
+
+        coverage_count.index_add_(0, indices_flat, torch.ones_like(indices_flat))
+        current_score = owner_score[indices_flat]
+        current_owner = owner_patch_id[indices_flat]
+        wins = (scores_flat > current_score) | ((scores_flat == current_score) & (patch_id < current_owner))
+        winning_indices = indices_flat[wins]
+        owner_score[winning_indices] = scores_flat[wins]
+        owner_patch_id[winning_indices] = patch_id
+
+    covered_mask = coverage_count > 0
+    if not torch.equal(covered_mask, torch.isfinite(owner_score)):
+        raise AssertionError("Exclusive owner-map coverage and finite owner scores disagree")
+    return ExclusiveOwnerMap(
+        owner_patch_id=owner_patch_id,
+        owner_score=owner_score,
+        coverage_count=coverage_count,
+        covered_mask=covered_mask,
+    )
+
+
+def get_or_build_exclusive_owner_map(
+    num_spherical_points: int,
+    patch_indices: Sequence[torch.Tensor],
+    patch_scores: Sequence[torch.Tensor],
+    patch_ids: Sequence[int],
+    patch_view_dirs: Sequence[torch.Tensor],
+    patch_fovs: Sequence[Tuple[float, float]],
+    config: PixelFusionConfig,
+    *,
+    device: torch.device,
+) -> Tuple[ExclusiveOwnerMap, Tuple[Any, ...], bool]:
+    if config.spherical_owner_mode != "max_center_weight":
+        raise ValueError(f"Unsupported spherical_owner_mode={config.spherical_owner_mode!r}")
+    cache_key = _exclusive_owner_cache_key(
+        num_spherical_points,
+        patch_indices,
+        patch_scores,
+        patch_ids,
+        patch_view_dirs,
+        patch_fovs,
+        device,
+    )
+    if config.exclusive_owner_map_static and cache_key in config.projection_cache.owner_maps:
+        return config.projection_cache.owner_maps[cache_key], cache_key, True
+
+    owner_map = build_exclusive_owner_map(
+        num_spherical_points,
+        patch_indices,
+        patch_scores,
+        patch_ids,
+        device=device,
+    )
+    if config.exclusive_owner_map_static:
+        config.projection_cache.owner_maps[cache_key] = owner_map
+    return owner_map, cache_key, False
+
+
+def write_back_views_weighted_average(
+    spherical_latent_template: torch.Tensor,
+    corrected_view_latents: Sequence[torch.Tensor],
+    patch_indices: Sequence[torch.Tensor],
+    patch_scores: Sequence[torch.Tensor],
+) -> torch.Tensor:
+    """Preserve SphereDiff's weighted spherical latent accumulation behavior."""
+
+    if not (len(corrected_view_latents) == len(patch_indices) == len(patch_scores)):
+        raise ValueError("Weighted write-back inputs must contain one entry per patch")
+    if spherical_latent_template.ndim < 2:
+        raise ValueError("Spherical latent template must include batch and spherical-point dimensions")
+
+    latents_next = torch.zeros_like(spherical_latent_template)
+    latents_next_cnt = torch.zeros_like(spherical_latent_template)
+    for corrected_patch, indices, scores in zip(corrected_view_latents, patch_indices, patch_scores):
+        indices_flat = indices.reshape(-1).to(device=spherical_latent_template.device, dtype=torch.long)
+        corrected_patch = corrected_patch.to(
+            device=spherical_latent_template.device, dtype=spherical_latent_template.dtype
+        )
+        if corrected_patch.shape[:-1] != spherical_latent_template.shape[:-1]:
+            raise ValueError(
+                f"Corrected patch prefix {corrected_patch.shape[:-1]} does not match spherical latent prefix "
+                f"{spherical_latent_template.shape[:-1]}"
+            )
+        if corrected_patch.shape[-1] != indices_flat.numel():
+            raise ValueError("Corrected patch point count does not match its sampled indices")
+        weight = scores.reshape(-1).to(device=corrected_patch.device, dtype=corrected_patch.dtype)
+        if weight.numel() != indices_flat.numel():
+            raise ValueError("Patch score count does not match its sampled indices")
+        weight = weight.reshape((1,) * (corrected_patch.ndim - 2) + (-1,))
+        for batch_index in range(spherical_latent_template.shape[0]):
+            latents_next[batch_index, ..., indices_flat] += corrected_patch[batch_index] * weight
+            latents_next_cnt[batch_index, ..., indices_flat] += weight
+
+    latents_next_cnt[latents_next_cnt == 0] = 1
+    return latents_next / latents_next_cnt
+
+
+def write_back_views_exclusive(
+    spherical_latent_template: torch.Tensor,
+    corrected_view_latents: Sequence[torch.Tensor],
+    patch_indices: Sequence[torch.Tensor],
+    patch_ids: Sequence[int],
+    owner_map: ExclusiveOwnerMap,
+    *,
+    uncovered_mode: str = "error",
+    weighted_average_fallback: Optional[torch.Tensor] = None,
+    geometry_summary: str = "unavailable",
+) -> ExclusiveWriteBackResult:
+    """Write every covered spherical point exactly once from its stable owner patch."""
+
+    if uncovered_mode not in {"error", "weighted_average_fallback"}:
+        raise ValueError(f"Unsupported exclusive uncovered mode {uncovered_mode!r}")
+    if not (len(corrected_view_latents) == len(patch_indices) == len(patch_ids)):
+        raise ValueError("Exclusive write-back inputs must contain one entry per patch")
+    if len(set(int(patch_id) for patch_id in patch_ids)) != len(patch_ids):
+        raise ValueError("Exclusive write-back requires unique stable patch IDs")
+
+    num_spherical_points = spherical_latent_template.shape[-1]
+    if owner_map.owner_patch_id.shape != (num_spherical_points,):
+        raise ValueError("Owner map does not match the spherical latent point count")
+    uncovered_count = int((~owner_map.covered_mask).sum().item())
+    if uncovered_count and uncovered_mode == "error":
+        uncovered_percent = 100.0 * uncovered_count / num_spherical_points
+        raise RuntimeError(
+            "Exclusive spherical write-back found "
+            f"{uncovered_count}/{num_spherical_points} uncovered points ({uncovered_percent:.4f}%) across "
+            f"{len(patch_ids)} patches; view geometry: {geometry_summary}"
+        )
+    if uncovered_count and weighted_average_fallback is None:
+        raise ValueError("weighted_average_fallback mode requires a complete weighted-average spherical result")
+
+    output = torch.empty_like(spherical_latent_template)
+    write_count = torch.zeros((num_spherical_points,), dtype=torch.long, device=spherical_latent_template.device)
+    for corrected_patch, indices, patch_id in zip(corrected_view_latents, patch_indices, patch_ids):
+        indices_flat = indices.reshape(-1).to(device=spherical_latent_template.device, dtype=torch.long)
+        corrected_patch = corrected_patch.to(
+            device=spherical_latent_template.device, dtype=spherical_latent_template.dtype
+        )
+        if corrected_patch.shape[:-1] != spherical_latent_template.shape[:-1]:
+            raise ValueError(
+                f"Corrected patch prefix {corrected_patch.shape[:-1]} does not match spherical latent prefix "
+                f"{spherical_latent_template.shape[:-1]}"
+            )
+        if corrected_patch.shape[-1] != indices_flat.numel():
+            raise ValueError("Corrected patch point count does not match its sampled indices")
+        local_owner_mask = owner_map.owner_patch_id[indices_flat] == int(patch_id)
+        owned_spherical_indices = indices_flat[local_owner_mask]
+        output[..., owned_spherical_indices] = corrected_patch[..., local_owner_mask]
+        write_count.index_add_(0, owned_spherical_indices, torch.ones_like(owned_spherical_indices))
+
+    if not write_count[owner_map.covered_mask].eq(1).all():
+        raise AssertionError("Every covered spherical point must be written exactly once in exclusive mode")
+    if uncovered_count:
+        fallback = weighted_average_fallback.to(device=output.device, dtype=output.dtype)
+        if fallback.shape != output.shape:
+            raise ValueError("Weighted-average fallback shape does not match spherical latent shape")
+        output[..., ~owner_map.covered_mask] = fallback[..., ~owner_map.covered_mask]
+
+    return ExclusiveWriteBackResult(latents=output, exclusive_write_count=write_count)
+
+
+def exclusive_owner_diagnostics(
+    owner_map: ExclusiveOwnerMap,
+    exclusive_write_count: torch.Tensor,
+    patch_ids: Sequence[int],
+) -> Dict[str, torch.Tensor]:
+    unique_patch_ids = sorted(set(int(patch_id) for patch_id in patch_ids))
+    histogram = torch.tensor(
+        [
+            [patch_id, int((owner_map.owner_patch_id == patch_id).sum().item())]
+            for patch_id in unique_patch_ids
+        ],
+        dtype=torch.long,
+        device=owner_map.owner_patch_id.device,
+    )
+    coverage_float = owner_map.coverage_count.to(dtype=FUSION_DTYPE)
+    multiply_covered_count = (owner_map.coverage_count > 1).sum()
+    total = max(owner_map.coverage_count.numel(), 1)
+    return {
+        "owner_patch_id": owner_map.owner_patch_id.detach(),
+        "owner_score": owner_map.owner_score.detach(),
+        "coverage_count": owner_map.coverage_count.detach(),
+        "covered_mask": owner_map.covered_mask.detach(),
+        "owner_patch_histogram": histogram.detach(),
+        "uncovered_count": (~owner_map.covered_mask).sum().detach().reshape(1),
+        "multiply_covered_count": multiply_covered_count.detach().reshape(1),
+        "exclusive_write_count": exclusive_write_count.detach(),
+        "minimum_coverage_count": owner_map.coverage_count.min().detach().reshape(1),
+        "maximum_coverage_count": owner_map.coverage_count.max().detach().reshape(1),
+        "mean_coverage_count": coverage_float.mean().detach().reshape(1),
+        "multiply_covered_percent": coverage_float.new_tensor(
+            [100.0 * multiply_covered_count.item() / total]
+        ),
+    }
+
+
+def summarize_patch_geometry(
+    patch_ids: Sequence[int],
+    patch_view_dirs: Sequence[torch.Tensor],
+    patch_fovs: Sequence[Tuple[float, float]],
+) -> str:
+    entries = []
+    for patch_id, view_dir, fov in zip(patch_ids, patch_view_dirs, patch_fovs):
+        direction = view_dir.detach().reshape(-1, 3)[0].to(dtype=FUSION_DTYPE).cpu().tolist()
+        entries.append(
+            f"id={int(patch_id)} dir=({direction[0]:.4f},{direction[1]:.4f},{direction[2]:.4f}) "
+            f"fov=({float(fov[0]):.2f},{float(fov[1]):.2f})"
+        )
+    return "; ".join(entries)
+
+
+def save_exclusive_owner_diagnostics(
+    diagnostics: Dict[str, torch.Tensor],
+    config: PixelFusionConfig,
+    cache_key: Tuple[Any, ...],
+    *,
+    pipeline_name: str,
+    step_index: int,
+) -> None:
+    if not config.save_owner_map or cache_key in config.projection_cache.saved_owner_map_keys:
+        return
+    output_dir = Path(config.diagnostics_dir or "pixel_fusion_diagnostics")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {key: value.detach().cpu() for key, value in diagnostics.items()}
+    torch.save(payload, output_dir / f"{pipeline_name}_exclusive_owner_map_step_{step_index:04d}.pt")
+    config.projection_cache.saved_owner_map_keys.add(cache_key)
 
 
 def should_apply_pixel_fusion(step_index: int, num_steps: int, config: PixelFusionConfig) -> bool:
@@ -340,6 +678,8 @@ def _normalize_fovs(fovs: Union[Tuple[float, float], Sequence[Tuple[float, float
 
 
 def _erp_world_grid(height: int, width: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Return FP32 rays for pixel-centered ERP coordinates, north at top and south at bottom."""
+
     dtype = FUSION_DTYPE
     u_range = torch.linspace(0, 1, width * 2 + 1, device=device, dtype=dtype)[1::2]
     v_range = torch.linspace(0, 1, height * 2 + 1, device=device, dtype=dtype)[1::2]
@@ -440,6 +780,8 @@ def _get_perspective_to_erp_grid(
 
 
 def _world_to_erp_grid(world_dirs: torch.Tensor, *, erp_height: int, erp_width: int) -> torch.Tensor:
+    """Map world rays to pixel-centered ERP grid coordinates for align_corners=False sampling."""
+
     x, y, z = world_dirs[..., 0], world_dirs[..., 1], world_dirs[..., 2]
     theta = torch.atan2(x, -z)
     v = torch.acos(torch.clamp(y, -1.0, 1.0)) / torch.pi
@@ -497,15 +839,28 @@ def _get_erp_to_perspective_grid(
     return config.projection_cache.grids[key]
 
 
-def _sample_with_grid(
+def _sample_perspective_image(
     values: torch.Tensor,
     grid: torch.Tensor,
     *,
     padding_mode: str = "zeros",
     mode: str = "bilinear",
-    align_corners: bool = True,
 ) -> torch.Tensor:
-    return F.grid_sample(values, grid, mode=mode, padding_mode=padding_mode, align_corners=align_corners)
+    """Sample endpoint-defined perspective pixels."""
+
+    return F.grid_sample(values, grid, mode=mode, padding_mode=padding_mode, align_corners=True)
+
+
+def _sample_erp_image(
+    values: torch.Tensor,
+    grid: torch.Tensor,
+    *,
+    padding_mode: str = "zeros",
+    mode: str = "bilinear",
+) -> torch.Tensor:
+    """Sample pixel-centered ERP coordinates u=(x+0.5)/W, v=(y+0.5)/H."""
+
+    return F.grid_sample(values, grid, mode=mode, padding_mode=padding_mode, align_corners=False)
 
 
 def create_patch_weight_map(
@@ -701,9 +1056,13 @@ def project_views_to_erp_standard(
         dtype=view_images.dtype,
         device=view_images.device,
     )
-    projected_rgb = _sample_with_grid(view_images, grid, padding_mode="zeros")
+    projected_rgb = _sample_perspective_image(view_images, grid, padding_mode="zeros")
     weight_map = _get_patch_weight_map(patch_height, patch_width, config, device=view_images.device, dtype=view_images.dtype)
-    projected_weight = _sample_with_grid(weight_map.expand(num_views, -1, -1, -1), grid, padding_mode="zeros")
+    projected_weight = _sample_perspective_image(
+        weight_map.expand(num_views, -1, -1, -1),
+        grid,
+        padding_mode="zeros",
+    )
     projected_mask = valid_mask
     projected_weight = projected_weight * projected_mask
     return projected_rgb, projected_mask, projected_weight
@@ -755,25 +1114,94 @@ def _fuse_views_to_erp_standard(
     )
 
 
+def render_views_to_erp_standard_weighted(
+    decoded_views: Iterable[Tuple[torch.Tensor, torch.Tensor, Tuple[float, float]]],
+    erp_height: int,
+    erp_width: int,
+    config: PixelFusionConfig,
+) -> Optional[OverlapAggregationResult]:
+    """Render possibly different-sized decoded views with the standard weighted ERP projector."""
+
+    baseline_config = replace(config, warp_mode="standard", aggregation_mode="weighted_average")
+    accumulator = None
+    for view_image, view_dir, fov in decoded_views:
+        view_image = view_image.to(dtype=FUSION_DTYPE)
+        view_dir = view_dir.to(device=view_image.device, dtype=FUSION_DTYPE)
+        if accumulator is None:
+            accumulator = _empty_accumulator(
+                view_image.shape[1],
+                erp_height,
+                erp_width,
+                device=view_image.device,
+                dtype=FUSION_DTYPE,
+                mode="weighted_average",
+            )
+        projected_rgb, projected_mask, projected_weight = project_views_to_erp_standard(
+            view_image,
+            view_dir,
+            fov,
+            erp_height,
+            erp_width,
+            baseline_config,
+        )
+        _accumulate_projected(
+            accumulator,
+            projected_rgb,
+            projected_mask,
+            projected_weight,
+            baseline_config,
+        )
+
+    if accumulator is None:
+        return None
+    return _finalize_accumulator(accumulator, baseline_config)
+
+
+def spherical_pad_erp(erp: torch.Tensor, pad_y: int, pad_x: int) -> torch.Tensor:
+    """Pad an ERP with periodic longitude and pole-reflected, half-turned latitude rows."""
+
+    if erp.ndim != 4:
+        raise ValueError(f"Expected ERP [B,C,H,W], got {tuple(erp.shape)}")
+    if pad_y < 0 or pad_x < 0:
+        raise ValueError("ERP padding must be nonnegative")
+    height, width = erp.shape[-2:]
+    if pad_y > height or pad_x > width:
+        raise ValueError(f"ERP padding {(pad_y, pad_x)} exceeds ERP size {(height, width)}")
+    if pad_y and width % 2:
+        raise ValueError(f"Exact pole padding requires an even ERP width, got {width}")
+
+    padded = erp
+    if pad_y:
+        half_turn = width // 2
+        north = torch.roll(erp[..., :pad_y, :].flip(-2), shifts=half_turn, dims=-1)
+        south = torch.roll(erp[..., -pad_y:, :].flip(-2), shifts=half_turn, dims=-1)
+        padded = torch.cat([north, erp, south], dim=-2)
+    if pad_x:
+        padded = torch.cat([padded[..., -pad_x:], padded, padded[..., :pad_x]], dim=-1)
+    return padded
+
+
 def _pad_erp_for_sampling(erp: torch.Tensor, vertical_padding_mode: str) -> torch.Tensor:
     if vertical_padding_mode not in {"reflect", "replicate"}:
         raise ValueError(f"Unsupported erp_vertical_padding_mode={vertical_padding_mode!r}")
-    if erp.shape[-2] > 1:
-        erp = F.pad(erp, (0, 0, 1, 1), mode=vertical_padding_mode)
-    else:
-        erp = F.pad(erp, (0, 0, 1, 1), mode="replicate")
-    return torch.cat([erp[..., -1:], erp, erp[..., :1]], dim=-1)
+    return spherical_pad_erp(erp, pad_y=1, pad_x=1)
 
 
-def _erp_grid_to_padded_grid(grid: torch.Tensor, erp_height: int, erp_width: int) -> torch.Tensor:
-    # grid[..., 0] is longitude in [-1, 1]. Convert to pixel coordinates, wrap horizontally,
-    # then remap into a one-pixel circular pad. Vertical coordinates use a one-pixel reflect/replicate pad.
-    x = torch.remainder((grid[..., 0] + 1) * 0.5, 1.0) * max(erp_width - 1, 1)
-    y = (grid[..., 1] + 1) * 0.5 * max(erp_height - 1, 1)
-    x_padded = x + 1
-    y_padded = y + 1
-    grid_x = 2 * x_padded / max(erp_width + 1, 1) - 1
-    grid_y = 2 * y_padded / max(erp_height + 1, 1) - 1
+def _erp_grid_to_padded_grid(
+    grid: torch.Tensor,
+    erp_height: int,
+    erp_width: int,
+    *,
+    pad_y: int = 1,
+    pad_x: int = 1,
+) -> torch.Tensor:
+    # Under align_corners=False, u maps to source coordinate u*W-0.5. Adding pad_x
+    # moves that coordinate into the padded tensor, whose normalized center coordinate is
+    # 2*(u*W+pad_x)/(W+2*pad_x)-1. The latitude expression is analogous.
+    u = torch.remainder((grid[..., 0] + 1) * 0.5, 1.0)
+    v = (grid[..., 1] + 1) * 0.5
+    grid_x = 2 * (u * erp_width + pad_x) / (erp_width + 2 * pad_x) - 1
+    grid_y = 2 * (v * erp_height + pad_y) / (erp_height + 2 * pad_y) - 1
     return torch.stack([grid_x, grid_y], dim=-1)
 
 
@@ -818,14 +1246,14 @@ def extract_views_from_erp_standard(
         end = min(start + chunk_size, num_views)
         chunk_views = end - start
         sampled_chunks.append(
-            _sample_with_grid(
+            _sample_erp_image(
                 padded_erp.expand(chunk_views, -1, -1, -1),
                 padded_grid[start:end],
                 padding_mode="border",
             )
         )
         sampled_mask_chunks.append(
-            _sample_with_grid(
+            _sample_erp_image(
                 padded_mask.expand(chunk_views, -1, -1, -1),
                 padded_grid[start:end],
                 padding_mode="border",
@@ -849,22 +1277,16 @@ def _gaussian_kernel(dtype: torch.dtype, device: torch.device) -> torch.Tensor:
 
 
 def circular_pad_horizontal(tensor: torch.Tensor, pad: int, vertical_padding_mode: str = "reflect") -> torch.Tensor:
-    if pad == 0:
-        return tensor
     if vertical_padding_mode not in {"reflect", "replicate"}:
         raise ValueError(f"Unsupported erp_vertical_padding_mode={vertical_padding_mode!r}")
-    if tensor.shape[-2] > pad:
-        padded = F.pad(tensor, (0, 0, pad, pad), mode=vertical_padding_mode)
-    else:
-        padded = F.pad(tensor, (0, 0, pad, pad), mode="replicate")
-    return torch.cat([padded[..., -pad:], padded, padded[..., :pad]], dim=-1)
+    return spherical_pad_erp(tensor, pad_y=pad, pad_x=pad)
 
 
 def _pyramid_blur(tensor: torch.Tensor, vertical_padding_mode: str, circular_horizontal: bool) -> torch.Tensor:
     channels = tensor.shape[1]
     kernel = _gaussian_kernel(tensor.dtype, tensor.device).expand(channels, 1, 5, 5)
     if circular_horizontal:
-        padded = circular_pad_horizontal(tensor, 2, vertical_padding_mode=vertical_padding_mode)
+        padded = spherical_pad_erp(tensor, pad_y=2, pad_x=2)
     else:
         padding_mode = vertical_padding_mode if min(tensor.shape[-2:]) > 2 else "replicate"
         padded = F.pad(tensor, (2, 2, 2, 2), mode=padding_mode)
@@ -884,7 +1306,13 @@ def build_gaussian_pyramid(
         blurred = _pyramid_blur(current, vertical_padding_mode, circular_horizontal)
         if blurred.shape[-2] < 2 or blurred.shape[-1] < 2:
             break
-        current = F.interpolate(blurred, scale_factor=0.5, mode="bilinear", align_corners=True, recompute_scale_factor=False)
+        current = F.interpolate(
+            blurred,
+            scale_factor=0.5,
+            mode="bilinear",
+            align_corners=not circular_horizontal,
+            recompute_scale_factor=False,
+        )
         pyramid.append(current)
     return pyramid
 
@@ -904,7 +1332,12 @@ def build_laplacian_pyramid(
     )
     laplacian = []
     for idx in range(len(gaussian) - 1):
-        upsampled = F.interpolate(gaussian[idx + 1], size=gaussian[idx].shape[-2:], mode="bilinear", align_corners=True)
+        upsampled = F.interpolate(
+            gaussian[idx + 1],
+            size=gaussian[idx].shape[-2:],
+            mode="bilinear",
+            align_corners=not circular_horizontal,
+        )
         laplacian.append(gaussian[idx] - upsampled)
     laplacian.append(gaussian[-1])
     return laplacian
@@ -925,8 +1358,8 @@ def _reconstruct_masked_laplacian_pyramid(
     current = pyramid[-1]
     current_mask = masks[-1].to(current.dtype)
     for level, level_mask in zip(reversed(pyramid[:-1]), reversed(masks[:-1])):
-        upsampled_mask = F.interpolate(current_mask, size=level.shape[-2:], mode="bilinear", align_corners=True)
-        upsampled = F.interpolate(current * current_mask, size=level.shape[-2:], mode="bilinear", align_corners=True)
+        upsampled_mask = F.interpolate(current_mask, size=level.shape[-2:], mode="bilinear", align_corners=False)
+        upsampled = F.interpolate(current * current_mask, size=level.shape[-2:], mode="bilinear", align_corners=False)
         upsampled = upsampled / upsampled_mask.clamp_min(eps)
         current = level + upsampled
         current_mask = torch.maximum(level_mask.to(current.dtype), upsampled_mask)
@@ -950,19 +1383,27 @@ def _build_masked_laplacian_pyramid(
         normalized = blurred_values / blurred_mask.clamp_min(torch.finfo(tensor.dtype).eps)
         if normalized.shape[-2] < 2 or normalized.shape[-1] < 2:
             break
-        current = F.interpolate(normalized, scale_factor=0.5, mode="bilinear", align_corners=True, recompute_scale_factor=False)
+        current = F.interpolate(
+            normalized,
+            scale_factor=0.5,
+            mode="bilinear",
+            align_corners=False,
+            recompute_scale_factor=False,
+        )
         current_mask = F.interpolate(
             blurred_mask,
             size=current.shape[-2:],
             mode="bilinear",
-            align_corners=True,
+            align_corners=False,
         ).clamp(0, 1)
         gaussian.append(current)
         masks.append(current_mask)
 
     laplacian = []
     for idx in range(len(gaussian) - 1):
-        upsampled = F.interpolate(gaussian[idx + 1], size=gaussian[idx].shape[-2:], mode="bilinear", align_corners=True)
+        upsampled = F.interpolate(
+            gaussian[idx + 1], size=gaussian[idx].shape[-2:], mode="bilinear", align_corners=False
+        )
         laplacian.append(gaussian[idx] - upsampled)
     laplacian.append(gaussian[-1])
     return laplacian, masks
@@ -1058,7 +1499,12 @@ def inverse_lpw_to_erp(
     for level, coeffs in enumerate(patch_pyramid):
         level_erp_height = _level_size(erp_height, level)
         level_erp_width = _level_size(erp_width, level)
-        level_lod = F.interpolate(lod_map, size=(level_erp_height, level_erp_width), mode="bilinear", align_corners=True)
+        level_lod = F.interpolate(
+            lod_map,
+            size=(level_erp_height, level_erp_width),
+            mode="bilinear",
+            align_corners=False,
+        )
         level_confidence = _lod_level_confidence(
             level_lod,
             level,
@@ -1278,6 +1724,63 @@ def _timed(timings: Dict[str, float], key: str, fn: Callable[[], Any], *, synchr
     return value
 
 
+def _compute_projection_diagnostics(
+    view_images: torch.Tensor,
+    view_dirs: torch.Tensor,
+    fovs: Union[Tuple[float, float], Sequence[Tuple[float, float]]],
+    erp_height: int,
+    erp_width: int,
+    config: PixelFusionConfig,
+) -> Dict[str, torch.Tensor]:
+    world = _erp_world_grid(erp_height, erp_width, device=view_images.device, dtype=FUSION_DTYPE)
+    erp_grid = _world_to_erp_grid(
+        world.reshape(erp_height, erp_width, 3),
+        erp_height=erp_height,
+        erp_width=erp_width,
+    )
+    expected_x = 2 * (torch.arange(erp_width, device=view_images.device, dtype=FUSION_DTYPE) + 0.5) / erp_width - 1
+    expected_y = 2 * (torch.arange(erp_height, device=view_images.device, dtype=FUSION_DTYPE) + 0.5) / erp_height - 1
+    expected_x, expected_y = torch.meshgrid(expected_x, expected_y, indexing="xy")
+    longitude_error = torch.remainder(erp_grid[..., 0] - expected_x + 1, 2) - 1
+    center_error = torch.maximum(longitude_error.abs(), (erp_grid[..., 1] - expected_y).abs()).max()
+
+    first_fov = _normalize_fovs(fovs, view_images.shape[0])[0]
+    projected, mask, weight = project_views_to_erp_standard(
+        view_images[:1],
+        view_dirs[:1],
+        first_fov,
+        erp_height,
+        erp_width,
+        config,
+    )
+    round_trip_erp = aggregate_overlap_contributions(projected, mask, weight, "weighted_average")
+    reconstructed, valid = extract_views_from_erp_standard(
+        round_trip_erp.fused_values,
+        round_trip_erp.valid_output_mask,
+        view_images[:1],
+        view_dirs[:1],
+        first_fov,
+        config,
+    )
+    error = (reconstructed - view_images[:1]).abs()
+    valid_rgb = valid.expand_as(error)
+    valid_error = error[valid_rgb > 0]
+    if valid_error.numel():
+        mean_error = valid_error.mean()
+        max_error = valid_error.max()
+    else:
+        mean_error = error.new_tensor(float("nan"))
+        max_error = error.new_tensor(float("nan"))
+
+    return {
+        "erp_grid_min": erp_grid.amin(dim=(0, 1)).detach(),
+        "erp_grid_max": erp_grid.amax(dim=(0, 1)).detach(),
+        "erp_pixel_center_max_error": center_error.detach().reshape(1),
+        "perspective_round_trip_mean_error": mean_error.detach().reshape(1),
+        "perspective_round_trip_max_error": max_error.detach().reshape(1),
+    }
+
+
 def apply_pixel_space_fusion(
     *,
     vae: Any,
@@ -1413,6 +1916,17 @@ def apply_pixel_space_fusion(
         diagnostics.update(
             {f"timing_{key}_seconds": aggregate.fused_values.new_tensor([value]) for key, value in timings.items()}
         )
+        if config.save_diagnostics:
+            diagnostics.update(
+                _compute_projection_diagnostics(
+                    view_images,
+                    view_dirs,
+                    fovs,
+                    erp_height,
+                    erp_width,
+                    config,
+                )
+            )
         write_pixel_fusion_diagnostics(diagnostics, config)
 
     return PixelFusionResult(
@@ -1509,41 +2023,18 @@ def temporary_save_original_clean_erp_debug(
     config: PixelFusionConfig,
     pipeline_name: str,
 ) -> Optional[str]:
-    """Stitch original predicted-clean views with SphereDiff's unmodified ERP renderer."""
+    """Render original predicted-clean views with the same standard ERP projector as fusion."""
 
     if config.pixel_fusion_enabled or not config.temporary_save_original_clean_erp_per_step:
         return None
 
-    panorama = None
-    panorama_count = None
-    for view_image, view_dir, fov in decoded_views:
-        if panorama is None:
-            panorama = torch.zeros(
-                (view_image.shape[0], 3, 1, erp_height, erp_width),
-                device=view_image.device,
-                dtype=torch.float,
-            )
-            panorama_count = torch.zeros_like(panorama)
-        panorama, panorama_count = SphericalFunctions.paste_perspective_to_erp_rectangle(
-            panorama,
-            view_image.to(device=panorama.device, dtype=panorama.dtype).unsqueeze(2),
-            view_dir.to(device=panorama.device, dtype=panorama.dtype),
-            fov=fov,
-            add=True,
-            interpolate=True,
-            interpolation_mode="bilinear",
-            panorama_cnt=panorama_count,
-            return_cnt=True,
-            temperature=weighted_average_temperature,
-        )
-
-    if panorama is None or panorama_count is None:
+    _ = weighted_average_temperature  # Kept in the temporary API for existing pipeline call sites.
+    aggregate = render_views_to_erp_standard_weighted(decoded_views, erp_height, erp_width, config)
+    if aggregate is None:
         return None
-    panorama_count[panorama_count == 0] = 1
-    panorama = panorama / panorama_count
     output_dir = Path(config.temporary_original_clean_erp_dir or "/home/shig/diffpano/debug_original_clean_erp")
     return _temporary_save_rgb_erp_debug(
-        panorama[0, :, 0],
+        aggregate.fused_values,
         step_index=step_index,
         timestep=timestep,
         output_dir=output_dir,

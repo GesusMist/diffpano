@@ -22,6 +22,7 @@ bash -n \
     tests/pixel_fusion_tests.slurm \
     tests/pixel_fusion_model_smoke.slurm \
     tests/pixel_fusion_flux_fp32_smoke.slurm \
+    tests/projection_diagnostics_report.slurm \
     tests/pixel_fusion_full_erp_smoke.slurm
 python -m py_compile \
     output_metadata.py \
