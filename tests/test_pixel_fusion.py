@@ -1,5 +1,6 @@
 import math
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import torch
@@ -22,6 +23,8 @@ from pipelines_ours.pixel_fusion import (
     reinject_fused_latents,
     build_laplacian_pyramid,
     should_apply_pixel_fusion,
+    temporary_save_fused_clean_erp_debug,
+    temporary_save_original_clean_erp_debug,
 )
 from pipelines_ours.spherical_functions import SphericalFunctions
 
@@ -96,6 +99,100 @@ class PixelFusionTests(unittest.TestCase):
         self.assertFalse(torch.isnan(extracted).any())
         self.assertTrue(torch.allclose(extracted, view, atol=1e-4))
         self.assertGreater(valid.sum().item(), 0)
+
+    def test_one_textured_patch_round_trip_preserves_spatial_content(self):
+        config = PixelFusionConfig(weight_mode="uniform", projection_chunk_size=1)
+        y = torch.linspace(-1, 1, 16)
+        x = torch.linspace(-1, 1, 16)
+        yy, xx = torch.meshgrid(y, x, indexing="ij")
+        view = torch.stack([xx, yy, torch.sin(xx * math.pi * 3) * torch.cos(yy * math.pi * 2)], dim=0).unsqueeze(0)
+        view_dir = torch.tensor([[0.35, -0.2, 0.9151503]])
+        projected, mask, weight = project_views_to_erp_standard(view, view_dir, [(80, 80)], 128, 256, config)
+        aggregate = aggregate_overlap_contributions(projected, mask, weight, "weighted_average")
+        extracted, valid = extract_views_from_erp_standard(
+            aggregate.fused_values,
+            aggregate.valid_output_mask,
+            view,
+            view_dir,
+            [(80, 80)],
+            config,
+        )
+        valid_error = ((extracted - view).abs() * valid).sum() / valid.sum().clamp_min(1)
+        self.assertLess(valid_error.item(), 0.08)
+
+    def test_bfloat16_inputs_use_float32_projection_and_fusion(self):
+        config = PixelFusionConfig(weight_mode="uniform")
+        view = torch.linspace(-1, 1, 3 * 8 * 8, dtype=torch.bfloat16).reshape(1, 3, 8, 8)
+        view_dir = torch.tensor([[0.35, -0.2, 0.9151503]], dtype=torch.bfloat16)
+        projected, mask, weight = project_views_to_erp_standard(
+            view,
+            view_dir,
+            [(80, 80)],
+            32,
+            64,
+            config,
+        )
+        aggregate = aggregate_overlap_contributions(projected, mask, weight, "weighted_average")
+        extracted, valid = extract_views_from_erp_standard(
+            aggregate.fused_values,
+            aggregate.valid_output_mask,
+            view,
+            view_dir,
+            [(80, 80)],
+            config,
+        )
+        for tensor in (projected, mask, weight, aggregate.fused_values, extracted, valid):
+            self.assertEqual(tensor.dtype, torch.float32)
+
+    def test_temporary_fused_erp_debug_export_writes_png(self):
+        output_dir = Path("/home/shig/diffpano/test_outputs/temporary_fused_erp_export_test")
+        config = PixelFusionConfig(
+            temporary_save_fused_erp_per_step=True,
+            temporary_fused_erp_dir=str(output_dir),
+        )
+        filename = temporary_save_fused_clean_erp_debug(
+            torch.zeros(3, 8, 16),
+            step_index=2,
+            timestep=torch.tensor(345),
+            config=config,
+            pipeline_name="test",
+        )
+        try:
+            self.assertIsNotNone(filename)
+            self.assertTrue(Path(filename).is_file())
+            self.assertGreater(Path(filename).stat().st_size, 0)
+        finally:
+            if filename is not None:
+                Path(filename).unlink(missing_ok=True)
+            if output_dir.exists() and not any(output_dir.iterdir()):
+                output_dir.rmdir()
+
+    def test_temporary_original_clean_erp_debug_export_writes_png(self):
+        output_dir = Path("/home/shig/diffpano/test_outputs/temporary_original_clean_erp_export_test")
+        config = PixelFusionConfig(
+            pixel_fusion_enabled=False,
+            temporary_save_original_clean_erp_per_step=True,
+            temporary_original_clean_erp_dir=str(output_dir),
+        )
+        filename = temporary_save_original_clean_erp_debug(
+            [(torch.zeros(1, 3, 8, 8), torch.tensor([[0.0, 0.0, 1.0]]), (80, 80))],
+            step_index=3,
+            timestep=torch.tensor(250),
+            erp_height=8,
+            erp_width=16,
+            weighted_average_temperature=0.1,
+            config=config,
+            pipeline_name="test",
+        )
+        try:
+            self.assertIsNotNone(filename)
+            self.assertTrue(Path(filename).is_file())
+            self.assertGreater(Path(filename).stat().st_size, 0)
+        finally:
+            if filename is not None:
+                Path(filename).unlink(missing_ok=True)
+            if output_dir.exists() and not any(output_dir.iterdir()):
+                output_dir.rmdir()
 
     def test_identical_overlapping_patches_remain_unchanged(self):
         values = torch.ones(4, 3, 2, 2) * 0.7
@@ -248,7 +345,8 @@ class PixelFusionTests(unittest.TestCase):
         zero_config = PixelFusionConfig(reinjection_strength=0.0)
         one_config = PixelFusionConfig(reinjection_strength=1.0)
         self.assertTrue(torch.allclose(reinject_fused_latents(clean, fused, prev, model_output, sigma_next, zero_config), prev))
-        self.assertTrue(torch.allclose(reinject_fused_latents(clean, fused, prev, model_output, sigma_next, one_config), fused + sigma_next * model_output))
+        expected = prev + (1 - sigma_next) * (fused - clean)
+        self.assertTrue(torch.allclose(reinject_fused_latents(clean, fused, prev, model_output, sigma_next, one_config), expected))
 
     def test_dpm_flow_prediction_converts_to_clean_sample(self):
         scheduler = FakeDPMSolverScheduler()
@@ -294,7 +392,7 @@ class PixelFusionTests(unittest.TestCase):
     def test_apply_pixel_space_fusion_smoke_with_fake_vae(self):
         config = PixelFusionConfig(pixel_fusion_enabled=True, weight_mode="uniform")
         config.projection_chunk_size = 1
-        clean = torch.zeros(2, 4, 4, 4)
+        clean = torch.zeros(2, 4, 4, 4, dtype=torch.bfloat16)
         current = torch.ones_like(clean)
         model_output = torch.ones_like(clean)
         prev = clean + 0.5 * model_output
@@ -314,6 +412,11 @@ class PixelFusionTests(unittest.TestCase):
             config=config,
         )
         self.assertEqual(result.fused_prev_latents.shape, clean.shape)
+        self.assertEqual(result.fused_prev_latents.dtype, torch.bfloat16)
+        self.assertEqual(result.fused_clean_latents.dtype, torch.float32)
+        self.assertEqual(result.fused_views_rgb.dtype, torch.float32)
+        self.assertEqual(result.fused_erp.dtype, torch.float32)
+        self.assertEqual(result.accumulated_weight.dtype, torch.float32)
         self.assertFalse(torch.isnan(result.fused_prev_latents).any())
 
 

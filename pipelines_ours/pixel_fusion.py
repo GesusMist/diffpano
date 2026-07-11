@@ -12,6 +12,7 @@ from .spherical_functions import SphericalFunctions
 
 
 TensorAdapter = Callable[[torch.Tensor], torch.Tensor]
+FUSION_DTYPE = torch.float32
 
 
 @dataclass
@@ -61,6 +62,12 @@ class PixelFusionConfig:
 
     projection_chunk_size: int = 1
     vae_sample_posterior: bool = False
+
+    # TEMPORARY DEBUG EXPORT: remove these fields with the temporary debug helpers below.
+    temporary_save_fused_erp_per_step: bool = False
+    temporary_fused_erp_dir: Optional[str] = None
+    temporary_save_original_clean_erp_per_step: bool = False
+    temporary_original_clean_erp_dir: Optional[str] = None
     projection_cache: ProjectionCache = field(default_factory=ProjectionCache)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -150,6 +157,8 @@ def _coerce_config_value(key: str, value: Any) -> Any:
         "save_diagnostics",
         "measure_performance",
         "vae_sample_posterior",
+        "temporary_save_fused_erp_per_step",
+        "temporary_save_original_clean_erp_per_step",
     }
     int_fields = {
         "pixel_fusion_every_n_steps",
@@ -331,6 +340,7 @@ def _normalize_fovs(fovs: Union[Tuple[float, float], Sequence[Tuple[float, float
 
 
 def _erp_world_grid(height: int, width: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    dtype = FUSION_DTYPE
     u_range = torch.linspace(0, 1, width * 2 + 1, device=device, dtype=dtype)[1::2]
     v_range = torch.linspace(0, 1, height * 2 + 1, device=device, dtype=dtype)[1::2]
     u, v = torch.meshgrid(u_range, v_range, indexing="xy")
@@ -347,6 +357,8 @@ def _world_to_perspective_grid(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Map ERP world rays to perspective grid coordinates using SphereDiff's camera convention."""
 
+    world_xyz = world_xyz.to(dtype=FUSION_DTYPE)
+    view_dirs = view_dirs.to(device=world_xyz.device, dtype=FUSION_DTYPE)
     device, dtype = world_xyz.device, world_xyz.dtype
     num_views = view_dirs.shape[0]
     xyz = world_xyz.t().unsqueeze(0).expand(num_views, -1, -1)
@@ -368,13 +380,15 @@ def _world_to_perspective_grid(
         torch.stack([zeros, zeros, ones], dim=-1),
     ]
     intrinsics = torch.stack(k_rows, dim=1)
+    # SphereDiff's ray einsum treats rays as row vectors (world = camera @ R),
+    # so column-vector world rays map back to camera coordinates with R @ world.
     projection = torch.einsum("bij,bjk->bik", intrinsics, rotation_matrix)
 
     projected = torch.einsum("bij,bjn->bin", projection, xyz)
     eps = torch.finfo(dtype).eps if dtype.is_floating_point else 1e-6
     perspective_u = projected[:, 0] / (projected[:, 2] + eps)
     perspective_v = projected[:, 1] / (projected[:, 2] + eps)
-    grid_x = -2 * perspective_u
+    grid_x = 2 * perspective_u
     grid_y = 2 * perspective_v
     grid = torch.stack([grid_x, grid_y], dim=-1).reshape(num_views, erp_height, erp_width, 2)
 
@@ -417,6 +431,7 @@ def _get_perspective_to_erp_grid(
     device: torch.device,
     prefix: str = "perspective_to_erp",
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    dtype = FUSION_DTYPE
     key = _perspective_to_erp_cache_key(view_dirs, fovs, patch_size, erp_size, dtype, device, prefix)
     if key not in config.projection_cache.grids:
         world = _erp_world_grid(erp_size[0], erp_size[1], device=device, dtype=dtype)
@@ -441,6 +456,7 @@ def _perspective_pixel_world_dirs(
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
+    dtype = FUSION_DTYPE
     height, width = output_size
     num_views = view_dirs.shape[0]
     fov_tensor = torch.tensor(fovs, device=device, dtype=dtype)
@@ -471,6 +487,7 @@ def _get_erp_to_perspective_grid(
     device: torch.device,
     prefix: str = "erp_to_perspective",
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    dtype = FUSION_DTYPE
     key = _perspective_to_erp_cache_key(view_dirs, fovs, view_size, erp_size, dtype, device, prefix)
     if key not in config.projection_cache.grids:
         world_dirs = _perspective_pixel_world_dirs(view_dirs, fovs, view_size, device=device, dtype=dtype)
@@ -500,6 +517,7 @@ def create_patch_weight_map(
     dtype: torch.dtype,
     eps: float = 1e-6,
 ) -> torch.Tensor:
+    dtype = FUSION_DTYPE
     y = torch.linspace(-1, 1, height, device=device, dtype=dtype)
     x = torch.linspace(-1, 1, width, device=device, dtype=dtype)
     yy, xx = torch.meshgrid(y, x, indexing="ij")
@@ -545,6 +563,9 @@ def detail_preserving_average(
     eps: float,
     dim: int = 0,
 ) -> torch.Tensor:
+    values = values.to(dtype=FUSION_DTYPE)
+    masks = masks.to(device=values.device, dtype=FUSION_DTYPE)
+    weights = weights.to(device=values.device, dtype=FUSION_DTYPE)
     effective_weight = masks * weights
     ordinary_den = effective_weight.sum(dim=dim).clamp_min(eps)
     ordinary = (values * effective_weight).sum(dim=dim) / ordinary_den
@@ -565,6 +586,10 @@ def aggregate_overlap_contributions(
     dpa_power: float = 1.0,
     dpa_eps: float = 1e-6,
 ) -> OverlapAggregationResult:
+    values = values.to(dtype=FUSION_DTYPE)
+    masks = masks.to(device=values.device, dtype=FUSION_DTYPE)
+    if weights is not None:
+        weights = weights.to(device=values.device, dtype=FUSION_DTYPE)
     if weights is None or mode == "average":
         weights = torch.ones_like(masks)
     effective_weight = masks * weights
@@ -663,6 +688,8 @@ def project_views_to_erp_standard(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Inverse-warp RGB perspective patches [views, 3, H, W] to ERP [views, 3, H_erp, W_erp]."""
 
+    view_images = view_images.to(dtype=FUSION_DTYPE)
+    view_dirs = view_dirs.to(device=view_images.device, dtype=FUSION_DTYPE)
     num_views, _, patch_height, patch_width = view_images.shape
     fovs_list = _normalize_fovs(fovs, num_views)
     grid, valid_mask = _get_perspective_to_erp_grid(
@@ -692,6 +719,10 @@ def _fuse_views_to_erp_standard(
     projected_confidence: Optional[torch.Tensor] = None,
     timings: Optional[Dict[str, float]] = None,
 ) -> OverlapAggregationResult:
+    view_images = view_images.to(dtype=FUSION_DTYPE)
+    view_dirs = view_dirs.to(device=view_images.device, dtype=FUSION_DTYPE)
+    if projected_confidence is not None:
+        projected_confidence = projected_confidence.to(device=view_images.device, dtype=FUSION_DTYPE)
     channels = view_images.shape[1]
     accumulator = _empty_accumulator(channels, erp_height, erp_width, device=view_images.device, dtype=view_images.dtype, mode=config.aggregation_mode)
     fovs_list = _normalize_fovs(fovs, view_images.shape[0])
@@ -756,6 +787,10 @@ def extract_views_from_erp_standard(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Forward-warp by sampling ERP into the original perspective patch layout, with invalid fallback."""
 
+    erp_image = erp_image.to(dtype=FUSION_DTYPE)
+    erp_valid_mask = erp_valid_mask.to(device=erp_image.device, dtype=FUSION_DTYPE)
+    original_view_images = original_view_images.to(device=erp_image.device, dtype=FUSION_DTYPE)
+    view_dirs = view_dirs.to(device=erp_image.device, dtype=FUSION_DTYPE)
     num_views, _, patch_height, patch_width = original_view_images.shape
     fovs_list = _normalize_fovs(fovs, num_views)
     grid, _ = _get_erp_to_perspective_grid(
@@ -1006,6 +1041,8 @@ def inverse_lpw_to_erp(
 ) -> OverlapAggregationResult:
     """Project each patch Laplacian level to a matching ERP pyramid level and fuse coefficients jointly."""
 
+    view_images = view_images.to(dtype=FUSION_DTYPE)
+    view_dirs = view_dirs.to(device=view_images.device, dtype=FUSION_DTYPE)
     patch_pyramid = build_laplacian_pyramid(view_images, config.lpw_num_levels, config.erp_vertical_padding_mode)
     fovs_list = _normalize_fovs(fovs, view_images.shape[0])
     lod_map = _get_projection_lod_map(
@@ -1070,6 +1107,10 @@ def forward_lpw_to_views(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Sample an ERP Laplacian pyramid back to perspective-patch pyramids, then reconstruct each view."""
 
+    erp_image = erp_image.to(dtype=FUSION_DTYPE)
+    erp_valid_mask = erp_valid_mask.to(device=erp_image.device, dtype=FUSION_DTYPE)
+    original_view_images = original_view_images.to(device=erp_image.device, dtype=FUSION_DTYPE)
+    view_dirs = view_dirs.to(device=erp_image.device, dtype=FUSION_DTYPE)
     erp_pyramid, erp_mask_pyramid = _build_masked_laplacian_pyramid(
         erp_image.unsqueeze(0),
         erp_valid_mask.unsqueeze(0),
@@ -1148,7 +1189,9 @@ def predict_clean_latents(
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Convert the configured scheduler prediction into predicted-clean view latents x0."""
 
-    sigma, sigma_next = _scheduler_sigma_pair(scheduler, timestep, device=sample.device, dtype=sample.dtype)
+    sample = sample.to(dtype=FUSION_DTYPE)
+    model_output = model_output.to(device=sample.device, dtype=FUSION_DTYPE)
+    sigma, sigma_next = _scheduler_sigma_pair(scheduler, timestep, device=sample.device, dtype=FUSION_DTYPE)
     while sigma.ndim < sample.ndim:
         sigma = sigma.unsqueeze(-1)
         sigma_next = sigma_next.unsqueeze(-1)
@@ -1181,23 +1224,42 @@ def reinject_fused_latents(
     config: PixelFusionConfig,
     *,
     valid_mask: Optional[torch.Tensor] = None,
+    next_clean_weight: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
+    output_dtype = original_prev_latents.dtype
+    original_clean_latents = original_clean_latents.to(dtype=FUSION_DTYPE)
+    fused_clean_latents = fused_clean_latents.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
+    original_prev_latents = original_prev_latents.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
+    model_output = model_output.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
+    sigma_next = sigma_next.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
+    if next_clean_weight is not None:
+        next_clean_weight = next_clean_weight.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
     strength = float(config.reinjection_strength)
     clean_delta = fused_clean_latents - original_clean_latents
     if config.reinjection_mode == "noise_consistent":
-        blended_clean = original_clean_latents + strength * clean_delta
-        return blended_clean + sigma_next * model_output
+        if next_clean_weight is None:
+            next_clean_weight = 1 - sigma_next
+        # Preserve the scheduler's actual update and alter only its next-step clean-sample component.
+        # For flow matching, x_next = alpha_next * x0 + sigma_next * noise, so injecting the full
+        # x0 delta at early noisy steps would over-correct by roughly 1 / alpha_next.
+        result = original_prev_latents + strength * next_clean_weight * clean_delta
+        return result.to(dtype=output_dtype)
     if config.reinjection_mode == "replace":
-        return original_prev_latents * (1 - strength) + fused_clean_latents * strength
+        result = original_prev_latents * (1 - strength) + fused_clean_latents * strength
+        return result.to(dtype=output_dtype)
     if config.reinjection_mode == "weighted_replace":
         if valid_mask is None:
             valid_mask = torch.ones_like(fused_clean_latents[:, :1])
+        else:
+            valid_mask = valid_mask.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
         while valid_mask.ndim < fused_clean_latents.ndim:
             valid_mask = valid_mask.unsqueeze(-1)
         alpha = (valid_mask * strength).to(fused_clean_latents.dtype)
-        return original_prev_latents * (1 - alpha) + fused_clean_latents * alpha
+        result = original_prev_latents * (1 - alpha) + fused_clean_latents * alpha
+        return result.to(dtype=output_dtype)
     if config.reinjection_mode == "residual":
-        return original_prev_latents + strength * clean_delta
+        result = original_prev_latents + strength * clean_delta
+        return result.to(dtype=output_dtype)
     raise ValueError(f"Unsupported reinjection_mode={config.reinjection_mode!r}")
 
 
@@ -1242,7 +1304,8 @@ def apply_pixel_space_fusion(
 
     config.validate()
     timings: Dict[str, float] = {}
-    sigma_next = current_latents.new_zeros(())
+    sigma_next = torch.zeros((), device=current_latents.device, dtype=FUSION_DTYPE)
+    next_clean_weight = torch.ones((), device=current_latents.device, dtype=FUSION_DTYPE)
     if config.reinjection_mode == "noise_consistent":
         prediction_type = _scheduler_prediction_type(scheduler)
         if prediction_type != "flow_prediction":
@@ -1250,15 +1313,20 @@ def apply_pixel_space_fusion(
                 "noise_consistent reinjection currently requires flow_prediction so the scheduler state can be "
                 f"preserved exactly; got prediction_type={prediction_type!r}"
             )
-        sigma_next = _scheduler_sigma_pair(scheduler, timestep, device=current_latents.device, dtype=current_latents.dtype)[1]
+        sigma_next = _scheduler_sigma_pair(scheduler, timestep, device=current_latents.device, dtype=FUSION_DTYPE)[1]
+        if hasattr(scheduler, "_sigma_to_alpha_sigma_t"):
+            next_clean_weight = scheduler._sigma_to_alpha_sigma_t(sigma_next)[0]
+        else:
+            next_clean_weight = 1 - sigma_next
         while sigma_next.ndim < current_latents.ndim:
             sigma_next = sigma_next.unsqueeze(-1)
+            next_clean_weight = next_clean_weight.unsqueeze(-1)
 
     vae_clean_latents = _adapt_latents(clean_latents, latent_to_vae_latents)
     view_images = _timed(
         timings,
         "vae_decode",
-        lambda: decode_view_latents(vae, vae_clean_latents, config),
+        lambda: decode_view_latents(vae, vae_clean_latents, config).to(dtype=FUSION_DTYPE),
         synchronize=config.measure_performance,
     )
 
@@ -1303,7 +1371,7 @@ def apply_pixel_space_fusion(
         lambda: encode_view_images(vae, fused_views, config, generator=generator),
         synchronize=config.measure_performance,
     )
-    fused_clean_latents = _adapt_latents(fused_vae_latents, vae_latents_to_latent)
+    fused_clean_latents_fp32 = _adapt_latents(fused_vae_latents, vae_latents_to_latent).to(dtype=FUSION_DTYPE)
     latent_valid_mask = F.interpolate(
         view_valid_mask,
         size=fused_vae_latents.shape[-2:],
@@ -1316,17 +1384,20 @@ def apply_pixel_space_fusion(
         "reinjection",
         lambda: reinject_fused_latents(
             clean_latents,
-            fused_clean_latents,
+            fused_clean_latents_fp32,
             prev_latents,
             model_output,
             sigma_next,
             config,
             valid_mask=latent_valid_mask,
+            next_clean_weight=next_clean_weight,
         ),
         synchronize=config.measure_performance,
     )
     for key in ("projection_or_inverse_lpw", "overlap_fusion", "erp_reconstruction", "time_travel"):
         timings.setdefault(key, 0.0)
+
+    fused_clean_latents = fused_clean_latents_fp32
 
     diagnostics: Dict[str, torch.Tensor] = {}
     if config.save_diagnostics or config.save_masks or config.save_intermediates:
@@ -1337,7 +1408,7 @@ def apply_pixel_space_fusion(
             "accumulated_weight": aggregate.accumulated_weight.detach(),
             "overlap_mask": (aggregate.contributor_count > 1).to(aggregate.fused_values.dtype).detach(),
             "sampled_camera_directions": view_dirs.detach(),
-            "latent_delta_norm": (fused_clean_latents - clean_latents).norm().detach()[None],
+            "latent_delta_norm": (fused_clean_latents_fp32 - clean_latents.float()).norm().detach()[None],
         }
         diagnostics.update(
             {f"timing_{key}_seconds": aggregate.fused_values.new_tensor([value]) for key, value in timings.items()}
@@ -1372,3 +1443,111 @@ def write_pixel_fusion_diagnostics(diagnostics: Dict[str, torch.Tensor], config:
         payload[key] = tensor.detach().cpu()
     if payload:
         torch.save(payload, path / f"pixel_fusion_{timestamp}_{os.getpid()}.pt")
+
+
+# TEMPORARY DEBUG EXPORT START
+# This intentionally lives in one removable block. It exports predicted-clean RGB ERPs without
+# enabling the much larger tensor diagnostics payload.
+def _temporary_save_rgb_erp_debug(
+    erp: torch.Tensor,
+    *,
+    step_index: int,
+    timestep: torch.Tensor,
+    output_dir: Path,
+    filename_prefix: str,
+    description: str,
+) -> str:
+    from PIL import Image
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    job_id = os.environ.get("SLURM_JOB_ID", "interactive")
+    timestep_value = float(timestep.detach().float().flatten()[0].cpu())
+    timestep_label = f"{timestep_value:g}".replace(".", "p")
+    filename = output_dir / (
+        f"{filename_prefix}_job-{job_id}_step-{step_index:03d}_timestep-{timestep_label}.png"
+    )
+
+    image = erp.detach().float().cpu().clamp(-1, 1)
+    if image.ndim != 3 or image.shape[0] < 3:
+        raise ValueError(f"Expected RGB ERP [C,H,W], got {tuple(image.shape)}")
+    image = ((image[:3] + 1) * 127.5).round().to(torch.uint8).permute(1, 2, 0).contiguous()
+    Image.fromarray(image.numpy(), mode="RGB").save(filename)
+    print(f"Saved temporary {description} to {filename}")
+    return str(filename)
+
+
+def temporary_save_fused_clean_erp_debug(
+    fused_erp: torch.Tensor,
+    *,
+    step_index: int,
+    timestep: torch.Tensor,
+    config: PixelFusionConfig,
+    pipeline_name: str,
+) -> Optional[str]:
+    if not config.temporary_save_fused_erp_per_step:
+        return None
+
+    output_dir = Path(config.temporary_fused_erp_dir or "/home/shig/diffpano/debug_fused_clean_erp")
+    return _temporary_save_rgb_erp_debug(
+        fused_erp,
+        step_index=step_index,
+        timestep=timestep,
+        output_dir=output_dir,
+        filename_prefix=pipeline_name,
+        description="fused clean ERP",
+    )
+
+
+def temporary_save_original_clean_erp_debug(
+    decoded_views: Iterable[Tuple[torch.Tensor, torch.Tensor, Tuple[float, float]]],
+    *,
+    step_index: int,
+    timestep: torch.Tensor,
+    erp_height: int,
+    erp_width: int,
+    weighted_average_temperature: float,
+    config: PixelFusionConfig,
+    pipeline_name: str,
+) -> Optional[str]:
+    """Stitch original predicted-clean views with SphereDiff's unmodified ERP renderer."""
+
+    if config.pixel_fusion_enabled or not config.temporary_save_original_clean_erp_per_step:
+        return None
+
+    panorama = None
+    panorama_count = None
+    for view_image, view_dir, fov in decoded_views:
+        if panorama is None:
+            panorama = torch.zeros(
+                (view_image.shape[0], 3, 1, erp_height, erp_width),
+                device=view_image.device,
+                dtype=torch.float,
+            )
+            panorama_count = torch.zeros_like(panorama)
+        panorama, panorama_count = SphericalFunctions.paste_perspective_to_erp_rectangle(
+            panorama,
+            view_image.to(device=panorama.device, dtype=panorama.dtype).unsqueeze(2),
+            view_dir.to(device=panorama.device, dtype=panorama.dtype),
+            fov=fov,
+            add=True,
+            interpolate=True,
+            interpolation_mode="bilinear",
+            panorama_cnt=panorama_count,
+            return_cnt=True,
+            temperature=weighted_average_temperature,
+        )
+
+    if panorama is None or panorama_count is None:
+        return None
+    panorama_count[panorama_count == 0] = 1
+    panorama = panorama / panorama_count
+    output_dir = Path(config.temporary_original_clean_erp_dir or "/home/shig/diffpano/debug_original_clean_erp")
+    return _temporary_save_rgb_erp_debug(
+        panorama[0, :, 0],
+        step_index=step_index,
+        timestep=timestep,
+        output_dir=output_dir,
+        filename_prefix=f"{pipeline_name}_original_clean",
+        description="original clean ERP",
+    )
+# TEMPORARY DEBUG EXPORT END

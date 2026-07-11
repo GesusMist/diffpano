@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=01:00:00
 #SBATCH --output=/home/shig/diffpano/logs/%x.%j.out
 #SBATCH --error=/home/shig/diffpano/logs/%x.%j.err

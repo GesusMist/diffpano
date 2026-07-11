@@ -2,6 +2,8 @@
 /outputs
 /logs/
 /test_outputs/
+/debug_fused_clean_erp/
+/debug_original_clean_erp/
 /.tmp/
 /.vscode
 

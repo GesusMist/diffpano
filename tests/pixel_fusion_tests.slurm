@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
-#SBATCH --time=00:10:00
+#SBATCH --time=00:20:00
 #SBATCH --output=/home/shig/diffpano/logs/pf-unit.%j.out
 #SBATCH --error=/home/shig/diffpano/logs/pf-unit.%j.err
 
@@ -21,6 +21,7 @@ bash -n \
     a.slurm \
     tests/pixel_fusion_tests.slurm \
     tests/pixel_fusion_model_smoke.slurm \
+    tests/pixel_fusion_flux_fp32_smoke.slurm \
     tests/pixel_fusion_full_erp_smoke.slurm
 python -m py_compile \
     output_metadata.py \

@@ -16,10 +16,13 @@ from einops import rearrange
 from .pixel_fusion import (
     apply_pixel_space_fusion,
     build_pixel_fusion_config,
+    decode_view_latents,
     predict_clean_latents,
     run_time_travel,
     should_apply_pixel_fusion,
     should_apply_time_travel,
+    temporary_save_fused_clean_erp_debug,
+    temporary_save_original_clean_erp_debug,
 )
 from .spherical_functions import SphericalFunctions
 
@@ -256,8 +259,8 @@ class SphericalSanaPipeline(SanaPipeline):
                 thetas.append(math.radians(theta))
                 phis.append(math.radians(phis_raw[i]))
                 prompt_fovs.append((80, 80))
-        thetas = torch.tensor(thetas, device=device, dtype=self.dtype)
-        phis = torch.tensor(phis, device=device, dtype=self.dtype)
+        thetas = torch.tensor(thetas, device=device, dtype=torch.float32)
+        phis = torch.tensor(phis, device=device, dtype=torch.float32)
         prompt_dir = SphericalFunctions.spherical_to_cartesian(thetas, phis)
 
         if negative_prompt_txt_path != '' and negative_prompt_txt_path is not None:
@@ -337,14 +340,14 @@ class SphericalSanaPipeline(SanaPipeline):
         latent_channels = self.transformer.config.in_channels
 
         # SphereDiff: sample points on sphere
-        spherical_points = SphericalFunctions.fibonacci_sphere(N=n_spherical_points).to(device, dtype=self.dtype)  # (N, 3)
+        spherical_points = SphericalFunctions.fibonacci_sphere(N=n_spherical_points).to(device, dtype=torch.float32)  # (N, 3)
         num_points_on_sphere = spherical_points.shape[0]
         shape = (batch_size, latent_channels, 1, num_points_on_sphere)
         spherical_points = spherical_points.repeat(batch_size, 1, 1, 1)
 
         # SphereDiff: view directions
         view_dir = SphericalFunctions.horizontal_and_vertical_view_dirs_v3_fov_xy_dense_equator()
-        view_dir = view_dir.to(device, dtype=self.dtype)  # (N, 3)
+        view_dir = view_dir.to(device, dtype=torch.float32)  # (N, 3)
         num_inference_steps_view_dir = len(view_dir)
         multi_prompts_indices_main, fovs_main = SphericalFunctions.get_prompt_indices(view_dir, prompt_dir, prompt_fovs)
 
@@ -393,6 +396,12 @@ class SphericalSanaPipeline(SanaPipeline):
             if should_apply_time_travel(i, len(timesteps), pixel_fusion_cfg):
                 run_time_travel()
             fusion_records = []
+            # TEMPORARY DEBUG EXPORT: baseline predicted-clean views; remove with the marked helper.
+            original_clean_debug_records = []
+            save_original_clean_debug = (
+                pixel_fusion_cfg.temporary_save_original_clean_erp_per_step
+                and not pixel_fusion_cfg.pixel_fusion_enabled
+            )
             step_patch_point_counts = []
             step_fusion_timings = None
 
@@ -454,7 +463,7 @@ class SphericalSanaPipeline(SanaPipeline):
                 # compute previous image: x_t -> x_t-1
                 self.scheduler._step_index = None  # ! important
                 latents_before_step = _latents
-                if apply_fusion:
+                if apply_fusion or save_original_clean_debug:
                     # Pixel fusion operates on predicted-clean view latents x0 with shape [B, C, H_lat, W_lat].
                     clean_latents, _, _ = predict_clean_latents(self.scheduler, noise_pred, t, latents_before_step)
                 _latents = self.scheduler.step(noise_pred, t, latents_before_step, return_dict=False)[0]
@@ -473,6 +482,11 @@ class SphericalSanaPipeline(SanaPipeline):
                         }
                     )
                 else:
+                    # TEMPORARY DEBUG EXPORT: observe x0 without changing the original write-back path.
+                    if save_original_clean_debug:
+                        original_clean_debug_records.append(
+                            {"clean_latents": clean_latents, "view_dir": cur_view_dir, "fov": _fov}
+                        )
                     _latents = rearrange(_latents, 'b c h w -> b c 1 (h w)')
                     for idx_b in range(batch_size):
                         latents_next[idx_b, ..., indices_new] += _latents[idx_b] * weight
@@ -516,6 +530,14 @@ class SphericalSanaPipeline(SanaPipeline):
                     config=pixel_fusion_cfg,
                     generator=generator if isinstance(generator, torch.Generator) else None,
                 )
+                # TEMPORARY DEBUG EXPORT: remove with the marked helper in pixel_fusion.py.
+                temporary_save_fused_clean_erp_debug(
+                    fusion_result.fused_erp,
+                    step_index=i,
+                    timestep=t,
+                    config=pixel_fusion_cfg,
+                    pipeline_name="sana",
+                )
                 if pixel_fusion_cfg.measure_performance:
                     print(f"pixel_fusion_timings_seconds={fusion_result.timings}")
                 step_fusion_timings = dict(fusion_result.timings)
@@ -538,6 +560,27 @@ class SphericalSanaPipeline(SanaPipeline):
             self.sphere_diff_run_metadata["pixel_fusion_timings_seconds_by_step"].append(step_fusion_timings)
             latents_next_cnt[latents_next_cnt == 0] = 1
             latents = latents_next / latents_next_cnt
+
+            # TEMPORARY DEBUG EXPORT START: remove this block with temporary_save_original_clean_erp_debug().
+            if save_original_clean_debug:
+                temporary_save_original_clean_erp_debug(
+                    (
+                        (
+                            decode_view_latents(self.vae, record["clean_latents"], pixel_fusion_cfg),
+                            record["view_dir"],
+                            record["fov"],
+                        )
+                        for record in original_clean_debug_records
+                    ),
+                    step_index=i,
+                    timestep=t,
+                    erp_height=erp_height,
+                    erp_width=erp_width,
+                    weighted_average_temperature=weighted_average_temperature,
+                    config=pixel_fusion_cfg,
+                    pipeline_name="sana",
+                )
+            # TEMPORARY DEBUG EXPORT END
 
         progress_bar.close()
 
