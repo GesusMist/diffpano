@@ -14,6 +14,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 
 from .pixel_fusion import (
+    apply_configured_random_seed,
     apply_pixel_space_fusion,
     build_pixel_fusion_config,
     decode_view_latents,
@@ -359,8 +360,9 @@ class SphericalSanaPipeline(SanaPipeline):
 
         print(f'num_points_on_sphere = {num_points_on_sphere}, num_inference_steps_view_dir = {num_inference_steps_view_dir}')
 
-        latents = randn_tensor(shape, generator, device, dtype=self.dtype)
         pixel_fusion_cfg = build_pixel_fusion_config(pixel_fusion_config, pixel_fusion_config_path)
+        generator = apply_configured_random_seed(generator, pixel_fusion_cfg, device=device)
+        latents = randn_tensor(shape, generator, device, dtype=self.dtype)
         self.sphere_diff_run_metadata = {
             "pixel_fusion_config": pixel_fusion_cfg.to_dict(),
             "n_spherical_points": int(num_points_on_sphere),

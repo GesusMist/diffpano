@@ -1,0 +1,16 @@
+# EXPERIMENTAL NO-WARP CONTROL: identical to planar_patch_test.yaml except reinjection_strength is zero.
+random_seed: 1234 # null preserves caller RNG; otherwise use an integer from 0 through 2^63-1 for deterministic generation.
+patch_latent_height: 20 # Positive integer <= latent-grid height; 20 matches the usual SANA spherical patch height.
+patch_latent_width: 20 # Positive integer <= latent-grid width; 20 matches the usual SANA spherical patch width.
+patch_stride_height: 10 # Integer from 1 through patch_latent_height; 10 gives 50 percent vertical overlap.
+patch_stride_width: 10 # Integer from 1 through patch_latent_width; 10 gives 50 percent horizontal overlap.
+aggregation_mode: detail_preserving_average # Options: average, weighted_average, or detail_preserving_average for direct 2D RGB overlap blending.
+weight_mode: distance_to_boundary # Options: uniform, cosine, gaussian, or distance_to_boundary; ignored when aggregation_mode is average.
+dpa_alpha: 1.0 # Float, normally 0.0 to 1.0; 0 reduces DPA to ordinary weighted averaging.
+dpa_power: 1.0 # Nonnegative float controlling how strongly RGB coefficient magnitude affects DPA detail weights.
+dpa_eps: 1.0e-6 # Positive numerical floor for blend weights, normalization, and coverage checks.
+reinjection_mode: noise_consistent # Options: noise_consistent, replace, weighted_replace, or residual.
+reinjection_strength: 0.0 # Control value: 0 ignores the fused-clean correction while still executing its decode/blend/encode computation.
+latent_writeback_mode: exclusive # Options: exclusive for one owner per 2D latent cell, or weighted_average for overlapping latent averaging.
+vae_chunk_size: 4 # Positive integer controlling how many planar patches each VAE encode/decode call processes.
+vae_sample_posterior: false # false uses deterministic posterior mean/mode; true samples the VAE posterior with random_seed.

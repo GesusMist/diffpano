@@ -28,6 +28,7 @@ RECORDED_CALL_PARAMETERS = (
     "erp_height",
     "erp_width",
     "pixel_fusion_config_path",
+    "planar_fusion_config_path",  # EXPERIMENTAL PLANAR ABLATION
 )
 
 
@@ -115,6 +116,11 @@ def _compact_runtime(runtime: Mapping[str, Any]) -> Dict[str, Any]:
         "pixel_fusion_applied_steps": [
             index for index, applied in enumerate(runtime.get("pixel_fusion_applied_by_step", [])) if applied
         ],
+        # EXPERIMENTAL PLANAR ABLATION: remove these two fields with the planar pipeline.
+        "planar_latent_shape": runtime.get("planar_latent_shape"),
+        "planar_patch_count": runtime.get("num_dynamic_view_patches_per_step")
+        if runtime.get("planar_fusion_config") is not None
+        else None,
     }
     return _json_safe({key: value for key, value in compact.items() if value not in (None, {})})
 
@@ -143,6 +149,10 @@ def build_output_metadata(args: Any, pipe: Any, call_kwargs: Mapping[str, Any], 
     pixel_fusion_config = runtime.get("pixel_fusion_config", call_kwargs.get("pixel_fusion_config"))
     if pixel_fusion_config is not None:
         metadata["pixel_fusion_config"] = _json_safe(pixel_fusion_config)
+    # EXPERIMENTAL PLANAR ABLATION: remove this block with the planar pipeline.
+    planar_fusion_config = runtime.get("planar_fusion_config", call_kwargs.get("planar_fusion_config"))
+    if planar_fusion_config is not None:
+        metadata["planar_fusion_config"] = _json_safe(planar_fusion_config)
     if os.environ.get("SLURM_JOB_ID"):
         metadata["slurm_job_id"] = os.environ["SLURM_JOB_ID"]
     return _json_safe(metadata)

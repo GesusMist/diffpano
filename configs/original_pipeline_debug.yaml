@@ -1,3 +1,4 @@
 pixel_fusion_enabled: false # false preserves the original SphereDiff denoising and latent write-back path.
+random_seed: 1 # null preserves the caller/global RNG state; set any nonnegative integer for deterministic original-pipeline generation.
 temporary_save_original_clean_erp_per_step: true # true renders a predicted-clean ERP observer image after every original denoising step.
 temporary_original_clean_erp_dir: /home/shig/diffpano/debug_original_clean_erp # Absolute or repo-relative directory for the baseline per-step PNG files; null uses this directory.

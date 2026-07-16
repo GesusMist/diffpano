@@ -23,12 +23,15 @@ bash -n \
     tests/pixel_fusion_model_smoke.slurm \
     tests/pixel_fusion_flux_fp32_smoke.slurm \
     tests/projection_diagnostics_report.slurm \
-    tests/pixel_fusion_full_erp_smoke.slurm
+    tests/pixel_fusion_full_erp_smoke.slurm \
+    tests/planar_patch_sana_smoke.slurm
 python -m py_compile \
     output_metadata.py \
     generate_static_wallpaper.py \
     generate_live_wallpaper.py \
     pipelines_ours/pixel_fusion.py \
+    pipelines_ours/planar_patch_fusion.py \
+    pipelines_ours/pipeline_planar_patch_sana.py \
     pipelines_ours/pipeline_spherical_sana.py \
     pipelines_ours/pipeline_spherical_flux.py
 python -m unittest discover -s tests -v

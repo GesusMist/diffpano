@@ -30,6 +30,7 @@ class ProjectionCache:
 @dataclass
 class PixelFusionConfig:
     pixel_fusion_enabled: bool = False
+    random_seed: Optional[int] = None
     pixel_fusion_every_n_steps: int = 1
     pixel_fusion_start_ratio: float = 0.0
     pixel_fusion_end_ratio: float = 1.0
@@ -42,6 +43,7 @@ class PixelFusionConfig:
     lpw_lod_mode: str = "jacobian"
     lpw_lod_interpolation: str = "linear"
     erp_vertical_padding_mode: str = "reflect"
+    erp_to_perspective_interpolation_mode: str = "bilinear"
 
     dpa_alpha: float = 1.0
     dpa_power: float = 1.0
@@ -113,6 +115,12 @@ class PixelFusionConfig:
             raise ValueError(f"Unsupported spherical_owner_mode={self.spherical_owner_mode!r}")
         if self.exclusive_uncovered_mode not in {"error", "weighted_average_fallback"}:
             raise ValueError(f"Unsupported exclusive_uncovered_mode={self.exclusive_uncovered_mode!r}")
+        if self.random_seed is not None and (
+            isinstance(self.random_seed, bool)
+            or not isinstance(self.random_seed, int)
+            or not 0 <= self.random_seed <= 2**63 - 1
+        ):
+            raise ValueError("random_seed must be null or an integer from 0 through 2**63 - 1")
         if self.pixel_fusion_every_n_steps < 1:
             raise ValueError("pixel_fusion_every_n_steps must be >= 1")
         if self.vae_chunk_size < 1:
@@ -125,6 +133,11 @@ class PixelFusionConfig:
             raise ValueError(f"Unsupported lpw_lod_mode={self.lpw_lod_mode!r}")
         if self.lpw_lod_interpolation not in {"linear", "nearest"}:
             raise ValueError(f"Unsupported lpw_lod_interpolation={self.lpw_lod_interpolation!r}")
+        if self.erp_to_perspective_interpolation_mode not in {"bilinear", "nearest"}:
+            raise ValueError(
+                "Unsupported erp_to_perspective_interpolation_mode="
+                f"{self.erp_to_perspective_interpolation_mode!r}"
+            )
 
 
 @dataclass
@@ -198,6 +211,7 @@ def _coerce_config_value(key: str, value: Any) -> Any:
         "time_travel_num_repeats",
         "vae_chunk_size",
         "projection_chunk_size",
+        "random_seed",
     }
     float_fields = {
         "pixel_fusion_start_ratio",
@@ -210,6 +224,8 @@ def _coerce_config_value(key: str, value: Any) -> Any:
     }
     if isinstance(value, str):
         lowered = value.strip().lower()
+        if lowered in {"none", "null"}:
+            return None
         if key in bool_fields:
             if lowered in {"true", "1", "yes", "on"}:
                 return True
@@ -219,8 +235,6 @@ def _coerce_config_value(key: str, value: Any) -> Any:
             return int(value)
         if key in float_fields:
             return float(value)
-        if lowered in {"none", "null"}:
-            return None
     return value
 
 
@@ -236,6 +250,19 @@ def build_pixel_fusion_config(
             setattr(config, key, _coerce_config_value(key, value))
     config.validate()
     return config
+
+
+def apply_configured_random_seed(
+    generator: Optional[Union[torch.Generator, List[torch.Generator]]],
+    config: PixelFusionConfig,
+    *,
+    device: torch.device,
+) -> Optional[Union[torch.Generator, List[torch.Generator]]]:
+    """Create the generation generator when the experiment config specifies a seed."""
+
+    if config.random_seed is None:
+        return generator
+    return torch.Generator(device=device).manual_seed(config.random_seed)
 
 
 def _tensor_content_hash(tensor: torch.Tensor) -> str:
@@ -1250,6 +1277,7 @@ def extract_views_from_erp_standard(
                 padded_erp.expand(chunk_views, -1, -1, -1),
                 padded_grid[start:end],
                 padding_mode="border",
+                mode=config.erp_to_perspective_interpolation_mode,
             )
         )
         sampled_mask_chunks.append(
@@ -1257,11 +1285,12 @@ def extract_views_from_erp_standard(
                 padded_mask.expand(chunk_views, -1, -1, -1),
                 padded_grid[start:end],
                 padding_mode="border",
+                mode=config.erp_to_perspective_interpolation_mode,
             )
         )
     sampled = torch.cat(sampled_chunks, dim=0)
     sampled_mask = torch.cat(sampled_mask_chunks, dim=0)
-    # Bilinear sampling near the coverage boundary mixes valid ERP pixels with empty ones.
+    # Sampling coverage alongside RGB supports normalized bilinear boundaries and exact nearest-mask selection.
     # Dividing by sampled coverage preserves valid RGB values before falling back to x0 RGB.
     sampled = sampled / sampled_mask.clamp_min(config.dpa_eps)
     valid = (sampled_mask > config.dpa_eps).to(original_view_images.dtype)

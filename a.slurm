@@ -5,8 +5,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=01:00:00
+#SBATCH --mem=128G
+#SBATCH --time=08:00:00
 #SBATCH --output=/home/shig/diffpano/logs/%x.%j.out
 #SBATCH --error=/home/shig/diffpano/logs/%x.%j.err
 
@@ -42,13 +42,16 @@ nvidia-smi
 # Defaults are chosen for a relatively small single-A100 smoke run.
 # Override at submit time, for example:
 #   sbatch --export=ALL,PIPELINE=FLUX,PROMPT_NAME=ruins a.slurm
+#   sbatch --export=ALL,PIPELINE=PLANAR_SANA,PROMPT_NAME=ruins a.slurm
 #   sbatch --export=ALL,PIPELINE=LTX,PROMPT_NAME=aurora a.slurm
 PIPELINE="${PIPELINE:-SANA}"
 PROMPT_NAME="${PROMPT_NAME:-ruins}"
 SUBDIR="${SUBDIR:-slurm_${SLURM_JOB_ID}}"
 MIXED_PRECISION="${MIXED_PRECISION:-bf16}"
-ENABLE_MODEL_CPU_OFFLOAD="${ENABLE_MODEL_CPU_OFFLOAD:-True}"
+ENABLE_MODEL_CPU_OFFLOAD="${ENABLE_MODEL_CPU_OFFLOAD:-}"
 PIXEL_FUSION_CONFIG_PATH="${PIXEL_FUSION_CONFIG_PATH:-}"
+PLANAR_FUSION_CONFIG_PATH="${PLANAR_FUSION_CONFIG_PATH:-}"
+NUM_INFERENCE_STEPS="${NUM_INFERENCE_STEPS:-20}"
 
 case "$PIPELINE" in
     SANA)
@@ -67,6 +70,15 @@ case "$PIPELINE" in
         VARIANT="None"
         N_SPHERICAL_POINTS="${N_SPHERICAL_POINTS:-26500}"
         ;;
+    PLANAR_SANA) # EXPERIMENTAL PLANAR ABLATION: remove this case with the dedicated pipeline.
+        SCRIPT="generate_static_wallpaper.py"
+        TASK_NAME="PlanarAblations"
+        PIPELINE_CLS="PlanarPatchSanaPipeline"
+        PRETRAINED_MODEL="Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers"
+        VARIANT="bf16"
+        N_SPHERICAL_POINTS=""
+        PLANAR_FUSION_CONFIG_PATH="${PLANAR_FUSION_CONFIG_PATH:-configs/planar_patch_test.yaml}"
+        ;;
     LTX)
         SCRIPT="generate_live_wallpaper.py"
         TASK_NAME="LiveWallpapers"
@@ -84,10 +96,18 @@ case "$PIPELINE" in
         N_SPHERICAL_POINTS="${N_SPHERICAL_POINTS:-7000}"
         ;;
     *)
-        echo "Unknown PIPELINE='$PIPELINE'. Use SANA, FLUX, LTX, or HUNYUAN." >&2
+        echo "Unknown PIPELINE='$PIPELINE'. Use SANA, FLUX, PLANAR_SANA, LTX, or HUNYUAN." >&2
         exit 2
         ;;
 esac
+
+if [[ -z "$ENABLE_MODEL_CPU_OFFLOAD" ]]; then
+    if [[ "$PIPELINE" == "PLANAR_SANA" ]]; then
+        ENABLE_MODEL_CPU_OFFLOAD=False
+    else
+        ENABLE_MODEL_CPU_OFFLOAD=True
+    fi
+fi
 
 PROMPT_TXT_PATH="data/prompts/${PROMPT_NAME}.txt"
 SAVE_PATH="$SCRATCH/diffpano/outputs/${TASK_NAME}/${PIPELINE_CLS}/${PROMPT_NAME}"
@@ -105,6 +125,7 @@ echo "PROMPT_TXT_PATH=$PROMPT_TXT_PATH"
 echo "SAVE_PATH=$SAVE_PATH"
 echo "N_SPHERICAL_POINTS=$N_SPHERICAL_POINTS"
 echo "PIXEL_FUSION_CONFIG_PATH=${PIXEL_FUSION_CONFIG_PATH:-disabled}"
+echo "PLANAR_FUSION_CONFIG_PATH=${PLANAR_FUSION_CONFIG_PATH:-disabled}"
 
 python -c "import torch; print('torch', torch.__version__); print('cuda', torch.version.cuda); print('cuda available', torch.cuda.is_available()); print('device count', torch.cuda.device_count())"
 
@@ -114,10 +135,13 @@ CONFIG_ARGS=(
     "variant=${VARIANT}"
     "mixed_precision=${MIXED_PRECISION}"
     "enable_model_cpu_offload=${ENABLE_MODEL_CPU_OFFLOAD}"
-    "call_kwargs.n_spherical_points=${N_SPHERICAL_POINTS}"
     "call_kwargs.prompt_txt_path=${PROMPT_TXT_PATH}"
     "save_path=${SAVE_PATH}"
 )
+
+if [[ -n "$N_SPHERICAL_POINTS" ]]; then
+    CONFIG_ARGS+=("call_kwargs.n_spherical_points=${N_SPHERICAL_POINTS}")
+fi
 
 if [[ -n "$PIXEL_FUSION_CONFIG_PATH" ]]; then
     if [[ "$PIPELINE" != "SANA" && "$PIPELINE" != "FLUX" ]]; then
@@ -129,6 +153,20 @@ if [[ -n "$PIXEL_FUSION_CONFIG_PATH" ]]; then
         exit 2
     fi
     CONFIG_ARGS+=("call_kwargs.pixel_fusion_config_path=${PIXEL_FUSION_CONFIG_PATH}")
+fi
+
+if [[ "$PIPELINE" == "PLANAR_SANA" ]]; then
+    if [[ ! -f "$PLANAR_FUSION_CONFIG_PATH" ]]; then
+        echo "Planar-fusion config not found: $PLANAR_FUSION_CONFIG_PATH" >&2
+        exit 2
+    fi
+    CONFIG_ARGS+=(
+        "call_kwargs.height=${OUTPUT_HEIGHT:-2048}"
+        "call_kwargs.width=${OUTPUT_WIDTH:-4096}"
+        "call_kwargs.num_inference_steps=${NUM_INFERENCE_STEPS}"
+        "call_kwargs.use_resolution_binning=False"
+        "call_kwargs.planar_fusion_config_path=${PLANAR_FUSION_CONFIG_PATH}"
+    )
 fi
 
 python "$SCRIPT" --config_add "${CONFIG_ARGS[@]}"

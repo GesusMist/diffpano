@@ -1,4 +1,5 @@
 pixel_fusion_enabled: true # true enables ERP pixel fusion; false preserves the original latent write-back path.
+random_seed: 1 # null preserves the caller/global RNG state; set any nonnegative integer for deterministic initial latents and stochastic VAE sampling.
 pixel_fusion_every_n_steps: 1 # Integer >= 1; run fusion every N denoising steps while inside the ratio window.
 pixel_fusion_start_ratio: 0.0 # Float from 0.0 to 1.0; first normalized denoising-step ratio eligible for fusion.
 pixel_fusion_end_ratio: 1.0 # Float from 0.0 to 1.0; last normalized denoising-step ratio eligible for fusion.
@@ -11,6 +12,7 @@ lpw_num_levels: 4 # Integer >= 1; number of Gaussian/Laplacian levels used when 
 lpw_lod_mode: jacobian # Options: jacobian for projection-derived LOD or none to force zero LOD.
 lpw_lod_interpolation: nearest # Options: linear or nearest; controls LOD-to-pyramid-level confidence.
 erp_vertical_padding_mode: reflect # Options: reflect or replicate for perspective-patch pyramids; ERP filtering always uses circular longitude and pole-aware reflection.
+erp_to_perspective_interpolation_mode: nearest # Options: bilinear or nearest; controls fused ERP RGB and validity-mask sampling back into perspective views.
 
 dpa_alpha: 1.0 # Float, normally 0.0 to 1.0; 0 is weighted average and 1 applies full DPA detail correction.
 dpa_power: 1.0 # Nonnegative float; controls how strongly coefficient magnitude influences DPA detail weights.
@@ -42,6 +44,6 @@ vae_sample_posterior: false # false uses deterministic posterior mean/mode; true
 
 # TEMPORARY DEBUG EXPORT: delete these four lines and the marked code blocks after diagnosing fusion.
 temporary_save_fused_erp_per_step: true # true saves the fused predicted-clean RGB ERP after every fusion timestep; false disables it.
-temporary_fused_erp_dir: /home/shig/diffpano/debug_fused_clean_erp/fixed_center # Output directory for temporary per-step PNG files; null uses this repo's debug_fused_clean_erp directory.
+temporary_fused_erp_dir: /home/shig/diffpano/debug_fused_clean_erp/7_11_early # Output directory for temporary per-step PNG files; null uses this repo's debug_fused_clean_erp directory.
 temporary_save_original_clean_erp_per_step: true # true saves original predicted-clean ERPs only when pixel_fusion_enabled is false; false disables it.
 temporary_original_clean_erp_dir: /home/shig/diffpano/debug_original_clean_erp # Output directory for original predicted-clean ERP PNGs; null uses this repo's debug_original_clean_erp directory.

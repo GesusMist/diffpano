@@ -8,6 +8,7 @@ import torch
 import pipelines_ours.pixel_fusion as pixel_fusion_module
 from pipelines_ours.pixel_fusion import (
     PixelFusionConfig,
+    apply_configured_random_seed,
     aggregate_overlap_contributions,
     apply_pixel_space_fusion,
     build_exclusive_owner_map,
@@ -96,6 +97,29 @@ class FakeDPMSolverScheduler(FakeFlowMatchScheduler):
 
 
 class PixelFusionTests(unittest.TestCase):
+    def test_configured_random_seed_is_deterministic_and_null_preserves_generator(self):
+        caller_generator = torch.Generator().manual_seed(7)
+        unchanged = apply_configured_random_seed(
+            caller_generator,
+            PixelFusionConfig(random_seed=None),
+            device=torch.device("cpu"),
+        )
+        self.assertIs(unchanged, caller_generator)
+
+        config = PixelFusionConfig(random_seed=1234)
+        first = apply_configured_random_seed(None, config, device=torch.device("cpu"))
+        second = apply_configured_random_seed(None, config, device=torch.device("cpu"))
+        self.assertEqual(first.initial_seed(), 1234)
+        self.assertTrue(torch.equal(torch.randn(8, generator=first), torch.randn(8, generator=second)))
+
+    def test_random_seed_config_coercion_and_validation(self):
+        self.assertEqual(PixelFusionConfig.from_any({"random_seed": "99"}).random_seed, 99)
+        self.assertIsNone(PixelFusionConfig.from_any({"random_seed": "null"}).random_seed)
+        for invalid_seed in (-1, 1.5, True, 2**63):
+            with self.subTest(random_seed=invalid_seed):
+                with self.assertRaisesRegex(ValueError, "random_seed must be null or an integer"):
+                    PixelFusionConfig(random_seed=invalid_seed).validate()
+
     @staticmethod
     def _exclusive_fixture(num_points=5):
         indices = [torch.tensor([0, 1, 2]), torch.tensor([1, 2, 3]), torch.tensor([2, 4])]
@@ -511,6 +535,41 @@ class PixelFusionTests(unittest.TestCase):
         self.assertEqual(extracted.shape, original.shape)
         self.assertEqual(valid.shape, (len(view_dirs), 1, 4, 4))
         self.assertEqual(max(sampled_batch_sizes), config.projection_chunk_size)
+
+    def test_erp_to_view_sampling_honors_configured_interpolation_mode(self):
+        erp = torch.randn(3, 16, 32)
+        mask = torch.ones(1, 16, 32)
+        original = torch.randn(1, 3, 4, 4)
+        view_dirs = torch.tensor([[0.0, 0.0, 1.0]])
+        original_sample = pixel_fusion_module._sample_erp_image
+
+        for interpolation_mode in ("bilinear", "nearest"):
+            config = PixelFusionConfig(
+                erp_to_perspective_interpolation_mode=interpolation_mode,
+            )
+            observed_modes = []
+
+            def checked_sample(values, grid, **kwargs):
+                observed_modes.append(kwargs.get("mode"))
+                return original_sample(values, grid, **kwargs)
+
+            with mock.patch.object(pixel_fusion_module, "_sample_erp_image", side_effect=checked_sample):
+                extract_views_from_erp_standard(
+                    erp,
+                    mask,
+                    original,
+                    view_dirs,
+                    [(80, 80)],
+                    config,
+                )
+
+            self.assertEqual(observed_modes, [interpolation_mode, interpolation_mode])
+
+    def test_erp_to_perspective_interpolation_mode_validation(self):
+        self.assertEqual(PixelFusionConfig().erp_to_perspective_interpolation_mode, "bilinear")
+        config = PixelFusionConfig(erp_to_perspective_interpolation_mode="bicubic")
+        with self.assertRaisesRegex(ValueError, "Unsupported erp_to_perspective_interpolation_mode"):
+            config.validate()
 
     def test_dpa_alpha_zero_equals_weighted_average(self):
         torch.manual_seed(11)
