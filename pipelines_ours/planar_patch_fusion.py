@@ -40,6 +40,7 @@ class PlanarPatchFusionConfig:
     patch_latent_width: int = 20
     patch_stride_height: int = 10
     patch_stride_width: int = 10
+    fusion_space: str = "pixel"
 
     aggregation_mode: str = "detail_preserving_average"
     weight_mode: str = "distance_to_boundary"
@@ -53,6 +54,8 @@ class PlanarPatchFusionConfig:
 
     vae_chunk_size: int = 4
     vae_sample_posterior: bool = False
+    save_diagnostics: bool = False
+    diagnostics_dir: Optional[str] = None
 
     def validate(self) -> None:
         if self.random_seed is not None and (
@@ -74,6 +77,8 @@ class PlanarPatchFusionConfig:
             raise ValueError("patch_stride_height cannot exceed patch_latent_height because that would leave gaps")
         if self.patch_stride_width > self.patch_latent_width:
             raise ValueError("patch_stride_width cannot exceed patch_latent_width because that would leave gaps")
+        if self.fusion_space not in {"pixel", "latent"}:
+            raise ValueError(f"Unsupported fusion_space={self.fusion_space!r}")
         if self.aggregation_mode not in {"average", "weighted_average", "detail_preserving_average"}:
             raise ValueError(f"Unsupported aggregation_mode={self.aggregation_mode!r}")
         if self.weight_mode not in {"uniform", "cosine", "gaussian", "distance_to_boundary"}:
@@ -92,7 +97,7 @@ class PlanarPatchFusionConfig:
 
     def to_pixel_fusion_config(self) -> PixelFusionConfig:
         config = PixelFusionConfig(
-            pixel_fusion_enabled=True,
+            pixel_fusion_enabled=self.fusion_space == "pixel",
             random_seed=self.random_seed,
             aggregation_mode=self.aggregation_mode,
             weight_mode=self.weight_mode,
@@ -104,6 +109,8 @@ class PlanarPatchFusionConfig:
             spherical_writeback_mode=self.latent_writeback_mode,
             vae_chunk_size=self.vae_chunk_size,
             vae_sample_posterior=self.vae_sample_posterior,
+            save_diagnostics=self.save_diagnostics,
+            diagnostics_dir=self.diagnostics_dir,
         )
         config.validate()
         return config

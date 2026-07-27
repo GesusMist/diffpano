@@ -32,7 +32,7 @@ time_travel_jump_length: 1 # Positive integer reserved for the number of schedul
 time_travel_num_repeats: 1 # Positive integer reserved for repeated denoising passes after each jump.
 time_travel_strength: 1.0 # Float reserved for scheduler-consistent renoising strength; currently inactive.
 
-vae_chunk_size: 8 # Integer >= 1; views per VAE encode/decode chunk, lowered to reduce peak GPU memory.
+vae_chunk_size: 1 # Integer >= 1; views per VAE encode/decode chunk, lowered to reduce peak GPU memory.
 save_intermediates: false # true includes the fused ERP tensor in diagnostic output; false omits it.
 save_masks: false # true saves validity, contributor-count, accumulated-weight, and overlap masks.
 save_diagnostics: false # true saves masks, camera directions, latent delta norm, and stage timings.
@@ -40,10 +40,10 @@ measure_performance: false # true uses CUDA synchronization for accurate timings
 diagnostics_dir: null # null disables diagnostic file writing; otherwise provide an absolute or repo-relative directory path.
 
 projection_chunk_size: 1 # Integer >= 1; number of same-sized views projected per ERP accumulation chunk.
-vae_sample_posterior: false # false uses deterministic posterior mean/mode; true samples the VAE posterior when available.
+vae_sample_posterior: false # Retained for compatibility; the paired residual bridge always uses deterministic posterior mean/mode.
 
 # TEMPORARY DEBUG EXPORT: delete these four lines and the marked code blocks after diagnosing fusion.
 temporary_save_fused_erp_per_step: true # true saves the fused predicted-clean RGB ERP after every fusion timestep; false disables it.
-temporary_fused_erp_dir: /home/shig/diffpano/debug_fused_clean_erp/7_11_early # Output directory for temporary per-step PNG files; null uses this repo's debug_fused_clean_erp directory.
+temporary_fused_erp_dir: /home/shig/diffpano/debug_fused_clean_erp/7_16_early # Output directory for temporary per-step PNG files; null uses this repo's debug_fused_clean_erp directory.
 temporary_save_original_clean_erp_per_step: true # true saves original predicted-clean ERPs only when pixel_fusion_enabled is false; false disables it.
 temporary_original_clean_erp_dir: /home/shig/diffpano/debug_original_clean_erp # Output directory for original predicted-clean ERP PNGs; null uses this repo's debug_original_clean_erp directory.

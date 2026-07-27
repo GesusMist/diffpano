@@ -683,6 +683,8 @@ class SphericalFluxPipeline(FluxPipeline):
                     latent_to_vae_latents=latent_to_vae_latents,
                     vae_latents_to_latent=vae_latents_to_latent,
                     generator=generator if isinstance(generator, torch.Generator) else None,
+                    diagnostic_step_index=i,
+                    diagnostic_pipeline_name="flux",
                 )
                 # TEMPORARY DEBUG EXPORT: remove with the marked helper in pixel_fusion.py.
                 temporary_save_fused_clean_erp_debug(

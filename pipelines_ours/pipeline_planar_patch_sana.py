@@ -15,10 +15,11 @@ from diffusers.pipelines.sana.pipeline_output import SanaPipelineOutput
 from .pipeline_spherical_sana import retrieve_timesteps
 from .pixel_fusion import (
     apply_configured_random_seed,
+    build_identity_preserving_vae_target,
     decode_view_latents,
-    encode_view_images,
     predict_clean_latents,
     reinject_fused_latents,
+    write_pixel_fusion_diagnostics,
 )
 from .planar_patch_fusion import (
     PlanarPatchFusionConfig,
@@ -180,6 +181,11 @@ class PlanarPatchSanaPipeline(SanaPipeline):
             planar_config.patch_stride_height,
             planar_config.patch_stride_width,
         )
+        rgb_scale_height, rgb_height_remainder = divmod(height, latent_height)
+        rgb_scale_width, rgb_width_remainder = divmod(width, latent_width)
+        if rgb_height_remainder or rgb_width_remainder:
+            raise ValueError("Output dimensions must be integer multiples of the planar latent grid")
+        rgb_layout = scale_planar_patch_layout(layout, rgb_scale_height, rgb_scale_width)
         patch_prompt_indices = planar_patch_prompt_indices(layout, prompt_directions)
         latents = self.prepare_latents(
             1,
@@ -210,21 +216,22 @@ class PlanarPatchSanaPipeline(SanaPipeline):
             "denoise_timesteps": timesteps.detach().cpu().tolist(),
             "num_dynamic_view_patches_per_step": layout.num_patches,
             "denoise_patch_point_counts_by_step": [],
-            "pixel_fusion_applied_by_step": [True] * len(timesteps),
+            "pixel_fusion_applied_by_step": [planar_config.fusion_space == "pixel"] * len(timesteps),
             "planar_latent_shape": list(latents.shape),
             "planar_patch_positions": [list(position) for position in layout.positions],
             "planar_patch_prompt_indices": patch_prompt_indices.detach().cpu().tolist(),
         }
         print(
             f"planar_latent_grid={latent_height}x{latent_width}, "
-            f"patch={layout.patch_height}x{layout.patch_width}, patches={layout.num_patches}"
+            f"patch={layout.patch_height}x{layout.patch_width}, patches={layout.num_patches}, "
+            f"fusion_space={planar_config.fusion_space}"
         )
 
         progress_bar = self.progress_bar(total=len(timesteps) * layout.num_patches)
         for step_index, timestep_value in enumerate(timesteps):
             current_patches = extract_planar_patches(latents, layout)
-            clean_patches = []
-            model_outputs = []
+            clean_patches = [] if planar_config.fusion_space == "pixel" else None
+            model_outputs = [] if planar_config.fusion_space == "pixel" else None
             previous_patches = []
             sigma_next = None
 
@@ -252,74 +259,90 @@ class PlanarPatchSanaPipeline(SanaPipeline):
                     noise_pred = noise_pred.chunk(2, dim=1)[0]
 
                 self.scheduler._step_index = None
-                clean_patch, _, patch_sigma_next = predict_clean_latents(
-                    self.scheduler,
-                    noise_pred,
-                    timestep_value,
-                    current_patch,
-                )
+                if planar_config.fusion_space == "pixel":
+                    clean_patch, _, patch_sigma_next = predict_clean_latents(
+                        self.scheduler,
+                        noise_pred,
+                        timestep_value,
+                        current_patch,
+                    )
                 previous_patch = self.scheduler.step(
                     noise_pred,
                     timestep_value,
                     current_patch,
                     return_dict=False,
                 )[0]
-                clean_patches.append(clean_patch)
-                model_outputs.append(noise_pred)
+                if planar_config.fusion_space == "pixel":
+                    clean_patches.append(clean_patch)
+                    model_outputs.append(noise_pred)
+                    sigma_next = patch_sigma_next
                 previous_patches.append(previous_patch)
-                sigma_next = patch_sigma_next
                 progress_bar.update()
                 progress_bar.set_description_str(f"planar step={step_index}, patch={patch_index}")
 
-            clean_patches = torch.cat(clean_patches, dim=0)
-            model_outputs = torch.cat(model_outputs, dim=0)
             previous_patches = torch.cat(previous_patches, dim=0)
-            decoded_clean_patches = decode_view_latents(self.vae, clean_patches, fusion_config).float()
-            rgb_scale_height, remainder_height = divmod(
-                decoded_clean_patches.shape[-2],
-                layout.patch_height,
-            )
-            rgb_scale_width, remainder_width = divmod(
-                decoded_clean_patches.shape[-1],
-                layout.patch_width,
-            )
-            if remainder_height or remainder_width:
-                raise ValueError("VAE decoded patch size is not an integer multiple of the latent patch size")
-            rgb_layout = scale_planar_patch_layout(layout, rgb_scale_height, rgb_scale_width)
-            if (rgb_layout.canvas_height, rgb_layout.canvas_width) != (height, width):
-                raise ValueError(
-                    f"Decoded planar canvas {(rgb_layout.canvas_height, rgb_layout.canvas_width)} "
-                    f"does not match requested output {(height, width)}"
+            if planar_config.fusion_space == "pixel":
+                clean_patches = torch.cat(clean_patches, dim=0)
+                model_outputs = torch.cat(model_outputs, dim=0)
+                decoded_clean_patches = decode_view_latents(self.vae, clean_patches, fusion_config).float()
+                if decoded_clean_patches.shape[-2:] != (rgb_layout.patch_height, rgb_layout.patch_width):
+                    raise ValueError(
+                        f"VAE decoded patch size {tuple(decoded_clean_patches.shape[-2:])} does not match "
+                        f"the expected RGB patch size {(rgb_layout.patch_height, rgb_layout.patch_width)}"
+                    )
+                fused_rgb = blend_planar_patches(
+                    decoded_clean_patches,
+                    rgb_layout,
+                    fusion_config,
+                ).fused_values.unsqueeze(0)
+                fused_rgb_patches = extract_planar_patches(fused_rgb, rgb_layout)
+                vae_bridge = build_identity_preserving_vae_target(
+                    self.vae,
+                    clean_patches,
+                    decoded_clean_patches,
+                    fused_rgb_patches,
+                    fusion_config,
                 )
-            fused_rgb = blend_planar_patches(decoded_clean_patches, rgb_layout, fusion_config).fused_values.unsqueeze(0)
-            fused_rgb_patches = extract_planar_patches(fused_rgb, rgb_layout)
-            fused_clean_patches = encode_view_images(
-                self.vae,
-                fused_rgb_patches,
-                fusion_config,
-                generator=generator if isinstance(generator, torch.Generator) else None,
-            )
-            if fused_clean_patches.shape != clean_patches.shape:
-                raise ValueError(
-                    f"VAE re-encoded patches have shape {tuple(fused_clean_patches.shape)}, "
-                    f"expected {tuple(clean_patches.shape)}"
-                )
+                fused_clean_patches = vae_bridge.target_clean_latents
+                if fused_clean_patches.shape != clean_patches.shape:
+                    raise ValueError(
+                        f"VAE re-encoded patches have shape {tuple(fused_clean_patches.shape)}, "
+                        f"expected {tuple(clean_patches.shape)}"
+                    )
 
-            next_clean_weight = None
-            if planar_config.reinjection_mode == "noise_consistent":
-                if hasattr(self.scheduler, "_sigma_to_alpha_sigma_t"):
-                    next_clean_weight = self.scheduler._sigma_to_alpha_sigma_t(sigma_next)[0]
-                else:
-                    next_clean_weight = 1 - sigma_next
-            corrected_patches = reinject_fused_latents(
-                clean_patches,
-                fused_clean_patches,
-                previous_patches,
-                model_outputs,
-                sigma_next,
-                fusion_config,
-                next_clean_weight=next_clean_weight,
-            )
+                corrected_patches = reinject_fused_latents(
+                    clean_patches,
+                    fused_clean_patches,
+                    previous_patches,
+                    model_outputs,
+                    sigma_next,
+                    fusion_config,
+                    scheduler=self.scheduler,
+                    timestep=timestep_value,
+                    current_latents=current_patches,
+                )
+                if fusion_config.save_diagnostics:
+                    base_update_norm = (previous_patches.float() - current_patches.float()).norm()
+                    actual_reinjection_norm = (
+                        corrected_patches.float() - previous_patches.float()
+                    ).norm()
+                    write_pixel_fusion_diagnostics(
+                        {
+                            "vae_roundtrip_error_norm": vae_bridge.vae_roundtrip_error_norm.reshape(1),
+                            "fusion_delta_norm": vae_bridge.fusion_delta_norm.reshape(1),
+                            "base_scheduler_update_norm": base_update_norm.reshape(1),
+                            "actual_reinjection_norm": actual_reinjection_norm.reshape(1),
+                            "reinjection_to_scheduler_update_ratio": (
+                                actual_reinjection_norm / base_update_norm.clamp_min(fusion_config.dpa_eps)
+                            ).reshape(1),
+                        },
+                        fusion_config,
+                        step_index=step_index,
+                        pipeline_name="planar_sana",
+                    )
+            else:
+                # Original SphereDiff behavior: fuse scheduler outputs directly in the persistent latent grid.
+                corrected_patches = previous_patches
             latents = write_back_planar_latents(
                 latents,
                 corrected_patches,
@@ -337,7 +360,9 @@ class PlanarPatchSanaPipeline(SanaPipeline):
                 callback_outputs = callback_on_step_end(self, step_index, timestep_value, callback_kwargs)
                 latents = callback_outputs.pop("latents", latents)
 
-            del decoded_clean_patches, fused_rgb, fused_rgb_patches, fused_clean_patches, corrected_patches
+            if planar_config.fusion_space == "pixel":
+                del decoded_clean_patches, fused_rgb, fused_rgb_patches, fused_clean_patches
+            del corrected_patches
 
         progress_bar.close()
 

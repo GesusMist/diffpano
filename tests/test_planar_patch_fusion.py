@@ -6,7 +6,11 @@ import torch
 from pipelines_ours.pixel_fusion import (
     PixelFusionConfig,
     aggregate_overlap_contributions,
+    build_identity_preserving_vae_target,
     create_patch_weight_map,
+    decode_view_latents,
+    predict_clean_latents,
+    step_with_fused_clean_prediction,
 )
 from pipelines_ours.planar_patch_fusion import (
     PlanarPatchFusionConfig,
@@ -19,6 +23,56 @@ from pipelines_ours.planar_patch_fusion import (
     write_back_planar_latents,
 )
 from pipelines_ours.spherical_functions import SphericalFunctions
+
+
+class _PlanarEncodeOutput:
+    def __init__(self, latent):
+        self.latent = latent
+
+
+class _PlanarVAEConfig:
+    scaling_factor = 1.0
+    shift_factor = None
+
+
+class _NonPerfectPlanarVAE:
+    dtype = torch.float32
+    config = _PlanarVAEConfig()
+
+    def decode(self, latents, return_dict=False):
+        return (torch.tanh(latents[:, :3]),)
+
+    def encode(self, images):
+        extra = torch.full(
+            (images.shape[0], 1, images.shape[-2], images.shape[-1]),
+            0.25,
+            device=images.device,
+            dtype=images.dtype,
+        )
+        return _PlanarEncodeOutput(torch.cat([images * 0.75, extra], dim=1))
+
+
+class _PlanarFlowConfig:
+    prediction_type = "flow_prediction"
+
+
+class _PlanarFlowScheduler:
+    config = _PlanarFlowConfig()
+
+    def __init__(self):
+        self.timesteps = torch.tensor([1000.0])
+        self.sigmas = torch.tensor([1.0, 0.5])
+        self._step_index = None
+
+    def index_for_timestep(self, timestep, schedule_timesteps):
+        return 0
+
+    def step(self, model_output, timestep, sample, return_dict=False):
+        if self._step_index is None:
+            self._step_index = 0
+        previous = sample.float() + (self.sigmas[1] - self.sigmas[0]) * model_output.float()
+        self._step_index += 1
+        return (previous.to(dtype=model_output.dtype),)
 
 
 class PlanarPatchLayoutTests(unittest.TestCase):
@@ -118,6 +172,55 @@ class PlanarPatchBlendTests(unittest.TestCase):
         self.assertTrue(torch.allclose(planar.accumulated_weight, reference.accumulated_weight, atol=1e-6))
         self.assertTrue(torch.equal(planar.contributor_count, reference.contributor_count))
 
+    def test_noop_planar_rgb_fusion_is_identity_at_zero_and_full_reinjection_strength(self):
+        torch.manual_seed(23)
+        layout = build_planar_patch_layout(4, 6, 2, 3, 1, 2)
+        clean_grid = torch.randn(1, 4, 4, 6)
+        clean_patches = extract_planar_patches(clean_grid, layout)
+        config = PixelFusionConfig(aggregation_mode="average", weight_mode="uniform")
+        decoded_patches = decode_view_latents(_NonPerfectPlanarVAE(), clean_patches, config)
+        fused_canvas = blend_planar_patches(decoded_patches, layout, config).fused_values.unsqueeze(0)
+        fused_patches = extract_planar_patches(fused_canvas, layout)
+        bridge = build_identity_preserving_vae_target(
+            _NonPerfectPlanarVAE(),
+            clean_patches,
+            decoded_patches,
+            fused_patches,
+            config,
+        )
+
+        self.assertGreater(bridge.vae_roundtrip_error_norm.item(), 0)
+        self.assertTrue(torch.allclose(bridge.fusion_delta_vae_latents, torch.zeros_like(clean_patches), atol=1e-7))
+        scheduler = _PlanarFlowScheduler()
+        timestep = torch.tensor(1000.0)
+        current = torch.randn_like(clean_patches)
+        flow = current - clean_patches
+        predicted_clean, _, _ = predict_clean_latents(scheduler, flow, timestep, current)
+        original_prev = scheduler.step(flow, timestep, current, return_dict=False)[0]
+
+        zero_strength = step_with_fused_clean_prediction(
+            scheduler,
+            timestep,
+            current,
+            flow,
+            predicted_clean,
+            bridge.target_clean_latents,
+            0.0,
+            original_prev_latents=original_prev,
+        )
+        full_strength = step_with_fused_clean_prediction(
+            scheduler,
+            timestep,
+            current,
+            flow,
+            predicted_clean,
+            bridge.target_clean_latents,
+            1.0,
+            original_prev_latents=original_prev,
+        )
+        self.assertTrue(torch.equal(zero_strength, original_prev))
+        self.assertTrue(torch.allclose(full_strength, original_prev, atol=1e-6, rtol=0))
+
 
 class PlanarPatchWriteBackTests(unittest.TestCase):
     def test_exclusive_owner_map_covers_and_writes_every_cell_once(self):
@@ -183,6 +286,17 @@ class PlanarPromptTests(unittest.TestCase):
                 patch_latent_width=4,
                 patch_stride_height=5,
             ).validate()
+
+    def test_latent_fusion_mode_disables_pixel_fusion(self):
+        config = PlanarPatchFusionConfig(fusion_space="latent")
+
+        config.validate()
+
+        self.assertFalse(config.to_pixel_fusion_config().pixel_fusion_enabled)
+
+    def test_config_rejects_unknown_fusion_space(self):
+        with self.assertRaisesRegex(ValueError, "fusion_space"):
+            PlanarPatchFusionConfig(fusion_space="frequency").validate()
 
 
 if __name__ == "__main__":

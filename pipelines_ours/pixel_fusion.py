@@ -175,6 +175,16 @@ class PixelFusionResult:
     diagnostics: Dict[str, torch.Tensor] = field(default_factory=dict)
 
 
+@dataclass
+class VaeResidualBridgeResult:
+    target_clean_latents: torch.Tensor
+    original_roundtrip_vae_latents: torch.Tensor
+    fused_roundtrip_vae_latents: torch.Tensor
+    fusion_delta_vae_latents: torch.Tensor
+    vae_roundtrip_error_norm: torch.Tensor
+    fusion_delta_norm: torch.Tensor
+
+
 def load_pixel_fusion_config(path: str) -> PixelFusionConfig:
     """Load a YAML config through OmegaConf, matching the repository's existing config style."""
 
@@ -1690,6 +1700,87 @@ def predict_clean_latents(
     return clean, sigma, sigma_next
 
 
+def _reset_scheduler_for_independent_first_order_step(scheduler: Any) -> None:
+    """Reset state mutated by an earlier independent patch step at the same timestep."""
+
+    if hasattr(scheduler, "_step_index"):
+        scheduler._step_index = None
+    if hasattr(scheduler, "model_outputs"):
+        for index in range(len(scheduler.model_outputs)):
+            scheduler.model_outputs[index] = None
+    if hasattr(scheduler, "lower_order_nums"):
+        scheduler.lower_order_nums = 0
+    if hasattr(scheduler, "last_sample"):
+        scheduler.last_sample = None
+
+
+def step_with_fused_clean_prediction(
+    scheduler: Any,
+    timestep: torch.Tensor,
+    current_latents: torch.Tensor,
+    original_model_output: torch.Tensor,
+    original_clean_latents: torch.Tensor,
+    target_clean_latents: torch.Tensor,
+    reinjection_strength: float,
+    *,
+    original_prev_latents: Optional[torch.Tensor] = None,
+    valid_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Rerun a flow scheduler using an identity-preserving fused clean prediction."""
+
+    strength = float(reinjection_strength)
+    if strength == 0 and original_prev_latents is not None:
+        return original_prev_latents
+    prediction_type = _scheduler_prediction_type(scheduler)
+    if prediction_type != "flow_prediction":
+        raise ValueError(
+            "noise_consistent reinjection requires flow_prediction so the corrected clean prediction can be "
+            f"converted back to scheduler flow; got prediction_type={prediction_type!r}"
+        )
+    if not (
+        current_latents.shape
+        == original_model_output.shape
+        == original_clean_latents.shape
+        == target_clean_latents.shape
+    ):
+        raise ValueError("Flow reinjection tensors must all have the same shape")
+
+    output_dtype = original_prev_latents.dtype if original_prev_latents is not None else current_latents.dtype
+    original_clean = original_clean_latents.to(dtype=FUSION_DTYPE)
+    target_clean = target_clean_latents.to(device=original_clean.device, dtype=FUSION_DTYPE)
+    original_flow = original_model_output.to(device=original_clean.device, dtype=FUSION_DTYPE)
+    sigma_current = _scheduler_sigma_pair(
+        scheduler,
+        timestep,
+        device=original_clean.device,
+        dtype=FUSION_DTYPE,
+    )[0]
+    while sigma_current.ndim < original_clean.ndim:
+        sigma_current = sigma_current.unsqueeze(-1)
+    if torch.any(sigma_current.abs() <= torch.finfo(FUSION_DTYPE).eps):
+        raise ValueError("Cannot reconstruct corrected flow when sigma_current is zero")
+
+    clean_correction = strength * (target_clean - original_clean)
+    if valid_mask is not None:
+        mask = valid_mask.to(device=original_clean.device, dtype=FUSION_DTYPE)
+        while mask.ndim < clean_correction.ndim:
+            mask = mask.unsqueeze(-1)
+        clean_correction = clean_correction * mask
+
+    # Since original_clean = current - sigma_current * original_flow, this is algebraically
+    # identical to (current - corrected_clean) / sigma_current while preserving the original
+    # model flow exactly when the clean correction is zero.
+    corrected_flow = original_flow - clean_correction / sigma_current
+    _reset_scheduler_for_independent_first_order_step(scheduler)
+    corrected_prev = scheduler.step(
+        corrected_flow,
+        timestep,
+        current_latents,
+        return_dict=False,
+    )[0]
+    return corrected_prev.to(dtype=output_dtype)
+
+
 def reinject_fused_latents(
     original_clean_latents: torch.Tensor,
     fused_clean_latents: torch.Tensor,
@@ -1700,25 +1791,35 @@ def reinject_fused_latents(
     *,
     valid_mask: Optional[torch.Tensor] = None,
     next_clean_weight: Optional[torch.Tensor] = None,
+    scheduler: Optional[Any] = None,
+    timestep: Optional[torch.Tensor] = None,
+    current_latents: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
+    if config.reinjection_mode == "noise_consistent":
+        if scheduler is None or timestep is None or current_latents is None:
+            raise ValueError(
+                "noise_consistent reinjection requires scheduler, timestep, and current_latents"
+            )
+        return step_with_fused_clean_prediction(
+            scheduler,
+            timestep,
+            current_latents,
+            model_output,
+            original_clean_latents,
+            fused_clean_latents,
+            config.reinjection_strength,
+            original_prev_latents=original_prev_latents,
+            valid_mask=valid_mask,
+        )
+
+    del sigma_next, next_clean_weight
     output_dtype = original_prev_latents.dtype
     original_clean_latents = original_clean_latents.to(dtype=FUSION_DTYPE)
     fused_clean_latents = fused_clean_latents.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
     original_prev_latents = original_prev_latents.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
-    model_output = model_output.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
-    sigma_next = sigma_next.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
-    if next_clean_weight is not None:
-        next_clean_weight = next_clean_weight.to(device=original_clean_latents.device, dtype=FUSION_DTYPE)
+    del model_output
     strength = float(config.reinjection_strength)
     clean_delta = fused_clean_latents - original_clean_latents
-    if config.reinjection_mode == "noise_consistent":
-        if next_clean_weight is None:
-            next_clean_weight = 1 - sigma_next
-        # Preserve the scheduler's actual update and alter only its next-step clean-sample component.
-        # For flow matching, x_next = alpha_next * x0 + sigma_next * noise, so injecting the full
-        # x0 delta at early noisy steps would over-correct by roughly 1 / alpha_next.
-        result = original_prev_latents + strength * next_clean_weight * clean_delta
-        return result.to(dtype=output_dtype)
     if config.reinjection_mode == "replace":
         result = original_prev_latents * (1 - strength) + fused_clean_latents * strength
         return result.to(dtype=output_dtype)
@@ -1740,6 +1841,58 @@ def reinject_fused_latents(
 
 def _adapt_latents(latents: torch.Tensor, adapter: Optional[TensorAdapter]) -> torch.Tensor:
     return adapter(latents) if adapter is not None else latents
+
+
+def build_identity_preserving_vae_target(
+    vae: Any,
+    clean_latents: torch.Tensor,
+    original_view_images: torch.Tensor,
+    fused_view_images: torch.Tensor,
+    config: PixelFusionConfig,
+    *,
+    latent_to_vae_latents: Optional[TensorAdapter] = None,
+    vae_latents_to_latent: Optional[TensorAdapter] = None,
+) -> VaeResidualBridgeResult:
+    """Carry only the RGB fusion residual across the non-invertible VAE round trip."""
+
+    if original_view_images.shape != fused_view_images.shape:
+        raise ValueError("Original and fused RGB views must have the same shape")
+    deterministic_config = replace(config, vae_sample_posterior=False)
+    original_roundtrip = encode_view_images(vae, original_view_images, deterministic_config).to(
+        dtype=FUSION_DTYPE
+    )
+    fused_roundtrip = encode_view_images(vae, fused_view_images, deterministic_config).to(
+        dtype=FUSION_DTYPE
+    )
+    vae_clean_latents = _adapt_latents(clean_latents, latent_to_vae_latents).to(dtype=FUSION_DTYPE)
+    if not (
+        original_roundtrip.shape
+        == fused_roundtrip.shape
+        == vae_clean_latents.shape
+    ):
+        raise ValueError(
+            "VAE residual bridge shapes disagree: "
+            f"clean={tuple(vae_clean_latents.shape)}, "
+            f"original_roundtrip={tuple(original_roundtrip.shape)}, "
+            f"fused_roundtrip={tuple(fused_roundtrip.shape)}"
+        )
+
+    fusion_delta_vae = fused_roundtrip - original_roundtrip
+    target_vae_clean = vae_clean_latents + fusion_delta_vae
+    target_clean = _adapt_latents(target_vae_clean, vae_latents_to_latent).to(dtype=FUSION_DTYPE)
+    if target_clean.shape != clean_latents.shape:
+        raise ValueError(
+            f"Adapted VAE target shape {tuple(target_clean.shape)} does not match "
+            f"scheduler clean shape {tuple(clean_latents.shape)}"
+        )
+    return VaeResidualBridgeResult(
+        target_clean_latents=target_clean,
+        original_roundtrip_vae_latents=original_roundtrip,
+        fused_roundtrip_vae_latents=fused_roundtrip,
+        fusion_delta_vae_latents=fusion_delta_vae,
+        vae_roundtrip_error_norm=(original_roundtrip - vae_clean_latents).norm(),
+        fusion_delta_norm=fusion_delta_vae.norm(),
+    )
 
 
 def _timed(timings: Dict[str, float], key: str, fn: Callable[[], Any], *, synchronize: bool = False) -> Any:
@@ -1827,6 +1980,8 @@ def apply_pixel_space_fusion(
     latent_to_vae_latents: Optional[TensorAdapter] = None,
     vae_latents_to_latent: Optional[TensorAdapter] = None,
     generator: Optional[torch.Generator] = None,
+    diagnostic_step_index: Optional[int] = None,
+    diagnostic_pipeline_name: str = "pixel_fusion",
 ) -> PixelFusionResult:
     """Decode predicted-clean view latents, fuse in temporary ERP RGB, encode, and reinject.
 
@@ -1836,8 +1991,6 @@ def apply_pixel_space_fusion(
 
     config.validate()
     timings: Dict[str, float] = {}
-    sigma_next = torch.zeros((), device=current_latents.device, dtype=FUSION_DTYPE)
-    next_clean_weight = torch.ones((), device=current_latents.device, dtype=FUSION_DTYPE)
     if config.reinjection_mode == "noise_consistent":
         prediction_type = _scheduler_prediction_type(scheduler)
         if prediction_type != "flow_prediction":
@@ -1845,14 +1998,6 @@ def apply_pixel_space_fusion(
                 "noise_consistent reinjection currently requires flow_prediction so the scheduler state can be "
                 f"preserved exactly; got prediction_type={prediction_type!r}"
             )
-        sigma_next = _scheduler_sigma_pair(scheduler, timestep, device=current_latents.device, dtype=FUSION_DTYPE)[1]
-        if hasattr(scheduler, "_sigma_to_alpha_sigma_t"):
-            next_clean_weight = scheduler._sigma_to_alpha_sigma_t(sigma_next)[0]
-        else:
-            next_clean_weight = 1 - sigma_next
-        while sigma_next.ndim < current_latents.ndim:
-            sigma_next = sigma_next.unsqueeze(-1)
-            next_clean_weight = next_clean_weight.unsqueeze(-1)
 
     vae_clean_latents = _adapt_latents(clean_latents, latent_to_vae_latents)
     view_images = _timed(
@@ -1897,20 +2042,30 @@ def apply_pixel_space_fusion(
     else:
         raise ValueError(f"Unsupported warp_mode={config.warp_mode!r}")
 
-    fused_vae_latents = _timed(
+    vae_bridge = _timed(
         timings,
         "vae_encode",
-        lambda: encode_view_images(vae, fused_views, config, generator=generator),
+        lambda: build_identity_preserving_vae_target(
+            vae,
+            clean_latents,
+            view_images,
+            fused_views,
+            config,
+            latent_to_vae_latents=latent_to_vae_latents,
+            vae_latents_to_latent=vae_latents_to_latent,
+        ),
         synchronize=config.measure_performance,
     )
-    fused_clean_latents_fp32 = _adapt_latents(fused_vae_latents, vae_latents_to_latent).to(dtype=FUSION_DTYPE)
+    fused_clean_latents_fp32 = vae_bridge.target_clean_latents
     latent_valid_mask = F.interpolate(
         view_valid_mask,
-        size=fused_vae_latents.shape[-2:],
+        size=vae_bridge.fused_roundtrip_vae_latents.shape[-2:],
         mode="area",
     ).clamp(0, 1)
     if vae_latents_to_latent is not None:
-        latent_valid_mask = vae_latents_to_latent(latent_valid_mask.expand_as(fused_vae_latents))
+        latent_valid_mask = vae_latents_to_latent(
+            latent_valid_mask.expand_as(vae_bridge.fused_roundtrip_vae_latents)
+        )
     fused_prev_latents = _timed(
         timings,
         "reinjection",
@@ -1919,10 +2074,12 @@ def apply_pixel_space_fusion(
             fused_clean_latents_fp32,
             prev_latents,
             model_output,
-            sigma_next,
+            torch.zeros((), device=current_latents.device, dtype=FUSION_DTYPE),
             config,
             valid_mask=latent_valid_mask,
-            next_clean_weight=next_clean_weight,
+            scheduler=scheduler,
+            timestep=timestep,
+            current_latents=current_latents,
         ),
         synchronize=config.measure_performance,
     )
@@ -1941,7 +2098,19 @@ def apply_pixel_space_fusion(
             "overlap_mask": (aggregate.contributor_count > 1).to(aggregate.fused_values.dtype).detach(),
             "sampled_camera_directions": view_dirs.detach(),
             "latent_delta_norm": (fused_clean_latents_fp32 - clean_latents.float()).norm().detach()[None],
+            "vae_roundtrip_error_norm": vae_bridge.vae_roundtrip_error_norm.detach().reshape(1),
+            "fusion_delta_norm": vae_bridge.fusion_delta_norm.detach().reshape(1),
+            "base_scheduler_update_norm": (
+                prev_latents.float() - current_latents.float()
+            ).norm().detach().reshape(1),
+            "actual_reinjection_norm": (
+                fused_prev_latents.float() - prev_latents.float()
+            ).norm().detach().reshape(1),
         }
+        diagnostics["reinjection_to_scheduler_update_ratio"] = (
+            diagnostics["actual_reinjection_norm"]
+            / diagnostics["base_scheduler_update_norm"].clamp_min(config.dpa_eps)
+        )
         diagnostics.update(
             {f"timing_{key}_seconds": aggregate.fused_values.new_tensor([value]) for key, value in timings.items()}
         )
@@ -1956,7 +2125,12 @@ def apply_pixel_space_fusion(
                     config,
                 )
             )
-        write_pixel_fusion_diagnostics(diagnostics, config)
+        write_pixel_fusion_diagnostics(
+            diagnostics,
+            config,
+            step_index=diagnostic_step_index,
+            pipeline_name=diagnostic_pipeline_name,
+        )
 
     return PixelFusionResult(
         fused_prev_latents=fused_prev_latents,
@@ -1971,7 +2145,13 @@ def apply_pixel_space_fusion(
     )
 
 
-def write_pixel_fusion_diagnostics(diagnostics: Dict[str, torch.Tensor], config: PixelFusionConfig) -> None:
+def write_pixel_fusion_diagnostics(
+    diagnostics: Dict[str, torch.Tensor],
+    config: PixelFusionConfig,
+    *,
+    step_index: Optional[int] = None,
+    pipeline_name: str = "pixel_fusion",
+) -> None:
     if not config.diagnostics_dir:
         return
     path = Path(config.diagnostics_dir)
@@ -1985,7 +2165,15 @@ def write_pixel_fusion_diagnostics(diagnostics: Dict[str, torch.Tensor], config:
             continue
         payload[key] = tensor.detach().cpu()
     if payload:
-        torch.save(payload, path / f"pixel_fusion_{timestamp}_{os.getpid()}.pt")
+        safe_pipeline_name = "".join(
+            character if character.isalnum() or character in {"-", "_"} else "_"
+            for character in pipeline_name
+        )
+        step_suffix = f"_step-{step_index:04d}" if step_index is not None else ""
+        torch.save(
+            payload,
+            path / f"pixel_fusion_{safe_pipeline_name}_{timestamp}_{os.getpid()}{step_suffix}.pt",
+        )
 
 
 # TEMPORARY DEBUG EXPORT START

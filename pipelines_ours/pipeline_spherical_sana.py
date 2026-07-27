@@ -539,6 +539,8 @@ class SphericalSanaPipeline(SanaPipeline):
                     erp_width=erp_width,
                     config=pixel_fusion_cfg,
                     generator=generator if isinstance(generator, torch.Generator) else None,
+                    diagnostic_step_index=i,
+                    diagnostic_pipeline_name="sana",
                 )
                 # TEMPORARY DEBUG EXPORT: remove with the marked helper in pixel_fusion.py.
                 temporary_save_fused_clean_erp_debug(

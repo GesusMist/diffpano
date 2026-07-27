@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 import torch
+from diffusers import DPMSolverMultistepScheduler
 
 import pipelines_ours.pixel_fusion as pixel_fusion_module
 from pipelines_ours.pixel_fusion import (
@@ -11,6 +12,7 @@ from pipelines_ours.pixel_fusion import (
     apply_configured_random_seed,
     aggregate_overlap_contributions,
     apply_pixel_space_fusion,
+    build_identity_preserving_vae_target,
     build_exclusive_owner_map,
     circular_pad_horizontal,
     decode_view_latents,
@@ -29,6 +31,7 @@ from pipelines_ours.pixel_fusion import (
     spherical_pad_erp,
     build_laplacian_pyramid,
     should_apply_pixel_fusion,
+    step_with_fused_clean_prediction,
     temporary_save_fused_clean_erp_debug,
     temporary_save_original_clean_erp_debug,
     write_back_views_exclusive,
@@ -42,7 +45,12 @@ class FakeLatentDist:
         self.mean = mean
 
     def sample(self, generator=None):
-        return self.mean
+        return self.mean + torch.randn(
+            self.mean.shape,
+            device=self.mean.device,
+            dtype=self.mean.dtype,
+            generator=generator,
+        )
 
 
 class FakeEncodeOutput:
@@ -83,9 +91,21 @@ class FakeFlowMatchScheduler:
     def __init__(self):
         self.timesteps = torch.tensor([1000.0, 500.0])
         self.sigmas = torch.tensor([1.0, 0.5, 0.0])
+        self._step_index = None
+        self.last_model_output = None
 
     def index_for_timestep(self, timestep, schedule_timesteps):
         return int((schedule_timesteps == timestep).nonzero().flatten()[0])
+
+    def step(self, model_output, timestep, sample, return_dict=False):
+        if self._step_index is None:
+            self._step_index = self.index_for_timestep(timestep, self.timesteps)
+        self.last_model_output = model_output.detach().clone()
+        sigma = self.sigmas[self._step_index].to(device=sample.device, dtype=torch.float32)
+        sigma_next = self.sigmas[self._step_index + 1].to(device=sample.device, dtype=torch.float32)
+        previous = sample.float() + (sigma_next - sigma) * model_output.float()
+        self._step_index += 1
+        return (previous.to(dtype=model_output.dtype),)
 
 
 class FakeSchedulerConfig:
@@ -94,6 +114,25 @@ class FakeSchedulerConfig:
 
 class FakeDPMSolverScheduler(FakeFlowMatchScheduler):
     config = FakeSchedulerConfig()
+
+    def __init__(self):
+        super().__init__()
+        self.model_outputs = [None]
+        self.lower_order_nums = 0
+
+    def step(self, model_output, timestep, sample, return_dict=False):
+        if self._step_index is None:
+            self._step_index = self.index_for_timestep(timestep, self.timesteps)
+        self.last_model_output = model_output.detach().clone()
+        self.model_outputs[0] = model_output
+        self.lower_order_nums += 1
+        sigma = self.sigmas[self._step_index].to(device=sample.device, dtype=torch.float32)
+        sigma_next = self.sigmas[self._step_index + 1].to(device=sample.device, dtype=torch.float32)
+        clean = sample.float() - sigma * model_output.float()
+        coefficient = 1 - sigma_next / sigma
+        previous = (sigma_next / sigma) * sample.float() + coefficient * clean
+        self._step_index += 1
+        return (previous.to(dtype=model_output.dtype),)
 
 
 class PixelFusionTests(unittest.TestCase):
@@ -683,17 +722,196 @@ class PixelFusionTests(unittest.TestCase):
         self.assertFalse(torch.isnan(extracted).any())
         self.assertTrue(torch.allclose(extracted, view, atol=1e-4))
 
-    def test_reinjection_strength_zero_and_one(self):
-        clean = torch.ones(1, 2, 2, 2)
-        fused = clean + 2
-        model_output = torch.ones_like(clean) * 0.5
-        sigma_next = torch.tensor(0.25)
-        prev = clean + sigma_next * model_output
-        zero_config = PixelFusionConfig(reinjection_strength=0.0)
-        one_config = PixelFusionConfig(reinjection_strength=1.0)
-        self.assertTrue(torch.allclose(reinject_fused_latents(clean, fused, prev, model_output, sigma_next, zero_config), prev))
-        expected = prev + (1 - sigma_next) * (fused - clean)
-        self.assertTrue(torch.allclose(reinject_fused_latents(clean, fused, prev, model_output, sigma_next, one_config), expected))
+    def test_noise_consistent_zero_strength_returns_original_result_exactly(self):
+        scheduler = FakeDPMSolverScheduler()
+        timestep = torch.tensor(1000.0)
+        current = torch.full((1, 2, 2, 2), 3.0)
+        model_output = torch.full_like(current, 0.5)
+        clean, _, sigma_next = predict_clean_latents(scheduler, model_output, timestep, current)
+        original_prev = scheduler.step(model_output, timestep, current, return_dict=False)[0]
+
+        result = reinject_fused_latents(
+            clean,
+            clean + 100,
+            original_prev,
+            model_output,
+            sigma_next,
+            PixelFusionConfig(reinjection_strength=0.0),
+            scheduler=scheduler,
+            timestep=timestep,
+            current_latents=current,
+        )
+
+        self.assertTrue(torch.equal(result, original_prev))
+
+    def test_identity_preserving_bridge_removes_nonperfect_vae_roundtrip_error(self):
+        config = PixelFusionConfig(vae_sample_posterior=True)
+        clean = torch.randn(2, 4, 3, 3)
+        original_rgb = decode_view_latents(FakeVAE(), clean, config)
+
+        bridge = build_identity_preserving_vae_target(
+            FakeVAE(),
+            clean,
+            original_rgb,
+            original_rgb.clone(),
+            config,
+        )
+
+        self.assertGreater(bridge.vae_roundtrip_error_norm.item(), 0)
+        self.assertTrue(torch.equal(bridge.fusion_delta_vae_latents, torch.zeros_like(clean)))
+        self.assertTrue(torch.equal(bridge.target_clean_latents, clean.float()))
+
+        scheduler = FakeDPMSolverScheduler()
+        timestep = torch.tensor(1000.0)
+        current = torch.randn_like(clean)
+        flow = current - clean
+        original_prev = scheduler.step(flow, timestep, current, return_dict=False)[0]
+        corrected_prev = step_with_fused_clean_prediction(
+            scheduler,
+            timestep,
+            current,
+            flow,
+            clean,
+            bridge.target_clean_latents,
+            1.0,
+            original_prev_latents=original_prev,
+        )
+        self.assertTrue(torch.allclose(corrected_prev, original_prev, atol=1e-7, rtol=0))
+
+    def test_identity_preserving_bridge_carries_only_real_rgb_fusion_delta(self):
+        config = PixelFusionConfig()
+        clean = torch.randn(2, 4, 3, 3)
+        original_rgb = decode_view_latents(FakeVAE(), clean, config)
+        fused_rgb = original_rgb + 0.125
+
+        bridge = build_identity_preserving_vae_target(
+            FakeVAE(),
+            clean,
+            original_rgb,
+            fused_rgb,
+            config,
+        )
+
+        expected_delta = (
+            bridge.fused_roundtrip_vae_latents
+            - bridge.original_roundtrip_vae_latents
+        )
+        self.assertTrue(
+            torch.allclose(
+                bridge.target_clean_latents - clean,
+                expected_delta,
+                atol=1e-7,
+                rtol=0,
+            )
+        )
+
+    def test_scheduler_rerun_uses_corrected_flow_and_resets_first_order_state(self):
+        scheduler = FakeDPMSolverScheduler()
+        timestep = torch.tensor(1000.0)
+        current = torch.full((1, 2, 2, 2), 3.0)
+        flow = torch.full_like(current, 0.4)
+        clean, _, _ = predict_clean_latents(scheduler, flow, timestep, current)
+        original_prev = scheduler.step(flow, timestep, current, return_dict=False)[0]
+        target = clean + 0.8
+
+        corrected_prev = step_with_fused_clean_prediction(
+            scheduler,
+            timestep,
+            current,
+            flow,
+            clean,
+            target,
+            0.25,
+            original_prev_latents=original_prev,
+        )
+
+        corrected_clean = clean + 0.25 * (target - clean)
+        expected_flow = (current - corrected_clean) / 1.0
+        self.assertTrue(torch.allclose(scheduler.last_model_output, expected_flow, atol=1e-7, rtol=0))
+        self.assertTrue(
+            torch.allclose(
+                current - scheduler.sigmas[0] * scheduler.last_model_output,
+                corrected_clean,
+                atol=1e-7,
+                rtol=0,
+            )
+        )
+        direct_scheduler = FakeDPMSolverScheduler()
+        direct = direct_scheduler.step(expected_flow, timestep, current, return_dict=False)[0]
+        self.assertTrue(torch.allclose(corrected_prev, direct, atol=1e-7, rtol=0))
+        self.assertEqual(scheduler.lower_order_nums, 1)
+
+    def test_real_dpm_solver_rerun_matches_analytical_clean_delta_coefficient(self):
+        scheduler = DPMSolverMultistepScheduler(
+            algorithm_type="dpmsolver++",
+            prediction_type="flow_prediction",
+            solver_order=1,
+            use_flow_sigmas=True,
+            final_sigmas_type="zero",
+        )
+        scheduler.set_timesteps(4)
+        timestep = scheduler.timesteps[1]
+        current = torch.randn(1, 2, 2, 2)
+        flow = torch.randn_like(current)
+        clean, sigma_current, sigma_next = predict_clean_latents(scheduler, flow, timestep, current)
+        scheduler._step_index = None
+        original_prev = scheduler.step(flow, timestep, current, return_dict=False)[0]
+        clean_delta = torch.full_like(clean, 0.3)
+
+        corrected_prev = step_with_fused_clean_prediction(
+            scheduler,
+            timestep,
+            current,
+            flow,
+            clean,
+            clean + clean_delta,
+            1.0,
+            original_prev_latents=original_prev,
+        )
+
+        alpha_current = 1 - sigma_current
+        alpha_next = 1 - sigma_next
+        coefficient = alpha_next - (sigma_next / sigma_current) * alpha_current
+        expected = original_prev + coefficient * clean_delta
+        self.assertTrue(torch.allclose(corrected_prev, expected, atol=1e-6, rtol=1e-6))
+        self.assertTrue(torch.allclose(coefficient, 1 - sigma_next / sigma_current, atol=1e-7))
+
+    def test_identity_preserving_bridge_supports_flux_style_pack_adapters(self):
+        config = PixelFusionConfig()
+        clean_vae = torch.randn(2, 4, 2, 3)
+
+        def pack(value):
+            return value.permute(0, 2, 3, 1).reshape(value.shape[0], -1, value.shape[1])
+
+        def unpack(value):
+            return value.reshape(value.shape[0], 2, 3, 4).permute(0, 3, 1, 2)
+
+        clean_packed = pack(clean_vae)
+        original_rgb = decode_view_latents(FakeVAE(), clean_vae, config)
+        fused_rgb = original_rgb - 0.2
+        bridge = build_identity_preserving_vae_target(
+            FakeVAE(),
+            clean_packed,
+            original_rgb,
+            fused_rgb,
+            config,
+            latent_to_vae_latents=unpack,
+            vae_latents_to_latent=pack,
+        )
+
+        expected_packed_delta = pack(
+            bridge.fused_roundtrip_vae_latents
+            - bridge.original_roundtrip_vae_latents
+        )
+        self.assertEqual(bridge.target_clean_latents.shape, clean_packed.shape)
+        self.assertTrue(
+            torch.allclose(
+                bridge.target_clean_latents - clean_packed,
+                expected_packed_delta,
+                atol=1e-7,
+                rtol=0,
+            )
+        )
 
     def test_dpm_flow_prediction_converts_to_clean_sample(self):
         scheduler = FakeDPMSolverScheduler()
@@ -771,6 +989,11 @@ class PixelFusionTests(unittest.TestCase):
             "erp_pixel_center_max_error",
             "perspective_round_trip_mean_error",
             "perspective_round_trip_max_error",
+            "vae_roundtrip_error_norm",
+            "fusion_delta_norm",
+            "base_scheduler_update_norm",
+            "actual_reinjection_norm",
+            "reinjection_to_scheduler_update_ratio",
         ):
             self.assertIn(key, result.diagnostics)
         self.assertLess(result.diagnostics["erp_pixel_center_max_error"].item(), 2e-6)

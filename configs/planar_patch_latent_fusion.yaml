@@ -1,0 +1,19 @@
+# PLANAR ORIGINAL-PIPELINE CONTROL: denoise patches independently and fuse scheduler outputs directly in latent space.
+random_seed: 1234 # null preserves caller RNG; otherwise use an integer from 0 through 2^63-1 for deterministic generation.
+patch_latent_height: 20 # Positive integer <= latent-grid height; 20 matches the other planar SANA comparisons.
+patch_latent_width: 20 # Positive integer <= latent-grid width; 20 matches the other planar SANA comparisons.
+patch_stride_height: 10 # Integer from 1 through patch_latent_height; 10 gives 50 percent vertical overlap.
+patch_stride_width: 10 # Integer from 1 through patch_latent_width; 10 gives 50 percent horizontal overlap.
+fusion_space: latent # Options: pixel performs RGB fusion and reinjection; latent directly blends scheduler outputs like original SphereDiff.
+aggregation_mode: weighted_average # Options: average, weighted_average, or detail_preserving_average; here it controls final RGB patch rendering only.
+weight_mode: distance_to_boundary # Options: uniform, cosine, gaussian, or distance_to_boundary; used for latent writeback and final rendering.
+dpa_alpha: 1.0 # Float, normally 0.0 to 1.0; ignored because aggregation_mode is weighted_average.
+dpa_power: 1.0 # Nonnegative float controlling DPA detail weighting; ignored because aggregation_mode is weighted_average.
+dpa_eps: 1.0e-6 # Positive numerical floor for blend weights, normalization, and coverage checks.
+reinjection_mode: noise_consistent # Options: noise_consistent, replace, weighted_replace, or residual; ignored in latent fusion mode.
+reinjection_strength: 1.0 # Float from 0.0 through 1.0; ignored in latent fusion mode because there is no reinjection.
+latent_writeback_mode: weighted_average # weighted_average matches original SphereDiff latent accumulation; exclusive selects one owner patch per cell.
+vae_chunk_size: 4 # Positive integer controlling final patch decoding; no VAE encode/decode occurs during latent-space denoising.
+vae_sample_posterior: false # Retained for compatibility; ignored in latent fusion mode.
+save_diagnostics: false # true saves pixel-reinjection diagnostics; ignored in latent fusion mode.
+diagnostics_dir: null # null disables diagnostic files; ignored in latent fusion mode.

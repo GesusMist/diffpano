@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 #SBATCH --time=08:00:00
 #SBATCH --output=/home/shig/diffpano/logs/%x.%j.out
 #SBATCH --error=/home/shig/diffpano/logs/%x.%j.err
@@ -110,7 +110,7 @@ if [[ -z "$ENABLE_MODEL_CPU_OFFLOAD" ]]; then
 fi
 
 PROMPT_TXT_PATH="data/prompts/${PROMPT_NAME}.txt"
-SAVE_PATH="$SCRATCH/diffpano/outputs/${TASK_NAME}/${PIPELINE_CLS}/${PROMPT_NAME}"
+SAVE_PATH="$SCRATCH/diffpano/outputs/${TASK_NAME}/${PIPELINE_CLS}/"0716_dpw_dpa"/${PROMPT_NAME}"
 
 if [[ ! -f "$PROMPT_TXT_PATH" ]]; then
     echo "Prompt file not found: $PROMPT_TXT_PATH" >&2

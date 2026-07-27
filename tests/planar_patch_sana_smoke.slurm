@@ -29,8 +29,15 @@ mkdir -p "$TMPDIR" /home/shig/diffpano/test_outputs
 
 NUM_INFERENCE_STEPS="${NUM_INFERENCE_STEPS:-1}"
 PLANAR_FUSION_CONFIG_PATH="${PLANAR_FUSION_CONFIG_PATH:-configs/planar_patch_test.yaml}"
-RUN_LABEL="${RUN_LABEL:-planar_patch_sana}"
+PROMPT_NAME="${PROMPT_NAME:-ruins}"
+PROMPT_TXT_PATH="data/prompts/${PROMPT_NAME}.txt"
+RUN_LABEL="${RUN_LABEL:-planar_patch_sana_${PROMPT_NAME}}"
 OUTPUT_PREFIX="/home/shig/diffpano/test_outputs/${RUN_LABEL}_${NUM_INFERENCE_STEPS}step_${SLURM_JOB_ID}"
+
+if [[ ! -f "$PROMPT_TXT_PATH" ]]; then
+    echo "Prompt file not found: $PROMPT_TXT_PATH" >&2
+    exit 2
+fi
 
 python generate_static_wallpaper.py --config_add \
     pipeline_cls=PlanarPatchSanaPipeline \
@@ -38,7 +45,7 @@ python generate_static_wallpaper.py --config_add \
     variant=bf16 \
     mixed_precision=bf16 \
     enable_model_cpu_offload=False \
-    call_kwargs.prompt_txt_path=data/prompts/ruins.txt \
+    call_kwargs.prompt_txt_path="$PROMPT_TXT_PATH" \
     call_kwargs.num_inference_steps="$NUM_INFERENCE_STEPS" \
     call_kwargs.height=2048 \
     call_kwargs.width=4096 \
