@@ -44,6 +44,6 @@ vae_sample_posterior: false # Retained for compatibility; the paired residual br
 
 # TEMPORARY DEBUG EXPORT: delete these four lines and the marked code blocks after diagnosing fusion.
 temporary_save_fused_erp_per_step: true # true saves the fused predicted-clean RGB ERP after every fusion timestep; false disables it.
-temporary_fused_erp_dir: /home/shig/diffpano/debug_fused_clean_erp/7_16_early # Output directory for temporary per-step PNG files; null uses this repo's debug_fused_clean_erp directory.
+temporary_fused_erp_dir: outputs/debug/fused_clean_erp # Output directory for temporary per-step PNG files; null uses this repo's debug_fused_clean_erp directory.
 temporary_save_original_clean_erp_per_step: true # true saves original predicted-clean ERPs only when pixel_fusion_enabled is false; false disables it.
-temporary_original_clean_erp_dir: /home/shig/diffpano/debug_original_clean_erp # Output directory for original predicted-clean ERP PNGs; null uses this repo's debug_original_clean_erp directory.
+temporary_original_clean_erp_dir: outputs/debug/original_clean_erp # Output directory for original predicted-clean ERP PNGs; null uses this repo's debug_original_clean_erp directory.

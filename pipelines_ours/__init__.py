@@ -1,5 +1,9 @@
-from .pipeline_planar_patch_sana import PlanarPatchSanaPipeline  # EXPERIMENTAL PLANAR ABLATION
-from .pipeline_spherical_flux import SphericalFluxPipeline
-from .pipeline_spherical_hunyuan_video import SphericalHunyuanVideoPipeline
-from .pipeline_spherical_ltx_video import SphericalLTXPipeline
-from .pipeline_spherical_sana import SphericalSanaPipeline
+"""Legacy import compatibility; use :mod:`diffpano.pipelines` in new code."""
+
+from diffpano.pipelines.flux import SphericalFluxPipeline
+from diffpano.pipelines.hunyuan_video import SphericalHunyuanVideoPipeline
+from diffpano.pipelines.ltx_video import SphericalLTXPipeline
+from diffpano.pipelines.sana import SphericalSanaPipeline
+from experiments.planar.pipeline import PlanarPatchSanaPipeline
+
+__all__ = ["PlanarPatchSanaPipeline", "SphericalFluxPipeline", "SphericalHunyuanVideoPipeline", "SphericalLTXPipeline", "SphericalSanaPipeline"]

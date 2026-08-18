@@ -1,4 +1,5 @@
 import math
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -6,8 +7,10 @@ from unittest import mock
 import torch
 from diffusers import DPMSolverMultistepScheduler
 
-import pipelines_ours.pixel_fusion as pixel_fusion_module
-from pipelines_ours.pixel_fusion import (
+import diffpano.fusion as fusion_module
+import diffpano.lpw as lpw_module
+import diffpano.projection as projection_module
+from diffpano.pixel_fusion import (
     PixelFusionConfig,
     apply_configured_random_seed,
     aggregate_overlap_contributions,
@@ -37,7 +40,7 @@ from pipelines_ours.pixel_fusion import (
     write_back_views_exclusive,
     write_back_views_weighted_average,
 )
-from pipelines_ours.spherical_functions import SphericalFunctions
+from diffpano.geometry import SphericalFunctions
 
 
 class FakeLatentDist:
@@ -339,8 +342,8 @@ class PixelFusionTests(unittest.TestCase):
 
     def test_erp_world_grid_round_trips_exact_pixel_centers(self):
         height, width = 16, 32
-        world = pixel_fusion_module._erp_world_grid(height, width, device=torch.device("cpu"), dtype=torch.float32)
-        grid = pixel_fusion_module._world_to_erp_grid(
+        world = projection_module._erp_world_grid(height, width, device=torch.device("cpu"), dtype=torch.float32)
+        grid = projection_module._world_to_erp_grid(
             world.reshape(height, width, 3),
             erp_height=height,
             erp_width=width,
@@ -359,7 +362,7 @@ class PixelFusionTests(unittest.TestCase):
             erp = torch.zeros(1, 1, height, width)
             erp[0, 0, y, x] = 1
             grid = torch.tensor([[[[2 * (x + 0.5) / width - 1, 2 * (y + 0.5) / height - 1]]]])
-            sampled = pixel_fusion_module._sample_erp_image(erp, grid)
+            sampled = projection_module._sample_erp_image(erp, grid)
             self.assertEqual(sampled.item(), 1.0)
 
     def test_one_patch_returns_itself_for_constant_patch(self):
@@ -447,7 +450,7 @@ class PixelFusionTests(unittest.TestCase):
             self.assertEqual(tensor.dtype, torch.float32)
 
     def test_temporary_fused_erp_debug_export_writes_png(self):
-        output_dir = Path("/home/shig/diffpano/test_outputs/temporary_fused_erp_export_test")
+        output_dir = Path(tempfile.mkdtemp(prefix="diffpano-fused-erp-"))
         config = PixelFusionConfig(
             temporary_save_fused_erp_per_step=True,
             temporary_fused_erp_dir=str(output_dir),
@@ -470,7 +473,7 @@ class PixelFusionTests(unittest.TestCase):
                 output_dir.rmdir()
 
     def test_temporary_original_clean_erp_debug_export_writes_png(self):
-        output_dir = Path("/home/shig/diffpano/test_outputs/temporary_original_clean_erp_export_test")
+        output_dir = Path(tempfile.mkdtemp(prefix="diffpano-original-erp-"))
         config = PixelFusionConfig(
             pixel_fusion_enabled=False,
             temporary_save_original_clean_erp_per_step=True,
@@ -553,7 +556,7 @@ class PixelFusionTests(unittest.TestCase):
                 [0.0, 1.0, 0.0],
             ]
         )
-        original_sample = pixel_fusion_module._sample_erp_image
+        original_sample = projection_module._sample_erp_image
         sampled_batch_sizes = []
 
         def checked_sample(values, grid, **kwargs):
@@ -561,7 +564,7 @@ class PixelFusionTests(unittest.TestCase):
             self.assertLessEqual(values.shape[0], config.projection_chunk_size)
             return original_sample(values, grid, **kwargs)
 
-        with mock.patch.object(pixel_fusion_module, "_sample_erp_image", side_effect=checked_sample):
+        with mock.patch.object(projection_module, "_sample_erp_image", side_effect=checked_sample):
             extracted, valid = extract_views_from_erp_standard(
                 erp,
                 mask,
@@ -580,7 +583,7 @@ class PixelFusionTests(unittest.TestCase):
         mask = torch.ones(1, 16, 32)
         original = torch.randn(1, 3, 4, 4)
         view_dirs = torch.tensor([[0.0, 0.0, 1.0]])
-        original_sample = pixel_fusion_module._sample_erp_image
+        original_sample = projection_module._sample_erp_image
 
         for interpolation_mode in ("bilinear", "nearest"):
             config = PixelFusionConfig(
@@ -592,7 +595,7 @@ class PixelFusionTests(unittest.TestCase):
                 observed_modes.append(kwargs.get("mode"))
                 return original_sample(values, grid, **kwargs)
 
-            with mock.patch.object(pixel_fusion_module, "_sample_erp_image", side_effect=checked_sample):
+            with mock.patch.object(projection_module, "_sample_erp_image", side_effect=checked_sample):
                 extract_views_from_erp_standard(
                     erp,
                     mask,
@@ -678,12 +681,12 @@ class PixelFusionTests(unittest.TestCase):
         height, width = 8, 16
         north = torch.zeros(1, 1, height, width)
         north[0, 0, 0, 1] = 1
-        north_blurred = pixel_fusion_module._pyramid_blur(north, "reflect", circular_horizontal=True)
+        north_blurred = lpw_module._pyramid_blur(north, "reflect", circular_horizontal=True)
         self.assertGreater(north_blurred[0, 0, 0, 1 + width // 2].item(), 0)
 
         south = torch.zeros_like(north)
         south[0, 0, -1, 3] = 1
-        south_blurred = pixel_fusion_module._pyramid_blur(south, "reflect", circular_horizontal=True)
+        south_blurred = lpw_module._pyramid_blur(south, "reflect", circular_horizontal=True)
         self.assertGreater(south_blurred[0, 0, -1, 3 + width // 2].item(), 0)
 
     def test_original_debug_renderer_matches_standard_weighted_projection(self):
@@ -696,7 +699,7 @@ class PixelFusionTests(unittest.TestCase):
         views = torch.cat([self.asymmetric_view(8), self.asymmetric_view(8).flip(-1)], dim=0)
         view_dirs = torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
         fovs = [(80, 80), (80, 80)]
-        direct = pixel_fusion_module._fuse_views_to_erp_standard(views, view_dirs, fovs, 32, 64, config)
+        direct = fusion_module._fuse_views_to_erp_standard(views, view_dirs, fovs, 32, 64, config)
         streamed = render_views_to_erp_standard_weighted(
             [
                 (views[0:1], view_dirs[0:1], fovs[0]),

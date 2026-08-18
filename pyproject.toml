@@ -1,3 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffpano"
+version = "0.1.0"
+description = "Tuning-free panoramic diffusion with spherical latent fusion"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "accelerate==1.4.0",
+  "diffusers==0.32.2",
+  "einops==0.8.1",
+  "imageio==2.37.0",
+  "imageio-ffmpeg==0.6.0",
+  "omegaconf==2.3.0",
+  "protobuf==5.29.3",
+  "sentencepiece==0.2.0",
+  "transformers==4.49.0",
+]
+
+[project.scripts]
+diffpano-generate = "scripts.generate:main"
+diffpano-download-models = "scripts.download_models:main"
+
+[tool.setuptools.packages.find]
+include = ["diffpano*", "experiments*", "pipelines_ours*", "scripts*", "spherediff*"]
+
 [tool.autopep8]
 max_line_length = 200
 ignore = ["E402", "E731"]

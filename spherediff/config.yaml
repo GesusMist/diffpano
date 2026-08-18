@@ -1,0 +1,25 @@
+experiment:
+  name: spherediff-sana-baseline
+  seed: 1
+model:
+  pipeline: sana
+  id: Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers
+  path: null
+  variant: bf16
+  precision: bf16
+prompt:
+  path: prompts/ruins.txt
+output:
+  directory: outputs
+generation:
+  num_inference_steps: 20
+  guidance_scale: 4.5
+  height: 1024
+  width: 1024
+sphere:
+  num_points: 2600
+  erp_height: 2048
+  erp_width: 4096
+  weighted_average_temperature: 0.1
+fusion:
+  enabled: false

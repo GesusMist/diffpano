@@ -2,7 +2,8 @@ import json
 import unittest
 from dataclasses import dataclass
 
-from output_metadata import build_output_metadata
+from diffpano.config import ExperimentConfig
+from diffpano.metadata import build_output_metadata, build_run_metadata
 
 
 @dataclass
@@ -55,7 +56,7 @@ class FakePlanarPipeline:
         num_inference_steps=20,
         height=2048,
         width=4096,
-        planar_fusion_config_path="configs/planar_patch_test.yaml",
+        planar_fusion_config_path="experiments/planar/config.yaml",
     ):
         return None
 
@@ -106,6 +107,17 @@ class OutputMetadataTests(unittest.TestCase):
         )
         self.assertEqual(metadata["planar_fusion_config"]["patch_latent_height"], 20)
 
+        json.dumps(metadata, allow_nan=False)
+
+    def test_canonical_metadata_includes_experiment_and_environment(self):
+        config = ExperimentConfig()
+        config.resolved_prompts = ["north", "upper", "equator", "lower", "south"]
+        metadata = build_run_metadata(config, FakePipeline(), {}, "outputs/result.png")
+        self.assertEqual(metadata["schema_version"], 3)
+        self.assertEqual(metadata["experiment"]["seed"], 1)
+        self.assertEqual(metadata["prompts"], config.resolved_prompts)
+        self.assertIn("python", metadata["environment"])
+        self.assertIn("torch", metadata["environment"])
         json.dumps(metadata, allow_nan=False)
 
 

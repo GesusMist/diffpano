@@ -1,0 +1,44 @@
+experiment:
+  name: full-sphere-sana-forest-20step
+  seed: 1101
+
+model:
+  pipeline: sana
+  id: Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers
+  path: null
+  variant: bf16
+  precision: bf16
+
+prompt:
+  path: prompts/forest.txt
+
+output:
+  directory: test_outputs/pipeline_full_20step_0818
+  save_final: true
+  save_metadata: true
+
+generation:
+  num_inference_steps: 20
+  guidance_scale: 4.5
+  height: 512
+  width: 512
+  use_resolution_binning: false
+
+sphere:
+  num_points: 2600
+  erp_height: 256
+  erp_width: 512
+  weighted_average_temperature: 0.1
+
+fusion:
+  enabled: true
+  warp:
+    mode: standard
+  aggregation:
+    mode: average
+    weight_mode: uniform
+
+performance:
+  vae_chunk_size: 4
+  projection_chunk_size: 1
+

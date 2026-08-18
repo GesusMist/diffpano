@@ -3,7 +3,7 @@ import unittest
 
 import torch
 
-from pipelines_ours.pixel_fusion import (
+from diffpano.pixel_fusion import (
     PixelFusionConfig,
     aggregate_overlap_contributions,
     build_identity_preserving_vae_target,
@@ -12,7 +12,7 @@ from pipelines_ours.pixel_fusion import (
     predict_clean_latents,
     step_with_fused_clean_prediction,
 )
-from pipelines_ours.planar_patch_fusion import (
+from experiments.planar.fusion import (
     PlanarPatchFusionConfig,
     blend_planar_patches,
     build_planar_owner_map,
@@ -22,7 +22,7 @@ from pipelines_ours.planar_patch_fusion import (
     scale_planar_patch_layout,
     write_back_planar_latents,
 )
-from pipelines_ours.spherical_functions import SphericalFunctions
+from diffpano.geometry import SphericalFunctions
 
 
 class _PlanarEncodeOutput:
