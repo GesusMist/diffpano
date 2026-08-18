@@ -25,15 +25,14 @@ export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export TMPDIR=/home/shig/diffpano/.tmp
 export PYTHONUNBUFFERED=1
-OUTPUT_DIR=/home/shig/diffpano/test_outputs/0726average_var_size
-mkdir -p "$TMPDIR" "$OUTPUT_DIR"
+mkdir -p "$TMPDIR" /home/shig/diffpano/test_outputs/0726average_var_size
 
 NUM_INFERENCE_STEPS="${NUM_INFERENCE_STEPS:-1}"
 PLANAR_FUSION_CONFIG_PATH="${PLANAR_FUSION_CONFIG_PATH:-configs/planar_patch_average.yaml}"
 PROMPT_NAME="${PROMPT_NAME:-ruins}"
 PROMPT_TXT_PATH="data/prompts/${PROMPT_NAME}.txt"
 RUN_LABEL="${RUN_LABEL:-planar_patch_sana_${PROMPT_NAME}}"
-OUTPUT_PREFIX="${OUTPUT_DIR}/${RUN_LABEL}_${NUM_INFERENCE_STEPS}step_${SLURM_JOB_ID}"
+OUTPUT_PREFIX="/home/shig/diffpano/test_outputs/${RUN_LABEL}_${NUM_INFERENCE_STEPS}step_${SLURM_JOB_ID}"
 
 if [[ ! -f "$PROMPT_TXT_PATH" ]]; then
     echo "Prompt file not found: $PROMPT_TXT_PATH" >&2
