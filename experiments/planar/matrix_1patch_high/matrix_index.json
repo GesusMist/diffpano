@@ -1,0 +1,212 @@
+[
+  {
+    "task_id": 0,
+    "method": "1_latent_average",
+    "prompt": "xfjord",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/1_latent_average__sana__xfjord.yaml"
+  },
+  {
+    "task_id": 1,
+    "method": "1_latent_average",
+    "prompt": "xfjord",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/1_latent_average__flux__xfjord.yaml"
+  },
+  {
+    "task_id": 2,
+    "method": "1_latent_average",
+    "prompt": "xfjord",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/1_latent_average__sd2__xfjord.yaml"
+  },
+  {
+    "task_id": 3,
+    "method": "1_latent_average",
+    "prompt": "xvalley",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/1_latent_average__sana__xvalley.yaml"
+  },
+  {
+    "task_id": 4,
+    "method": "1_latent_average",
+    "prompt": "xvalley",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/1_latent_average__flux__xvalley.yaml"
+  },
+  {
+    "task_id": 5,
+    "method": "1_latent_average",
+    "prompt": "xvalley",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/1_latent_average__sd2__xvalley.yaml"
+  },
+  {
+    "task_id": 6,
+    "method": "2_rgb_direct_exclusive",
+    "prompt": "xfjord",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/2_rgb_direct_exclusive__sana__xfjord.yaml"
+  },
+  {
+    "task_id": 7,
+    "method": "2_rgb_direct_exclusive",
+    "prompt": "xfjord",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/2_rgb_direct_exclusive__flux__xfjord.yaml"
+  },
+  {
+    "task_id": 8,
+    "method": "2_rgb_direct_exclusive",
+    "prompt": "xfjord",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/2_rgb_direct_exclusive__sd2__xfjord.yaml"
+  },
+  {
+    "task_id": 9,
+    "method": "2_rgb_direct_exclusive",
+    "prompt": "xvalley",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/2_rgb_direct_exclusive__sana__xvalley.yaml"
+  },
+  {
+    "task_id": 10,
+    "method": "2_rgb_direct_exclusive",
+    "prompt": "xvalley",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/2_rgb_direct_exclusive__flux__xvalley.yaml"
+  },
+  {
+    "task_id": 11,
+    "method": "2_rgb_direct_exclusive",
+    "prompt": "xvalley",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/2_rgb_direct_exclusive__sd2__xvalley.yaml"
+  },
+  {
+    "task_id": 12,
+    "method": "3_rgb_direct_weighted",
+    "prompt": "xfjord",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/3_rgb_direct_weighted__sana__xfjord.yaml"
+  },
+  {
+    "task_id": 13,
+    "method": "3_rgb_direct_weighted",
+    "prompt": "xfjord",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/3_rgb_direct_weighted__flux__xfjord.yaml"
+  },
+  {
+    "task_id": 14,
+    "method": "3_rgb_direct_weighted",
+    "prompt": "xfjord",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/3_rgb_direct_weighted__sd2__xfjord.yaml"
+  },
+  {
+    "task_id": 15,
+    "method": "3_rgb_direct_weighted",
+    "prompt": "xvalley",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/3_rgb_direct_weighted__sana__xvalley.yaml"
+  },
+  {
+    "task_id": 16,
+    "method": "3_rgb_direct_weighted",
+    "prompt": "xvalley",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/3_rgb_direct_weighted__flux__xvalley.yaml"
+  },
+  {
+    "task_id": 17,
+    "method": "3_rgb_direct_weighted",
+    "prompt": "xvalley",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/3_rgb_direct_weighted__sd2__xvalley.yaml"
+  },
+  {
+    "task_id": 18,
+    "method": "4_rgb_bridge_exclusive",
+    "prompt": "xfjord",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/4_rgb_bridge_exclusive__sana__xfjord.yaml"
+  },
+  {
+    "task_id": 19,
+    "method": "4_rgb_bridge_exclusive",
+    "prompt": "xfjord",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/4_rgb_bridge_exclusive__flux__xfjord.yaml"
+  },
+  {
+    "task_id": 20,
+    "method": "4_rgb_bridge_exclusive",
+    "prompt": "xfjord",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/4_rgb_bridge_exclusive__sd2__xfjord.yaml"
+  },
+  {
+    "task_id": 21,
+    "method": "4_rgb_bridge_exclusive",
+    "prompt": "xvalley",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/4_rgb_bridge_exclusive__sana__xvalley.yaml"
+  },
+  {
+    "task_id": 22,
+    "method": "4_rgb_bridge_exclusive",
+    "prompt": "xvalley",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/4_rgb_bridge_exclusive__flux__xvalley.yaml"
+  },
+  {
+    "task_id": 23,
+    "method": "4_rgb_bridge_exclusive",
+    "prompt": "xvalley",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/4_rgb_bridge_exclusive__sd2__xvalley.yaml"
+  },
+  {
+    "task_id": 24,
+    "method": "5_rgb_bridge_weighted",
+    "prompt": "xfjord",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/5_rgb_bridge_weighted__sana__xfjord.yaml"
+  },
+  {
+    "task_id": 25,
+    "method": "5_rgb_bridge_weighted",
+    "prompt": "xfjord",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/5_rgb_bridge_weighted__flux__xfjord.yaml"
+  },
+  {
+    "task_id": 26,
+    "method": "5_rgb_bridge_weighted",
+    "prompt": "xfjord",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/5_rgb_bridge_weighted__sd2__xfjord.yaml"
+  },
+  {
+    "task_id": 27,
+    "method": "5_rgb_bridge_weighted",
+    "prompt": "xvalley",
+    "model": "sana",
+    "config": "experiments/planar/matrix_1patch_high/5_rgb_bridge_weighted__sana__xvalley.yaml"
+  },
+  {
+    "task_id": 28,
+    "method": "5_rgb_bridge_weighted",
+    "prompt": "xvalley",
+    "model": "flux",
+    "config": "experiments/planar/matrix_1patch_high/5_rgb_bridge_weighted__flux__xvalley.yaml"
+  },
+  {
+    "task_id": 29,
+    "method": "5_rgb_bridge_weighted",
+    "prompt": "xvalley",
+    "model": "sd2",
+    "config": "experiments/planar/matrix_1patch_high/5_rgb_bridge_weighted__sd2__xvalley.yaml"
+  }
+]

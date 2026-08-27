@@ -13,10 +13,12 @@ from diffusers.pipelines.sana import SanaPipeline
 from diffusers.pipelines.sana.pipeline_output import SanaPipelineOutput
 
 from diffpano.pipelines.sana import retrieve_timesteps
+from diffpano.initialization import load_directional_prompts
 from diffpano.pixel_fusion import (
     apply_configured_random_seed,
     build_identity_preserving_vae_target,
     decode_view_latents,
+    encode_view_images,
     predict_clean_latents,
     reinject_fused_latents,
     write_pixel_fusion_diagnostics,
@@ -92,10 +94,7 @@ class PlanarPatchSanaPipeline(SanaPipeline):
 
         planar_config = PlanarPatchFusionConfig.from_any(planar_fusion_config_path or planar_fusion_config)
         fusion_config = planar_config.to_pixel_fusion_config()
-        generator = apply_configured_random_seed(generator, fusion_config, device=device)
-
-        with open(prompt_txt_path, "r", encoding="utf-8") as handle:
-            prompt_raw = [line.strip() for line in handle if line.strip()]
+        prompt_raw = load_directional_prompts(prompt_txt_path)
         if len(prompt_raw) != 5:
             raise ValueError("prompt_txt_path must contain exactly 5 non-empty lines, matching SphereDiff")
 
@@ -296,14 +295,20 @@ class PlanarPatchSanaPipeline(SanaPipeline):
                     fusion_config,
                 ).fused_values.unsqueeze(0)
                 fused_rgb_patches = extract_planar_patches(fused_rgb, rgb_layout)
-                vae_bridge = build_identity_preserving_vae_target(
-                    self.vae,
-                    clean_patches,
-                    decoded_clean_patches,
-                    fused_rgb_patches,
-                    fusion_config,
-                )
-                fused_clean_patches = vae_bridge.target_clean_latents
+                vae_bridge = None
+                if planar_config.use_vae_residual_bridge:
+                    vae_bridge = build_identity_preserving_vae_target(
+                        self.vae,
+                        clean_patches,
+                        decoded_clean_patches,
+                        fused_rgb_patches,
+                        fusion_config,
+                    )
+                    fused_clean_patches = vae_bridge.target_clean_latents
+                else:
+                    fused_clean_patches = encode_view_images(
+                        self.vae, fused_rgb_patches, fusion_config
+                    ).float()
                 if fused_clean_patches.shape != clean_patches.shape:
                     raise ValueError(
                         f"VAE re-encoded patches have shape {tuple(fused_clean_patches.shape)}, "
@@ -328,8 +333,16 @@ class PlanarPatchSanaPipeline(SanaPipeline):
                     ).norm()
                     write_pixel_fusion_diagnostics(
                         {
-                            "vae_roundtrip_error_norm": vae_bridge.vae_roundtrip_error_norm.reshape(1),
-                            "fusion_delta_norm": vae_bridge.fusion_delta_norm.reshape(1),
+                            "vae_roundtrip_error_norm": (
+                                vae_bridge.vae_roundtrip_error_norm.reshape(1)
+                                if vae_bridge is not None
+                                else clean_patches.new_tensor([float("nan")])
+                            ),
+                            "fusion_delta_norm": (
+                                vae_bridge.fusion_delta_norm.reshape(1)
+                                if vae_bridge is not None
+                                else (fused_clean_patches - clean_patches).norm().reshape(1)
+                            ),
                             "base_scheduler_update_norm": base_update_norm.reshape(1),
                             "actual_reinjection_norm": actual_reinjection_norm.reshape(1),
                             "reinjection_to_scheduler_update_ratio": (

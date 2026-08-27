@@ -40,7 +40,6 @@ class PlanarPatchFusionConfig:
     patch_stride_height: int = 10
     patch_stride_width: int = 10
     fusion_space: str = "pixel"
-    use_vae_residual_bridge: bool = True
 
     aggregation_mode: str = "detail_preserving_average"
     weight_mode: str = "distance_to_boundary"

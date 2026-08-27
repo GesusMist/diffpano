@@ -35,12 +35,14 @@ def set_random_seed(seed: Optional[int]) -> None:
 
 
 def load_directional_prompts(path: str) -> List[str]:
-    """Load SphereDiff's five-line directional prompt format."""
+    """Load five directional prompts, repeating a single global prompt when supplied."""
 
     prompt_path = Path(path)
     if not prompt_path.is_file():
         raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
     prompts = [line.strip() for line in prompt_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(prompts) == 1:
+        prompts = prompts * 5
     if len(prompts) != 5:
-        raise ValueError(f"Directional prompt file must contain exactly 5 non-empty lines: {prompt_path}")
+        raise ValueError(f"Directional prompt file must contain 1 or 5 non-empty lines: {prompt_path}")
     return prompts

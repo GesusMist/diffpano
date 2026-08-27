@@ -363,7 +363,10 @@ class ExperimentConfig:
     planar: Dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
-        if self.model.pipeline not in {"sana", "flux", "hunyuan_video", "ltx_video", "planar_sana"}:
+        if self.model.pipeline not in {
+            "sana", "flux", "hunyuan_video", "ltx_video",
+            "planar_sana", "planar_flux", "planar_sd2",
+        }:
             raise ValueError(f"Unsupported model.pipeline={self.model.pipeline!r}")
         if not self.model.path and not self.model.id:
             raise ValueError("model.path or model.id must be configured")

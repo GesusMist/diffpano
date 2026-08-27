@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
+from diffusers import DDIMScheduler
 from omegaconf import OmegaConf
 
 from diffpano.config import load_experiment_config
@@ -16,18 +17,26 @@ from diffpano.pipelines import precision_dtype
 from diffpano.pipelines.base import resolve_model_source
 from experiments.planar.fusion import PlanarPatchFusionConfig
 from experiments.planar.pipeline import PlanarPatchSanaPipeline
+from experiments.planar.model_pipelines import PlanarPatchFluxPipeline, PlanarPatchSD2Pipeline
+
+PLANAR_PIPELINES = {
+    "planar_sana": PlanarPatchSanaPipeline,
+    "planar_flux": PlanarPatchFluxPipeline,
+    "planar_sd2": PlanarPatchSD2Pipeline,
+}
 
 
 def run(config):
     config.validate()
-    if config.model.pipeline != "planar_sana":
-        raise ValueError("The planar runner requires model.pipeline=planar_sana")
+    if config.model.pipeline not in PLANAR_PIPELINES:
+        raise ValueError(f"Unsupported planar pipeline: {config.model.pipeline}")
     prompts = load_directional_prompts(config.prompt.path)
     config.resolved_prompts = prompts
     set_random_seed(config.experiment.seed)
     planar_config = dict(config.planar)
     planar_config.setdefault("random_seed", config.experiment.seed)
     PlanarPatchFusionConfig.from_any(planar_config)
+    pipeline_cls = PLANAR_PIPELINES[config.model.pipeline]
 
     run_id = config.output.run_id or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{os.environ.get('SLURM_JOB_ID', 'local')}"
     run_dir = Path(config.output.directory) / config.experiment.name / run_id
@@ -36,13 +45,15 @@ def run(config):
     (run_dir / "run.log").write_text(f"started_at={datetime.now().isoformat()}\n", encoding="utf-8")
 
     source = resolve_model_source(config.model.path, config.model.id)
-    pipe = PlanarPatchSanaPipeline.from_pretrained(
+    pipe = pipeline_cls.from_pretrained(
         source,
         revision=config.model.revision,
         variant=config.model.variant,
         torch_dtype=precision_dtype(config.model.precision),
         **config.model.additional_pipeline_kwargs,
     )
+    if config.model.pipeline == "planar_sd2":
+        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     if config.model.cpu_offload:
         pipe.enable_model_cpu_offload()
     else:
