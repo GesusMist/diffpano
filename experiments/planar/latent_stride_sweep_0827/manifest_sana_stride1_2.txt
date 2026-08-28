@@ -1,0 +1,4 @@
+experiments/planar/latent_stride_sweep_0827/34_latent_stride1__sana__xfjord.yaml
+experiments/planar/latent_stride_sweep_0827/35_latent_stride1__sana__xvalley.yaml
+experiments/planar/latent_stride_sweep_0827/36_latent_stride2__sana__xfjord.yaml
+experiments/planar/latent_stride_sweep_0827/37_latent_stride2__sana__xvalley.yaml

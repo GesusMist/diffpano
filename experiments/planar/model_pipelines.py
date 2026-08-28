@@ -24,7 +24,7 @@ from experiments.planar.fusion import (
     PlanarPatchFusionConfig,
     blend_planar_patches,
     build_planar_owner_map,
-    build_planar_patch_layout,
+    build_planar_patch_layout_for_step,
     extract_planar_patches,
     planar_patch_prompt_indices,
     scale_planar_patch_layout,
@@ -47,18 +47,16 @@ def _expanded_prompts(prompt_txt_path: str, device: torch.device):
     return prompt, directions
 
 
-def _layouts(height, width, vae_scale_factor, planar_config):
+def _layouts(height, width, vae_scale_factor, planar_config, step_index=0):
     if height % vae_scale_factor or width % vae_scale_factor:
         raise ValueError(f"Output {(height, width)} must be divisible by VAE scale factor {vae_scale_factor}")
     latent_height = height // vae_scale_factor
     latent_width = width // vae_scale_factor
-    layout = build_planar_patch_layout(
+    layout = build_planar_patch_layout_for_step(
         latent_height,
         latent_width,
-        planar_config.patch_latent_height,
-        planar_config.patch_latent_width,
-        planar_config.patch_stride_height,
-        planar_config.patch_stride_width,
+        planar_config,
+        step_index,
     )
     rgb_layout = scale_planar_patch_layout(layout, vae_scale_factor, vae_scale_factor)
     return latent_height, latent_width, layout, rgb_layout
@@ -168,7 +166,6 @@ class PlanarPatchSD2Pipeline(StableDiffusionPipeline):
         latent_height, latent_width, layout, rgb_layout = _layouts(
             height, width, self.vae_scale_factor, planar_config
         )
-        prompt_indices = planar_patch_prompt_indices(layout, prompt_directions)
         latents = self.prepare_latents(
             1,
             self.unet.config.in_channels,
@@ -178,26 +175,52 @@ class PlanarPatchSD2Pipeline(StableDiffusionPipeline):
             device,
             generator,
         )
-        owner_map = None
-        if planar_config.latent_writeback_mode == "exclusive":
-            owner_map = build_planar_owner_map(layout, fusion_config, device=device)
         self.scheduler.set_timesteps(num_inference_steps, device=device)
+        step_layout_pairs = [
+            _layouts(height, width, self.vae_scale_factor, planar_config, step_index)[2:]
+            for step_index in range(len(self.scheduler.timesteps))
+        ]
+        layouts = [item[0] for item in step_layout_pairs]
+        rgb_layouts = [item[1] for item in step_layout_pairs]
+        prompt_indices_by_step = [
+            planar_patch_prompt_indices(item, prompt_directions) for item in layouts
+        ]
+        layout = layouts[0]
+        rgb_layout = rgb_layouts[0]
+        prompt_indices = prompt_indices_by_step[0]
+        owner_map = None
+        if planar_config.latent_writeback_mode == "exclusive" and planar_config.patch_strategy == "fixed":
+            owner_map = build_planar_owner_map(layout, fusion_config, device=device)
         self.sphere_diff_run_metadata = {
             "planar_model": "sd2",
             "planar_fusion_config": planar_config.to_dict(),
             "num_denoising_steps": len(self.scheduler.timesteps),
             "num_dynamic_view_patches_per_step": layout.num_patches,
+            "num_planar_patches_by_step": [item.num_patches for item in layouts],
             "planar_latent_shape": list(latents.shape),
             "planar_patch_positions": [list(item) for item in layout.positions],
             "planar_patch_prompt_indices": prompt_indices.cpu().tolist(),
+            "planar_patch_positions_by_step": [
+                [list(position) for position in item.positions] for item in layouts
+            ],
+            "planar_patch_prompt_indices_by_step": [
+                item.cpu().tolist() for item in prompt_indices_by_step
+            ],
             "pixel_fusion_applied_by_step": [planar_config.fusion_space == "pixel"] * len(self.scheduler.timesteps),
             "denoise_patch_point_counts_by_step": [],
         }
         print(
             f"planar_sd2 latent={latent_height}x{latent_width} patch="
-            f"{layout.patch_height}x{layout.patch_width} patches={layout.num_patches}"
+            f"{layout.patch_height}x{layout.patch_width} patches={layout.num_patches} "
+            f"patch_strategy={planar_config.patch_strategy}"
         )
         for step_index, timestep in enumerate(self.scheduler.timesteps):
+            layout = layouts[step_index]
+            rgb_layout = rgb_layouts[step_index]
+            prompt_indices = prompt_indices_by_step[step_index]
+            step_owner_map = owner_map
+            if planar_config.latent_writeback_mode == "exclusive" and step_owner_map is None:
+                step_owner_map = build_planar_owner_map(layout, fusion_config, device=device)
             current_patches = extract_planar_patches(latents, layout)
             clean_patches, model_outputs, previous_patches = [], [], []
             for patch_index, patch in enumerate(current_patches):
@@ -246,13 +269,20 @@ class PlanarPatchSD2Pipeline(StableDiffusionPipeline):
                 layout,
                 fusion_config,
                 mode=planar_config.latent_writeback_mode,
-                owner_map=owner_map,
+                owner_map=step_owner_map,
             )
             self.sphere_diff_run_metadata["denoise_patch_point_counts_by_step"].append(
                 [layout.patch_height * layout.patch_width] * layout.num_patches
             )
             print(f"completed_step={step_index + 1}/{num_inference_steps}", flush=True)
-        images = _final_patch_decode(self.vae, latents, layout, rgb_layout, fusion_config, self.image_processor)
+        images = _final_patch_decode(
+            self.vae,
+            latents,
+            layouts[-1],
+            rgb_layouts[-1],
+            fusion_config,
+            self.image_processor,
+        )
         self.maybe_free_model_hooks()
         return StableDiffusionPipelineOutput(images=images, nsfw_content_detected=None)
 
@@ -293,7 +323,6 @@ class PlanarPatchFluxPipeline(FluxPipeline):
         )
         if layout.patch_height % 2 or layout.patch_width % 2:
             raise ValueError("FLUX VAE-latent patch dimensions must be even for 2x2 packing")
-        prompt_indices = planar_patch_prompt_indices(layout, prompt_directions)
         channels = self.transformer.config.in_channels // 4
         latents = randn_tensor(
             (1, channels, latent_height, latent_width),
@@ -301,9 +330,6 @@ class PlanarPatchFluxPipeline(FluxPipeline):
             device=device,
             dtype=prompt_embeds.dtype,
         )
-        owner_map = None
-        if planar_config.latent_writeback_mode == "exclusive":
-            owner_map = build_planar_owner_map(layout, fusion_config, device=device)
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         patch_seq_len = (layout.patch_height // 2) * (layout.patch_width // 2)
         mu = calculate_shift(
@@ -316,6 +342,21 @@ class PlanarPatchFluxPipeline(FluxPipeline):
         timesteps, _ = retrieve_flux_timesteps(
             self.scheduler, num_inference_steps, device, sigmas=sigmas, mu=mu
         )
+        step_layout_pairs = [
+            _layouts(height, width, vae_scale, planar_config, step_index)[2:]
+            for step_index in range(len(timesteps))
+        ]
+        layouts = [item[0] for item in step_layout_pairs]
+        rgb_layouts = [item[1] for item in step_layout_pairs]
+        prompt_indices_by_step = [
+            planar_patch_prompt_indices(item, prompt_directions) for item in layouts
+        ]
+        layout = layouts[0]
+        rgb_layout = rgb_layouts[0]
+        prompt_indices = prompt_indices_by_step[0]
+        owner_map = None
+        if planar_config.latent_writeback_mode == "exclusive" and planar_config.patch_strategy == "fixed":
+            owner_map = build_planar_owner_map(layout, fusion_config, device=device)
         guidance = None
         if self.transformer.config.guidance_embeds:
             guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
@@ -328,15 +369,23 @@ class PlanarPatchFluxPipeline(FluxPipeline):
             "planar_fusion_config": planar_config.to_dict(),
             "num_denoising_steps": len(timesteps),
             "num_dynamic_view_patches_per_step": layout.num_patches,
+            "num_planar_patches_by_step": [item.num_patches for item in layouts],
             "planar_latent_shape": list(latents.shape),
             "planar_patch_positions": [list(item) for item in layout.positions],
             "planar_patch_prompt_indices": prompt_indices.cpu().tolist(),
+            "planar_patch_positions_by_step": [
+                [list(position) for position in item.positions] for item in layouts
+            ],
+            "planar_patch_prompt_indices_by_step": [
+                item.cpu().tolist() for item in prompt_indices_by_step
+            ],
             "pixel_fusion_applied_by_step": [planar_config.fusion_space == "pixel"] * len(timesteps),
             "denoise_patch_point_counts_by_step": [],
         }
         print(
             f"planar_flux latent={latent_height}x{latent_width} patch="
-            f"{layout.patch_height}x{layout.patch_width} patches={layout.num_patches}"
+            f"{layout.patch_height}x{layout.patch_width} patches={layout.num_patches} "
+            f"patch_strategy={planar_config.patch_strategy}"
         )
 
         def to_vae(packed):
@@ -352,6 +401,12 @@ class PlanarPatchFluxPipeline(FluxPipeline):
             )
 
         for step_index, timestep in enumerate(timesteps):
+            layout = layouts[step_index]
+            rgb_layout = rgb_layouts[step_index]
+            prompt_indices = prompt_indices_by_step[step_index]
+            step_owner_map = owner_map
+            if planar_config.latent_writeback_mode == "exclusive" and step_owner_map is None:
+                step_owner_map = build_planar_owner_map(layout, fusion_config, device=device)
             current_vae_patches = extract_planar_patches(latents, layout)
             current_patches, clean_patches, model_outputs, previous_patches = [], [], [], []
             for patch_index, vae_patch in enumerate(current_vae_patches):
@@ -412,12 +467,19 @@ class PlanarPatchFluxPipeline(FluxPipeline):
                 layout,
                 fusion_config,
                 mode=planar_config.latent_writeback_mode,
-                owner_map=owner_map,
+                owner_map=step_owner_map,
             )
             self.sphere_diff_run_metadata["denoise_patch_point_counts_by_step"].append(
                 [layout.patch_height * layout.patch_width] * layout.num_patches
             )
             print(f"completed_step={step_index + 1}/{num_inference_steps}", flush=True)
-        images = _final_patch_decode(self.vae, latents, layout, rgb_layout, fusion_config, self.image_processor)
+        images = _final_patch_decode(
+            self.vae,
+            latents,
+            layouts[-1],
+            rgb_layouts[-1],
+            fusion_config,
+            self.image_processor,
+        )
         self.maybe_free_model_hooks()
         return FluxPipelineOutput(images=images)

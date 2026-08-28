@@ -1,0 +1,53 @@
+experiment:
+  name: planar-1ph-8-rgb-bridge-exclusive-dpa--sd2--xvalley
+  seed: 1234
+model:
+  pipeline: planar_sd2
+  id: sd2-community/stable-diffusion-2-base
+  path: null
+  revision: null
+  variant: fp16
+  precision: fp16
+  cpu_offload: false
+  vae_tiling: false
+  vae_slicing: false
+  additional_pipeline_kwargs: {safety_checker: null, feature_extractor: null, requires_safety_checker: false}
+prompt:
+  path: prompts/xvalley.txt
+  negative_path: null
+output:
+  directory: test_outputs/planar_1patch_high_matrix_0826
+  save_final: true
+  save_metadata: true
+  save_intermediate: false
+  run_id: null
+  fps: 24
+generation:
+  num_inference_steps: 20
+  guidance_scale: 7.5
+  height: 640
+  width: 4096
+  num_frames: null
+  use_resolution_binning: false
+  additional_call_kwargs: {}
+fusion:
+  enabled: false
+planar:
+  patch_latent_height: 80
+  patch_latent_width: 80
+  patch_stride_height: 20
+  patch_stride_width: 20
+  fusion_space: pixel
+  use_vae_residual_bridge: true
+  aggregation_mode: detail_preserving_average
+  weight_mode: distance_to_boundary
+  dpa_alpha: 1.0
+  dpa_power: 1.0
+  dpa_eps: 1.0e-6
+  reinjection_mode: noise_consistent
+  reinjection_strength: 1.0
+  latent_writeback_mode: exclusive
+  vae_chunk_size: 4
+  vae_sample_posterior: false
+  save_diagnostics: false
+  diagnostics_dir: null

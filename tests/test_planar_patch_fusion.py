@@ -17,6 +17,7 @@ from experiments.planar.fusion import (
     blend_planar_patches,
     build_planar_owner_map,
     build_planar_patch_layout,
+    build_planar_patch_layout_for_step,
     extract_planar_patches,
     planar_patch_prompt_indices,
     scale_planar_patch_layout,
@@ -101,6 +102,45 @@ class PlanarPatchLayoutTests(unittest.TestCase):
         self.assertEqual((rgb_layout.canvas_height, rgb_layout.canvas_width), (128, 192))
         self.assertEqual((rgb_layout.patch_height, rgb_layout.patch_width), (64, 96))
         self.assertEqual(rgb_layout.positions[-1], (64, 96))
+
+    def test_dynamic_layout_shifts_interior_and_anchors_horizontal_edges(self):
+        config = PlanarPatchFusionConfig(
+            patch_latent_height=5,
+            patch_latent_width=5,
+            patch_stride_height=5,
+            patch_stride_width=4,
+            patch_strategy="dynamic",
+            dynamic_patch_step_size=1,
+        )
+
+        step_zero = build_planar_patch_layout_for_step(5, 13, config, 0)
+        step_one = build_planar_patch_layout_for_step(5, 13, config, 1)
+
+        self.assertEqual(step_zero.positions, ((0, 0), (0, 4), (0, 8)))
+        self.assertEqual(step_one.positions, ((0, 0), (0, 1), (0, 5), (0, 8)))
+        self.assertEqual(step_one.positions[0], step_zero.positions[0])
+        self.assertEqual(step_one.positions[-1], step_zero.positions[-1])
+
+    def test_dynamic_layout_is_periodic_and_preserves_full_coverage(self):
+        config = PlanarPatchFusionConfig(
+            patch_latent_height=4,
+            patch_latent_width=5,
+            patch_stride_height=2,
+            patch_stride_width=4,
+            patch_strategy="dynamic",
+            dynamic_patch_step_size=3,
+        )
+
+        for step_index in range(8):
+            layout = build_planar_patch_layout_for_step(9, 14, config, step_index)
+            coverage = torch.zeros(layout.canvas_height, layout.canvas_width, dtype=torch.bool)
+            for y, x in layout.positions:
+                coverage[y:y + layout.patch_height, x:x + layout.patch_width] = True
+            self.assertTrue(coverage.all())
+        self.assertEqual(
+            build_planar_patch_layout_for_step(9, 14, config, 0),
+            build_planar_patch_layout_for_step(9, 14, config, 4),
+        )
 
 
 class PlanarPatchBlendTests(unittest.TestCase):
@@ -297,6 +337,10 @@ class PlanarPromptTests(unittest.TestCase):
     def test_config_rejects_unknown_fusion_space(self):
         with self.assertRaisesRegex(ValueError, "fusion_space"):
             PlanarPatchFusionConfig(fusion_space="frequency").validate()
+
+    def test_config_rejects_unknown_patch_strategy(self):
+        with self.assertRaisesRegex(ValueError, "patch_strategy"):
+            PlanarPatchFusionConfig(patch_strategy="random").validate()
 
 
 if __name__ == "__main__":

@@ -39,6 +39,8 @@ class PlanarPatchFusionConfig:
     patch_latent_width: int = 20
     patch_stride_height: int = 10
     patch_stride_width: int = 10
+    patch_strategy: str = "fixed"
+    dynamic_patch_step_size: int = 1
     fusion_space: str = "pixel"
     use_vae_residual_bridge: bool = True
 
@@ -69,6 +71,7 @@ class PlanarPatchFusionConfig:
             "patch_latent_width",
             "patch_stride_height",
             "patch_stride_width",
+            "dynamic_patch_step_size",
             "vae_chunk_size",
         ):
             if getattr(self, name) < 1:
@@ -77,6 +80,8 @@ class PlanarPatchFusionConfig:
             raise ValueError("patch_stride_height cannot exceed patch_latent_height because that would leave gaps")
         if self.patch_stride_width > self.patch_latent_width:
             raise ValueError("patch_stride_width cannot exceed patch_latent_width because that would leave gaps")
+        if self.patch_strategy not in {"fixed", "dynamic"}:
+            raise ValueError(f"Unsupported patch_strategy={self.patch_strategy!r}")
         if self.fusion_space not in {"pixel", "latent"}:
             raise ValueError(f"Unsupported fusion_space={self.fusion_space!r}")
         if self.aggregation_mode not in {"average", "weighted_average", "detail_preserving_average"}:
@@ -163,6 +168,28 @@ def _patch_starts(length: int, patch_size: int, stride: int) -> Tuple[int, ...]:
     return tuple(starts)
 
 
+def _dynamic_patch_starts(
+    length: int,
+    patch_size: int,
+    stride: int,
+    offset: int,
+) -> Tuple[int, ...]:
+    """Build one shifted 1D lattice while keeping both canvas-edge patches fixed."""
+
+    final_start = length - patch_size
+    if final_start < 0:
+        raise ValueError(f"Patch size {patch_size} exceeds canvas length {length}")
+    if final_start == 0:
+        return (0,)
+    offset %= stride
+    if offset == 0:
+        return _patch_starts(length, patch_size, stride)
+    starts = [0]
+    starts.extend(range(offset, final_start, stride))
+    starts.append(final_start)
+    return tuple(sorted(set(starts)))
+
+
 def build_planar_patch_layout(
     canvas_height: int,
     canvas_width: int,
@@ -178,6 +205,48 @@ def build_planar_patch_layout(
         canvas_width=canvas_width,
         patch_height=patch_height,
         patch_width=patch_width,
+        positions=tuple((y, x) for y in y_starts for x in x_starts),
+    )
+
+
+def build_planar_patch_layout_for_step(
+    canvas_height: int,
+    canvas_width: int,
+    config: PlanarPatchFusionConfig,
+    step_index: int,
+) -> PlanarPatchLayout:
+    """Build the fixed or periodically shifted latent-patch layout for one denoising step."""
+
+    if isinstance(step_index, bool) or not isinstance(step_index, int) or step_index < 0:
+        raise ValueError("step_index must be a nonnegative integer")
+    config.validate()
+    if config.patch_strategy == "fixed":
+        return build_planar_patch_layout(
+            canvas_height,
+            canvas_width,
+            config.patch_latent_height,
+            config.patch_latent_width,
+            config.patch_stride_height,
+            config.patch_stride_width,
+        )
+    offset = step_index * config.dynamic_patch_step_size
+    y_starts = _dynamic_patch_starts(
+        canvas_height,
+        config.patch_latent_height,
+        config.patch_stride_height,
+        offset,
+    )
+    x_starts = _dynamic_patch_starts(
+        canvas_width,
+        config.patch_latent_width,
+        config.patch_stride_width,
+        offset,
+    )
+    return PlanarPatchLayout(
+        canvas_height=canvas_height,
+        canvas_width=canvas_width,
+        patch_height=config.patch_latent_height,
+        patch_width=config.patch_latent_width,
         positions=tuple((y, x) for y in y_starts for x in x_starts),
     )
 

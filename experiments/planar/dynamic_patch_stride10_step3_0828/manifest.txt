@@ -1,0 +1,6 @@
+experiments/planar/dynamic_patch_stride10_step3_0828/00_sana_xfjord.yaml
+experiments/planar/dynamic_patch_stride10_step3_0828/01_sana_xvalley.yaml
+experiments/planar/dynamic_patch_stride10_step3_0828/02_flux_xfjord.yaml
+experiments/planar/dynamic_patch_stride10_step3_0828/03_flux_xvalley.yaml
+experiments/planar/dynamic_patch_stride10_step3_0828/04_sd2_xfjord.yaml
+experiments/planar/dynamic_patch_stride10_step3_0828/05_sd2_xvalley.yaml

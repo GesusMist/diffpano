@@ -27,7 +27,7 @@ from .fusion import (
     PlanarPatchFusionConfig,
     blend_planar_patches,
     build_planar_owner_map,
-    build_planar_patch_layout,
+    build_planar_patch_layout_for_step,
     extract_planar_patches,
     planar_patch_prompt_indices,
     scale_planar_patch_layout,
@@ -172,20 +172,29 @@ class PlanarPatchSanaPipeline(SanaPipeline):
         latent_height = height // self.vae_scale_factor
         latent_width = width // self.vae_scale_factor
         latent_channels = self.transformer.config.in_channels
-        layout = build_planar_patch_layout(
-            latent_height,
-            latent_width,
-            planar_config.patch_latent_height,
-            planar_config.patch_latent_width,
-            planar_config.patch_stride_height,
-            planar_config.patch_stride_width,
-        )
+        layouts = [
+            build_planar_patch_layout_for_step(
+                latent_height,
+                latent_width,
+                planar_config,
+                step_index,
+            )
+            for step_index in range(len(timesteps))
+        ]
+        layout = layouts[0]
         rgb_scale_height, rgb_height_remainder = divmod(height, latent_height)
         rgb_scale_width, rgb_width_remainder = divmod(width, latent_width)
         if rgb_height_remainder or rgb_width_remainder:
             raise ValueError("Output dimensions must be integer multiples of the planar latent grid")
-        rgb_layout = scale_planar_patch_layout(layout, rgb_scale_height, rgb_scale_width)
-        patch_prompt_indices = planar_patch_prompt_indices(layout, prompt_directions)
+        rgb_layouts = [
+            scale_planar_patch_layout(item, rgb_scale_height, rgb_scale_width)
+            for item in layouts
+        ]
+        patch_prompt_indices_by_step = [
+            planar_patch_prompt_indices(item, prompt_directions) for item in layouts
+        ]
+        rgb_layout = rgb_layouts[0]
+        patch_prompt_indices = patch_prompt_indices_by_step[0]
         latents = self.prepare_latents(
             1,
             latent_channels,
@@ -197,7 +206,7 @@ class PlanarPatchSanaPipeline(SanaPipeline):
             latents,
         )
         owner_map = None
-        if planar_config.latent_writeback_mode == "exclusive":
+        if planar_config.latent_writeback_mode == "exclusive" and planar_config.patch_strategy == "fixed":
             owner_map = build_planar_owner_map(layout, fusion_config, device=device)
             if not owner_map.covered_mask.all():
                 raise AssertionError("Planar exclusive owner map must cover every 2D latent cell")
@@ -214,20 +223,35 @@ class PlanarPatchSanaPipeline(SanaPipeline):
             "num_denoising_steps": len(timesteps),
             "denoise_timesteps": timesteps.detach().cpu().tolist(),
             "num_dynamic_view_patches_per_step": layout.num_patches,
+            "num_planar_patches_by_step": [item.num_patches for item in layouts],
             "denoise_patch_point_counts_by_step": [],
             "pixel_fusion_applied_by_step": [planar_config.fusion_space == "pixel"] * len(timesteps),
             "planar_latent_shape": list(latents.shape),
             "planar_patch_positions": [list(position) for position in layout.positions],
             "planar_patch_prompt_indices": patch_prompt_indices.detach().cpu().tolist(),
+            "planar_patch_positions_by_step": [
+                [list(position) for position in item.positions] for item in layouts
+            ],
+            "planar_patch_prompt_indices_by_step": [
+                item.detach().cpu().tolist() for item in patch_prompt_indices_by_step
+            ],
         }
         print(
             f"planar_latent_grid={latent_height}x{latent_width}, "
             f"patch={layout.patch_height}x{layout.patch_width}, patches={layout.num_patches}, "
-            f"fusion_space={planar_config.fusion_space}"
+            f"fusion_space={planar_config.fusion_space}, patch_strategy={planar_config.patch_strategy}"
         )
 
-        progress_bar = self.progress_bar(total=len(timesteps) * layout.num_patches)
+        progress_bar = self.progress_bar(total=sum(item.num_patches for item in layouts))
         for step_index, timestep_value in enumerate(timesteps):
+            layout = layouts[step_index]
+            rgb_layout = rgb_layouts[step_index]
+            patch_prompt_indices = patch_prompt_indices_by_step[step_index]
+            step_owner_map = owner_map
+            if planar_config.latent_writeback_mode == "exclusive" and step_owner_map is None:
+                step_owner_map = build_planar_owner_map(layout, fusion_config, device=device)
+                if not step_owner_map.covered_mask.all():
+                    raise AssertionError("Dynamic planar exclusive owner map must cover every 2D latent cell")
             current_patches = extract_planar_patches(latents, layout)
             clean_patches = [] if planar_config.fusion_space == "pixel" else None
             model_outputs = [] if planar_config.fusion_space == "pixel" else None
@@ -362,7 +386,7 @@ class PlanarPatchSanaPipeline(SanaPipeline):
                 layout,
                 fusion_config,
                 mode=planar_config.latent_writeback_mode,
-                owner_map=owner_map,
+                owner_map=step_owner_map,
             )
             self.sphere_diff_run_metadata["denoise_patch_point_counts_by_step"].append(
                 [layout.patch_height * layout.patch_width] * layout.num_patches
@@ -382,6 +406,8 @@ class PlanarPatchSanaPipeline(SanaPipeline):
         if output_type == "latent":
             image = latents
         else:
+            layout = layouts[-1]
+            rgb_layout = rgb_layouts[-1]
             final_latent_patches = extract_planar_patches(latents, layout)
             final_rgb_patches = decode_view_latents(self.vae, final_latent_patches, fusion_config).float()
             final_rgb = blend_planar_patches(final_rgb_patches, rgb_layout, fusion_config).fused_values.unsqueeze(0)

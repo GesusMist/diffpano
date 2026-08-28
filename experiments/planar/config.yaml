@@ -85,6 +85,8 @@ planar:
   patch_latent_width: 20
   patch_stride_height: 5
   patch_stride_width: 5
+  patch_strategy: fixed             # fixed | dynamic
+  dynamic_patch_step_size: 1        # Latent cells moved per denoising step in dynamic mode.
   fusion_space: pixel
   aggregation_mode: average
   weight_mode: distance_to_boundary

@@ -546,12 +546,30 @@ Completed recent work, kept here only for reproducibility:
 - Original MultiDiffusion SD2 flat-panorama baselines: 2/2 results.
 - DiffPano SD2 latent runs with MultiDiffusion geometry: 2/2 results.
 - Latent stride sweep: 34/34 results, covering strides 4/8/12/16/20 for all models and stride 40 additions for SD2/FLUX.
+- SANA dense-stride extension submitted as Slurm array `19532150_0-3%2`: latent-space arithmetic-average runs at strides 1 and 2 for both `xfjord` and `xvalley`. Stride 1 has 109 patches per step and stride 2 has 55. These four tasks were pending at submission time and are not included in the 34 completed stride-sweep results above.
+- DPA extension submitted as Slurm array `19532141_0-23%2`: 24 full 20-step runs repeating RGB methods 2–5 with `detail_preserving_average`. New experiment names start with `planar-1ph-6`, `-7`, `-8`, and `-9`; all still write under the 0826 matrix output root. These tasks were pending at submission time and are not included in the completed-result counts above.
 - Result roots:
   - `test_outputs/planar_1patch_high_matrix_0826` (34 result images total).
   - `test_outputs/planar_latent_stride_sweep_0827` (34 result images total).
 - Config roots:
   - `experiments/planar/matrix_1patch_high/`.
   - `experiments/planar/latent_stride_sweep_0827/`.
+
+The DPA extension uses:
+
+```text
+experiments/planar/matrix_1patch_high/manifest_dpa_6_9.txt
+experiments/planar/matrix_1patch_high/submit_dpa_6_9_array.slurm
+```
+
+Method mapping: 6 = direct RGB/exclusive, 7 = direct RGB/weighted write-back, 8 = residual-bridge RGB/exclusive, and 9 = residual-bridge RGB/weighted write-back. Each method has SANA, FLUX, and SD2 runs for both `xfjord` and `xvalley`, using DPA alpha/power `1.0/1.0` and distance-to-boundary weights.
+
+The SANA stride-1/2 extension uses:
+
+```text
+experiments/planar/latent_stride_sweep_0827/manifest_sana_stride1_2.txt
+experiments/planar/latent_stride_sweep_0827/submit_sana_stride1_2.slurm
+```
 
 The matrix uses `640x4096`, one physical patch high, 20 steps, seed 1234, and prompts `xfjord`/`xvalley`. The five methods are latent average; direct RGB encode with exclusive/weighted write-back; and residual-bridge RGB with exclusive/weighted write-back.
 
