@@ -1,0 +1,5 @@
+# model  prompt    slurm_job_id  config
+flux     xfjord    19544665      00_flux_xfjord.yaml
+flux     xvalley   19544666      01_flux_xvalley.yaml
+sd2      xfjord    19544667      02_sd2_xfjord.yaml
+sd2      xvalley   19544668      03_sd2_xvalley.yaml
