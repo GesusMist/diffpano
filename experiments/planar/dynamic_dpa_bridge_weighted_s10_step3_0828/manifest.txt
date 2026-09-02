@@ -1,4 +1,0 @@
-experiments/planar/dynamic_dpa_bridge_weighted_s10_step3_0828/00_flux_xfjord.yaml
-experiments/planar/dynamic_dpa_bridge_weighted_s10_step3_0828/01_flux_xvalley.yaml
-experiments/planar/dynamic_dpa_bridge_weighted_s10_step3_0828/02_sd2_xfjord.yaml
-experiments/planar/dynamic_dpa_bridge_weighted_s10_step3_0828/03_sd2_xvalley.yaml

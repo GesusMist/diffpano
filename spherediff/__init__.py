@@ -1,20 +1,7 @@
-"""SphereDiff baseline compatibility namespace.
+"""SphereDiff image baseline backed by the archived spherical implementation."""
 
-The current spherical adapters reproduce the baseline path when pixel fusion is disabled.
-"""
+from experiments.legacy_spherical.diffpano_legacy.geometry import SphericalFunctions
+from experiments.legacy_spherical.diffpano_legacy.pipelines.flux import SphericalFluxPipeline
+from experiments.legacy_spherical.diffpano_legacy.pipelines.sana import SphericalSanaPipeline
 
-from diffpano.geometry import SphericalFunctions
-from diffpano.pipelines import (
-    SphericalFluxPipeline,
-    SphericalHunyuanVideoPipeline,
-    SphericalLTXPipeline,
-    SphericalSanaPipeline,
-)
-
-__all__ = [
-    "SphericalFunctions",
-    "SphericalFluxPipeline",
-    "SphericalHunyuanVideoPipeline",
-    "SphericalLTXPipeline",
-    "SphericalSanaPipeline",
-]
+__all__ = ["SphericalFunctions", "SphericalFluxPipeline", "SphericalSanaPipeline"]

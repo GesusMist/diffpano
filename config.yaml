@@ -1,95 +1,95 @@
-# Complete DiffPano experiment definition. Paths are relative to the repository unless absolute.
+# Main DiffPano experiment: the only persistent global state is ERP RGB [B,3,H,W].
 experiment:
-  name: diffpano-sana                 # Output experiment directory name.
-  seed: 1                             # Integer in [0, 2^63-1], or null to preserve caller/global RNG state.
+  name: erp-rgb-sana
+  seed: 0
 
 model:
-  pipeline: sana                      # sana, flux, hunyuan_video, or ltx_video.
+  pipeline: sana                 # sana or flux
   id: Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers
-  path: null                          # Local model path takes precedence over model.id when non-null.
+  path: null
   revision: null
   variant: bf16
-  precision: bf16                    # fp16, bf16, or fp32.
+  precision: bf16
   cpu_offload: false
   vae_tiling: false
   vae_slicing: false
   additional_pipeline_kwargs: {}
 
 prompt:
-  path: prompts/ruins.txt             # Exactly five non-empty directional prompt lines.
-  negative_path: null                 # Optional negative-prompt text file.
+  path: prompts/ruins.txt
+  negative_path: null
+
+generation:
+  num_inference_steps: 20
+  guidance_scale: 4.5
+  true_cfg_scale: 1.0           # FLUX true CFG; SANA ignores it
+  batch_size: 1
+
+erp:
+  height: 2048
+  width: 4096
+
+view:
+  height: 1024
+  width: 1024
+  fov_x: 80.0
+  fov_y: 80.0
+
+sampling:
+  strategy: spherediff_fixed    # spherediff_fixed or spherediff_rotated
+  rotation:
+    enabled: false
+    max_yaw_deg: 6.0
+    max_pitch_deg: 3.0
+    max_roll_deg: 2.0
+
+initialization:
+  mode: erp_rgb_noise           # erp_rgb_noise or latent_native_bootstrap
+  distribution: gaussian
+  mean: 0.0
+  std: 1.0
+  clamp: false
+  clamp_min: -1.0
+  clamp_max: 1.0
+
+warp:
+  mode: lpw                     # standard or lpw
+  erp_to_perspective:
+    interpolation: nearest
+  perspective_to_erp:
+    interpolation: bilinear
+  lpw:
+    levels: 4
+    lod_mode: jacobian          # jacobian or none
+    lod_interpolation: nearest  # nearest or linear; separate from spatial interpolation
+    vertical_padding_mode: reflect
+
+fusion:
+  mode: detail_preserving_average  # average, weighted_average, detail_preserving_average
+  weight_mode: distance_to_boundary # uniform, cosine, gaussian, distance_to_boundary, spherediff_center
+  spherediff_temperature: 0.1
+  alpha: 1.0
+  power: 1.0
+  epsilon: 1.0e-6
+  uncovered_mode: keep_previous
+
+performance:
+  view_batch_size: 1
+  vae_chunk_size: 1
 
 output:
   directory: outputs
   save_final: true
   save_metadata: true
   save_intermediate: false
-  run_id: null                        # null creates a timestamp/job-based run ID.
-  fps: 24                             # Video output frame rate.
-
-generation:
-  num_inference_steps: 20
-  guidance_scale: 4.5
-  height: 1024
-  width: 1024
-  num_frames: null                    # null preserves the selected pipeline's default.
-  use_resolution_binning: true        # SANA-only option; ignored by other adapters.
-  additional_call_kwargs: {}
-
-sphere:
-  num_points: 2600
-  fov: null                           # Reserved explicit [vertical, horizontal] FOV override; null preserves pipeline geometry.
-  erp_height: 2048
-  erp_width: 4096
-  weighted_average_temperature: 0.1
-
-fusion:
-  enabled: true
-  start_ratio: 0.0
-  end_ratio: 1.0
-  every_n_steps: 1
-  warp:
-    mode: lpw                         # standard or lpw.
-  lpw:
-    levels: 4
-    lod_mode: jacobian                # jacobian or none.
-    lod_interpolation: nearest        # nearest or linear.
-    erp_vertical_padding_mode: reflect
-    erp_to_perspective_interpolation_mode: nearest
-  time_travel: # Not yet implemented; reserved for future use.
-    enabled: false                    # Reserved; true raises until a backend step runner is implemented.
-    every_n_steps: 1
-    jump_length: 1
-    num_repeats: 1
-    strength: 1.0
-  aggregation:
-    mode: detail_preserving_average   # average, weighted_average, or detail_preserving_average.
-    weight_mode: distance_to_boundary # uniform, cosine, gaussian, or distance_to_boundary.
-    alpha: 1.0
-    power: 1.0
-    epsilon: 1.0e-6
-
-reinjection:
-  mode: noise_consistent              # noise_consistent, replace, weighted_replace, or residual.
-  strength: 1.0
-
-writeback:
-  mode: exclusive                     # exclusive or weighted_average.
-  owner_mode: max_center_weight
-  owner_map_static: true
-  uncovered_mode: error               # error or weighted_average_fallback.
-
-performance:
-  vae_chunk_size: 1
-  projection_chunk_size: 1
-  vae_sample_posterior: false
+  run_id: null
 
 debug:
   enabled: false
-  save_predicted_x0: false
-  save_original_clean_erp: false
-  save_fused_erp: false
-  save_owner_map: false
-  save_projection_diagnostics: false
+  save_views_before_denoise: false
+  save_views_after_denoise: false
+  save_erp_each_step: false
   save_masks: false
+  save_weights: false
+  save_lod_maps: false
   measure_performance: false

@@ -1,13 +1,11 @@
-# SphereDiff baseline
+# SphereDiff baseline/reference
 
-This directory identifies the SphereDiff-derived/reference path used for baseline comparisons. The spherical geometry and model adapters are shared with `diffpano/` to avoid maintaining divergent copies. Selecting the baseline configuration disables DiffPano pixel fusion and therefore preserves the original SphereDiff denoising and weighted latent write-back path.
+SphereDiff remains available as the spherical-latent baseline. It maintains a persistent latent tensor attached to Fibonacci sphere points, dynamically gathers perspective patches, denoises them, and center-weighted-writes them back to the sphere.
 
-DiffPano-specific projection, LPW fusion, VAE residual bridging, reinjection, diagnostics, and exclusive write-back live under `diffpano/`. New research functionality should not be added here.
-
-Run the baseline with:
+This is distinct from main DiffPano, which stores only ERP RGB globally. The baseline implementation is preserved in `experiments/legacy_spherical/diffpano_legacy/`; this directory supplies the reference namespace and baseline configuration.
 
 ```bash
-python scripts/generate.py --config spherediff/config.yaml
+python -m experiments.legacy_spherical.generate --config spherediff/config.yaml
 ```
 
-`LEGACY_USAGE.md` maps original command arguments to the canonical config.
+Set `fusion.enabled: false` in the baseline config. Legacy spherical DiffPano can instead enable its temporary RGB fusion/reinjection branch for historical comparison.

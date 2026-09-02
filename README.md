@@ -1,79 +1,88 @@
 # DiffPano
 
-DiffPano generates 360° images with pretrained diffusion models by denoising perspective views sampled from a global spherical latent representation, fusing their predicted-clean RGB views in ERP space, and writing scheduler-consistent corrections back to the sphere. The implementation supports SANA and FLUX image backends; SphereDiff-derived video adapters remain available for HunyuanVideo and LTX-Video.
-
-DiffPano builds on the spherical latent representation introduced by [SphereDiff](https://github.com/pmh9960/SphereDiff). The shared baseline/reference path is documented under [`spherediff/`](spherediff/README.md); DiffPano-specific projection, LPW, fusion, VAE bridging, reinjection, and write-back code lives under [`diffpano/`](diffpano/).
+DiffPano generates 360° panoramas while maintaining one persistent global state: an equirectangular RGB canvas, `erp_rgb_t` with shape `[B, 3, H_erp, W_erp]`. The sphere is used only to convert coordinates between that canvas and ordinary perspective cameras. No feature, noise, or diffusion state is stored on spherical points in the main implementation.
 
 ## Algorithm
 
+Every perspective view at one timestep reads the same frozen canvas. Each local model call advances its view by exactly one scheduler step; proposals are then warped back and fused together in RGB space.
+
 ```text
-config → spherical x_t → perspective latent views → model prediction → predicted-clean x0
-       → VAE decode → projection / LPW → RGB fusion → VAE residual bridge
-       → noise-consistent reinjection → exclusive spherical write-back → x_{t-1}
+                         ERP RGB I_t
+                              │
+            ┌─────────────────┼─────────────────┐
+            ↓                 ↓                 ↓
+      perspective A     perspective B     perspective C
+            ↓                 ↓                 ↓
+       VAE + local       VAE + local       VAE + local
+      diffusion step    diffusion step    diffusion step
+            ↓                 ↓                 ↓
+       RGB proposal       RGB proposal       RGB proposal
+            │                 │                 │
+            └─────────────────┼─────────────────┘
+                              ↓
+                    warp back + RGB fusion
+                              ↓
+                         ERP RGB I_t-1
 ```
 
-The VAE bridge preserves the current identity-relative correction: `encode(fused_rgb) - encode(original_rgb)` is applied to the original predicted-clean latent representation. Projection and fusion geometry remains FP32.
+This is a synchronous (Jacobi-style) update. Camera order cannot change a deterministic result, and uncovered ERP pixels retain their previous value. The final ERP canvas is the panorama; there is no spherical-latent rendering pass.
 
-## Repository layout
+## Supported research options
 
-- `diffpano/`: reusable DiffPano package and model adapters
-- `spherediff/`: SphereDiff baseline/reference namespace and configuration
-- `experiments/planar/`: isolated no-warp planar ablation
-- `scripts/`: user-facing entrypoints only
-- `slurm/`: cluster resources, environment setup, and command invocation
-- `prompts/`: five-line directional prompt files
-- `tests/`: unit and regression tests
-- `docs/USAGE.md`: full configuration and operating guide
+- Camera covers: `spherediff_fixed` (the original dense-equator 89-view cover) and `spherediff_rotated` (one deterministic global 3D rotation per step).
+- Warping: exact inverse ray-based `standard` projection and RGB Laplacian Pyramid Warping (`lpw`).
+- Spatial interpolation: independently configurable `nearest` or `bilinear` for ERP→perspective and perspective→ERP.
+- LPW: `jacobian` or `none` LOD, with separate `nearest` or `linear` LOD interpolation.
+- Fusion: `average`, `weighted_average`, or `detail_preserving_average`.
+- Weights: `uniform`, `cosine`, `gaussian`, `distance_to_boundary`, and SphereDiff-style `spherediff_center`.
+- Initialization: global `erp_rgb_noise` or one-time `latent_native_bootstrap`.
+- Local denoisers: SANA and FLUX. The global API is RGB-only and can accept a future direct-pixel `ViewDenoiser` without changes to geometry or fusion.
 
-## Installation
+Projection, LPW, accumulation, and fusion run in FP32. Latent packing, scaling/shift conventions, model precision, prompt embeddings, and scheduler calls stay inside each backend adapter. VAE posterior encoding uses mode/mean deterministically.
+
+## Installation and generation
+
+Install a CUDA-compatible PyTorch build first, then:
 
 ```bash
-conda create -n diffpano python=3.10
-conda activate diffpano
-# Install the PyTorch build appropriate for your CUDA environment first.
 pip install -r requirements.txt
 pip install -e .
-```
-
-## Model preparation
-
-Set either `model.path` (preferred when non-null) or `model.id` in `config.yaml`, then optionally prefetch a remote model:
-
-```bash
-python scripts/download_models.py --config config.yaml
-```
-
-Gated Hugging Face models require an authenticated account with access.
-
-## Generate
-
-Edit [`config.yaml`](config.yaml), then run:
-
-```bash
 python scripts/generate.py --config config.yaml
 ```
 
-A run is saved as `outputs/<experiment-name>/<run-id>/` with `result.png` or `result.mp4`, the fully resolved `config.yaml`, `metadata.json`, `run.log`, and an optional `intermediates/` directory.
+The typed loader rejects stale spherical-state fields and unsupported option values. See [`config.yaml`](config.yaml) and [`docs/USAGE.md`](docs/USAGE.md) for the complete option matrix.
 
-For SLURM:
+## Repository layout
 
-```bash
-mkdir -p logs
-sbatch slurm/generate_a100.slurm config.yaml
+```text
+diffpano/                         new persistent-ERP-RGB implementation
+diffpano/pipelines/               local SANA/FLUX ViewDenoiser adapters
+experiments/legacy_spherical/     archived spherical-latent DiffPano path
+spherediff/                       SphereDiff baseline namespace/config
+scripts/generate.py               new main generation entrypoint
+tests/                            CPU geometry, fusion, LPW, and sync tests
 ```
 
-## Experiments and baselines
-
-Run the planar no-warp ablation separately:
+Run the archived SphereDiff baseline separately:
 
 ```bash
-python scripts/planar_test.py --config experiments/planar/config.yaml
+python -m experiments.legacy_spherical.generate --config spherediff/config.yaml
 ```
 
-Run the SphereDiff baseline path with pixel fusion disabled:
+## Intentional theoretical caveats
+
+This architecture exposes rather than hides three research mismatches:
+
+1. `VAE_encode(random_RGB)` is not guaranteed to follow the pretrained model's native Gaussian latent prior.
+2. Nearest projection copies samples, while bilinear projection changes Gaussian variance and introduces spatial correlation (although a linear combination of Gaussian samples remains Gaussian).
+3. Generally `encode(decode(z)) != z`; cross-view RGB fusion moves the local latent path farther from vanilla latent diffusion.
+
+These are explicit initialization/interpolation variables. The main path must not reintroduce a persistent spherical latent to avoid them.
+
+## Tests
 
 ```bash
-python scripts/generate.py --config spherediff/config.yaml
+python -m unittest discover -s tests -v
 ```
 
-See [`docs/USAGE.md`](docs/USAGE.md) for all fields, debugging, testing, troubleshooting, and adding a backend.
+The suite uses mocked denoising and requires no model download. It covers the ERP seam, poles, exact nearest/bilinear behavior, irregular inverse footprints, round trips, weights/DPA, LPW/LOD, rigid camera-cover rotation, full coverage, synchronous camera-order invariance, and the no-spherical-state architecture rule.

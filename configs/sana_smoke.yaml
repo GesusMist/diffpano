@@ -1,0 +1,35 @@
+experiment:
+  name: erp-rgb-sana-smoke
+  seed: 0
+model:
+  pipeline: sana
+  id: Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers
+  path: null
+  precision: bf16
+  variant: bf16
+  cpu_offload: false
+  vae_tiling: false
+  vae_slicing: false
+  additional_pipeline_kwargs: {}
+prompt:
+  path: prompts/ruins.txt
+generation:
+  num_inference_steps: 1
+  guidance_scale: 4.5
+  batch_size: 1
+erp: {height: 256, width: 512}
+view: {height: 256, width: 256, fov_x: 80.0, fov_y: 80.0}
+sampling:
+  strategy: spherediff_fixed
+initialization:
+  mode: erp_rgb_noise
+  clamp: true
+warp:
+  mode: standard
+  erp_to_perspective: {interpolation: nearest}
+  perspective_to_erp: {interpolation: bilinear}
+fusion:
+  mode: average
+  weight_mode: uniform
+performance: {view_batch_size: 4, vae_chunk_size: 4}
+output: {directory: outputs, run_id: null}
