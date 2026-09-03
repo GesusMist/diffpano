@@ -1,0 +1,51 @@
+experiment:
+  name: erp-rgb-flux-standard-average-underwater
+  seed: 0
+model:
+  pipeline: flux
+  id: ModelsLab/flux.1-dev
+  path: null
+  variant: null
+  precision: bf16
+  cpu_offload: false
+  vae_tiling: false
+  vae_slicing: false
+  additional_pipeline_kwargs: {}
+prompt:
+  path: prompts/underwater.txt
+  negative_path: null
+generation:
+  num_inference_steps: 20
+  guidance_scale: 3.5
+  true_cfg_scale: 1.0
+  batch_size: 1
+erp: {height: 2048, width: 4096}
+view: {height: 1024, width: 1024, fov_x: 80.0, fov_y: 80.0}
+sampling:
+  strategy: spherediff_fixed
+  rotation: {enabled: false, max_yaw_deg: 6.0, max_pitch_deg: 3.0, max_roll_deg: 2.0}
+initialization:
+  mode: erp_rgb_noise
+  distribution: gaussian
+  mean: 0.0
+  std: 1.0
+  clamp: false
+  clamp_min: -1.0
+  clamp_max: 1.0
+warp:
+  mode: standard
+  erp_to_perspective: {interpolation: nearest}
+  perspective_to_erp: {interpolation: bilinear}
+fusion:
+  mode: average
+  weight_mode: uniform
+  uncovered_mode: keep_previous
+performance: {view_batch_size: 1, vae_chunk_size: 1}
+output:
+  directory: outputs
+  group: standard-average-standard-warping
+  save_final: true
+  save_metadata: true
+  save_intermediate: false
+  run_id: null
+debug: {enabled: false}

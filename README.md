@@ -36,7 +36,7 @@ This is a synchronous (Jacobi-style) update. Camera order cannot change a determ
 - Fusion: `average`, `weighted_average`, or `detail_preserving_average`.
 - Weights: `uniform`, `cosine`, `gaussian`, `distance_to_boundary`, and SphereDiff-style `spherediff_center`.
 - Initialization: global `erp_rgb_noise` or one-time `latent_native_bootstrap`.
-- Local denoisers: SANA and FLUX. The global API is RGB-only and can accept a future direct-pixel `ViewDenoiser` without changes to geometry or fusion.
+- Local denoisers: SANA, FLUX, and Stable Diffusion 2. The global API is RGB-only and can accept a future direct-pixel `ViewDenoiser` without changes to geometry or fusion.
 
 Projection, LPW, accumulation, and fusion run in FP32. Latent packing, scaling/shift conventions, model precision, prompt embeddings, and scheduler calls stay inside each backend adapter. VAE posterior encoding uses mode/mean deterministically.
 
@@ -50,13 +50,13 @@ pip install -e .
 python scripts/generate.py --config config.yaml
 ```
 
-The typed loader rejects stale spherical-state fields and unsupported option values. See [`config.yaml`](config.yaml) and [`docs/USAGE.md`](docs/USAGE.md) for the complete option matrix.
+The typed loader rejects stale spherical-state fields and unsupported option values. Runs are stored as `outputs/<group>/<experiment>/<run>`; a null output group becomes the current `YYYY-MM-DD`. See [`config.yaml`](config.yaml) and [`docs/USAGE.md`](docs/USAGE.md) for the complete option matrix.
 
 ## Repository layout
 
 ```text
 diffpano/                         new persistent-ERP-RGB implementation
-diffpano/pipelines/               local SANA/FLUX ViewDenoiser adapters
+diffpano/pipelines/               local SANA/FLUX/SD2 ViewDenoiser adapters
 experiments/legacy_spherical/     archived spherical-latent DiffPano path
 spherediff/                       SphereDiff baseline namespace/config
 scripts/generate.py               new main generation entrypoint

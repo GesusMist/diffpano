@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=smoke-sana
+#SBATCH --job-name=smoke-sd2
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --nodes=1

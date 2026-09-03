@@ -1,6 +1,7 @@
 """Local RGB diffusion interface used by the global ERP orchestrator."""
 
 from abc import ABC, abstractmethod
+import gc
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -110,6 +111,32 @@ def ensure_first_order_scheduler(scheduler: Any) -> None:
         )
 
 
+def make_first_order_scheduler(scheduler: Any) -> Any:
+    """Rebuild configurable solver-order schedulers at order one, or reject them."""
+
+    solver_order = int(getattr(getattr(scheduler, "config", None), "solver_order", 1))
+    if solver_order > 1:
+        from_config = getattr(scheduler.__class__, "from_config", None)
+        if from_config is not None:
+            scheduler = from_config(scheduler.config, solver_order=1)
+    ensure_first_order_scheduler(scheduler)
+    return scheduler
+
+
+def release_prompt_encoders(pipeline: Any) -> None:
+    """Release one-shot text encoders after their directional embeddings are cached."""
+
+    released = False
+    for name in ("text_encoder", "text_encoder_2"):
+        if getattr(pipeline, name, None) is not None:
+            setattr(pipeline, name, None)
+            released = True
+    if released:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
 def reset_scheduler_step_state(scheduler: Any) -> None:
     """Give every same-timestep camera an independent scheduler call state."""
 
@@ -117,3 +144,9 @@ def reset_scheduler_step_state(scheduler: Any) -> None:
         scheduler._step_index = None
     if hasattr(scheduler, "model_outputs"):
         scheduler.model_outputs = [None] * len(scheduler.model_outputs)
+    if hasattr(scheduler, "lower_order_nums"):
+        scheduler.lower_order_nums = 0
+    if hasattr(scheduler, "last_sample"):
+        scheduler.last_sample = None
+    if hasattr(scheduler, "timestep_list"):
+        scheduler.timestep_list = [None] * len(scheduler.timestep_list)

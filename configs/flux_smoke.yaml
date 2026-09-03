@@ -3,7 +3,7 @@ experiment:
   seed: 0
 model:
   pipeline: flux
-  id: black-forest-labs/FLUX.1-dev
+  id: ModelsLab/flux.1-dev
   path: null
   precision: bf16
   variant: null
@@ -33,4 +33,4 @@ fusion:
   mode: average
   weight_mode: uniform
 performance: {view_batch_size: 4, vae_chunk_size: 4}
-output: {directory: outputs, run_id: null}
+output: {directory: outputs, group: smoke, run_id: null}

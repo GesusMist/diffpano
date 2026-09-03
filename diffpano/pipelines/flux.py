@@ -10,7 +10,12 @@ import torch
 
 from diffpano.camera import PerspectiveCamera
 from diffpano.conditioning import camera_prompt_indices, expand_directional_prompts
-from diffpano.pipelines.base import ViewDenoiser, ensure_first_order_scheduler, reset_scheduler_step_state
+from diffpano.pipelines.base import (
+    ViewDenoiser,
+    ensure_first_order_scheduler,
+    release_prompt_encoders,
+    reset_scheduler_step_state,
+)
 from diffpano.vae import decode_view_latents, encode_view_images
 
 
@@ -129,6 +134,7 @@ class FluxViewDenoiser(ViewDenoiser):
         self.pipeline._guidance_scale = self.guidance_scale
         self.pipeline._joint_attention_kwargs = {}
 
+    @torch.no_grad()
     def prepare_prompt_conditioning(
         self, prompts: Sequence[str], negative_prompt: str = ""
     ) -> FluxPromptBank:
@@ -150,7 +156,7 @@ class FluxViewDenoiser(ViewDenoiser):
             )
         else:
             negative = negative_pooled = negative_text_ids = None
-        return FluxPromptBank(
+        bank = FluxPromptBank(
             directional.directions,
             positive,
             pooled,
@@ -159,6 +165,8 @@ class FluxViewDenoiser(ViewDenoiser):
             negative_pooled,
             negative_text_ids,
         )
+        release_prompt_encoders(self.pipeline)
+        return bank
 
     def conditioning_for_cameras(
         self,

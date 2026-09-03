@@ -35,6 +35,8 @@ def _posterior_mode(encoded: Any) -> torch.Tensor:
             return distribution.mean
     if hasattr(encoded, "latents"):
         return encoded.latents
+    if hasattr(encoded, "latent"):
+        return encoded.latent
     if isinstance(encoded, (tuple, list)):
         return encoded[0]
     return encoded

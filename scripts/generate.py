@@ -23,10 +23,17 @@ def _safe_component(value: str) -> str:
 
 
 def _run_directory(config: ExperimentConfig) -> Path:
+    now = datetime.now()
+    group = config.output.group or now.strftime("%Y-%m-%d")
     run_id = config.output.run_id
     if not run_id:
-        run_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{os.environ.get('SLURM_JOB_ID', 'local')}"
-    return Path(config.output.directory) / _safe_component(config.experiment.name) / _safe_component(run_id)
+        run_id = f"{now.strftime('%Y%m%d-%H%M%S')}-{os.environ.get('SLURM_JOB_ID', 'local')}"
+    return (
+        Path(config.output.directory)
+        / _safe_component(group)
+        / _safe_component(config.experiment.name)
+        / _safe_component(run_id)
+    )
 
 
 def _configure_denoiser(config: ExperimentConfig, denoiser) -> None:

@@ -39,6 +39,10 @@ def build_view_denoiser(config: Any) -> ViewDenoiser:
         return FluxViewDenoiser.from_pretrained(
             source, true_cfg_scale=config.generation.true_cfg_scale, **common, **kwargs
         )
+    if config.model.pipeline == "sd2":
+        from diffpano.pipelines.sd2 import SD2ViewDenoiser
+
+        return SD2ViewDenoiser.from_pretrained(source, **common, **kwargs)
     raise ValueError(f"Unsupported local denoiser {config.model.pipeline!r}")
 
 

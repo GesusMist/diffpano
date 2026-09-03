@@ -23,6 +23,7 @@ export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p "$SCRATCH/diffpano/outputs" "$SCRATCH/diffpano/hf_cache" "$SCRATCH/diffpano/tmp"
 export HF_HOME="$SCRATCH/diffpano/hf_cache"
 export HF_HUB_CACHE="$HF_HOME/hub"
+export HF_HUB_DISABLE_IMPLICIT_TOKEN=1
 export TRANSFORMERS_CACHE="$HF_HOME/transformers"
 export TMPDIR="$SCRATCH/diffpano/tmp"
 export PYTHONUNBUFFERED=1

@@ -122,6 +122,7 @@ class PerformanceConfig:
 @dataclass
 class OutputConfig:
     directory: str = "outputs"
+    group: Optional[str] = None
     save_final: bool = True
     save_metadata: bool = True
     save_intermediate: bool = False
@@ -157,8 +158,8 @@ class ExperimentConfig:
     debug: DebugConfig = field(default_factory=DebugConfig)
 
     def validate(self) -> None:
-        if self.model.pipeline not in {"sana", "flux"}:
-            raise ValueError("model.pipeline must be 'sana' or 'flux'")
+        if self.model.pipeline not in {"sana", "flux", "sd2"}:
+            raise ValueError("model.pipeline must be 'sana', 'flux', or 'sd2'")
         if not self.model.path and not self.model.id:
             raise ValueError("model.path or model.id must be configured")
         if self.model.precision not in {"fp16", "bf16", "fp32"}:

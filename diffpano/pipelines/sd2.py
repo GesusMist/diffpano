@@ -1,4 +1,4 @@
-"""SANA adapter implementing one explicit RGB -> latent -> RGB scheduler step."""
+"""Stable Diffusion 2 adapter implementing one RGB-to-latent scheduler step."""
 
 from dataclasses import dataclass
 import time
@@ -10,7 +10,7 @@ from diffpano.camera import PerspectiveCamera
 from diffpano.conditioning import camera_prompt_indices, expand_directional_prompts
 from diffpano.pipelines.base import (
     ViewDenoiser,
-    make_first_order_scheduler,
+    ensure_first_order_scheduler,
     release_prompt_encoders,
     reset_scheduler_step_state,
 )
@@ -18,16 +18,14 @@ from diffpano.vae import decode_view_latents, encode_view_images
 
 
 @dataclass
-class SanaPromptBank:
+class SD2PromptBank:
     prompt_directions: torch.Tensor
     positive: torch.Tensor
-    positive_mask: torch.Tensor
     negative: Optional[torch.Tensor]
-    negative_mask: Optional[torch.Tensor]
 
 
-class SanaViewDenoiser(ViewDenoiser):
-    """Local SANA latent diffusion; no global latent is retained between calls."""
+class SD2ViewDenoiser(ViewDenoiser):
+    """Keep SD2's CLIP, U-Net, DDIM scheduler, and VAE inside the RGB adapter."""
 
     def __init__(
         self,
@@ -54,10 +52,14 @@ class SanaViewDenoiser(ViewDenoiser):
         measure_performance: bool = False,
         **kwargs,
     ):
-        from diffusers.pipelines.sana import SanaPipeline
+        from diffusers import DDIMScheduler, StableDiffusionPipeline
 
+        kwargs.setdefault("safety_checker", None)
+        kwargs.setdefault("requires_safety_checker", False)
+        pipeline = StableDiffusionPipeline.from_pretrained(source, **kwargs)
+        pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
         return cls(
-            SanaPipeline.from_pretrained(source, **kwargs),
+            pipeline,
             guidance_scale=guidance_scale,
             vae_chunk_size=vae_chunk_size,
             measure_performance=measure_performance,
@@ -79,7 +81,7 @@ class SanaViewDenoiser(ViewDenoiser):
 
     @property
     def dtype(self) -> torch.dtype:
-        return self.pipeline.transformer.dtype
+        return self.pipeline.unet.dtype
 
     @property
     def timesteps(self) -> torch.Tensor:
@@ -94,41 +96,32 @@ class SanaViewDenoiser(ViewDenoiser):
 
     def prepare(self, *, num_steps: int, view_height: int, view_width: int) -> None:
         del view_height, view_width
-        self.pipeline.scheduler = make_first_order_scheduler(self.pipeline.scheduler)
+        ensure_first_order_scheduler(self.pipeline.scheduler)
         self.pipeline.scheduler.set_timesteps(num_steps, device=self.device)
         self._timesteps = self.pipeline.scheduler.timesteps
         self.pipeline._guidance_scale = self.guidance_scale
-        self.pipeline._attention_kwargs = None
+        self.pipeline._cross_attention_kwargs = None
 
     @torch.no_grad()
     def prepare_prompt_conditioning(
         self, prompts: Sequence[str], negative_prompt: str = ""
-    ) -> SanaPromptBank:
+    ) -> SD2PromptBank:
         directional = expand_directional_prompts(prompts)
         do_cfg = self.guidance_scale > 1.0
-        negative = [negative_prompt] * len(directional.prompts)
-        positive, positive_mask, negative_embeds, negative_mask = self.pipeline.encode_prompt(
-            directional.prompts,
-            do_cfg,
-            negative_prompt=negative,
-            num_images_per_prompt=1,
+        positive, negative = self.pipeline.encode_prompt(
+            prompt=directional.prompts,
             device=self.device,
-            clean_caption=False,
-            max_sequence_length=300,
+            num_images_per_prompt=1,
+            do_classifier_free_guidance=do_cfg,
+            negative_prompt=[negative_prompt] * len(directional.prompts),
         )
-        bank = SanaPromptBank(
-            directional.directions,
-            positive,
-            positive_mask,
-            negative_embeds if do_cfg else None,
-            negative_mask if do_cfg else None,
-        )
+        bank = SD2PromptBank(directional.directions, positive, negative if do_cfg else None)
         release_prompt_encoders(self.pipeline)
         return bank
 
     def conditioning_for_cameras(
         self,
-        prepared_conditioning: SanaPromptBank,
+        prepared_conditioning: SD2PromptBank,
         cameras: Sequence[PerspectiveCamera],
         *,
         batch_size: int,
@@ -136,15 +129,9 @@ class SanaViewDenoiser(ViewDenoiser):
         indices = camera_prompt_indices(cameras, prepared_conditioning.prompt_directions)
         indices = indices.repeat_interleave(batch_size).to(device=self.device)
         positive = prepared_conditioning.positive[indices]
-        positive_mask = prepared_conditioning.positive_mask[indices].bool()
         if prepared_conditioning.negative is None:
-            return {"embeds": positive, "mask": positive_mask}
-        negative = prepared_conditioning.negative[indices]
-        negative_mask = prepared_conditioning.negative_mask[indices].bool()
-        return {
-            "embeds": torch.cat([negative, positive], dim=0),
-            "mask": torch.cat([negative_mask, positive_mask], dim=0),
-        }
+            return positive
+        return torch.cat([prepared_conditioning.negative[indices], positive], dim=0)
 
     @torch.no_grad()
     def denoise_step(self, rgb_view: torch.Tensor, timestep: Any, conditioning: Any) -> torch.Tensor:
@@ -155,25 +142,21 @@ class SanaViewDenoiser(ViewDenoiser):
         )
         do_cfg = self.guidance_scale > 1.0
         model_input = torch.cat([latents, latents], dim=0) if do_cfg else latents
-        model_input = model_input.to(dtype=self.dtype)
-        timestep_tensor = torch.as_tensor(timestep, device=self.device, dtype=latents.dtype)
-        expanded_timestep = timestep_tensor.expand(model_input.shape[0])
+        timestep_tensor = torch.as_tensor(timestep, device=self.device)
+        model_input = self.pipeline.scheduler.scale_model_input(model_input, timestep_tensor)
         prediction = self._timed(
             "model_forward",
-            lambda: self.pipeline.transformer(
-                model_input,
-                encoder_hidden_states=conditioning["embeds"],
-                encoder_attention_mask=conditioning["mask"],
-                timestep=expanded_timestep,
+            lambda: self.pipeline.unet(
+                model_input.to(dtype=self.dtype),
+                timestep_tensor,
+                encoder_hidden_states=conditioning,
+                cross_attention_kwargs=None,
                 return_dict=False,
-                attention_kwargs=None,
             )[0].float(),
         )
         if do_cfg:
             unconditional, conditional = prediction.chunk(2)
             prediction = unconditional + self.guidance_scale * (conditional - unconditional)
-        if self.pipeline.transformer.config.out_channels // 2 == latents.shape[1]:
-            prediction = prediction.chunk(2, dim=1)[0]
         reset_scheduler_step_state(self.pipeline.scheduler)
         next_latents = self._timed(
             "scheduler_step",
@@ -190,8 +173,8 @@ class SanaViewDenoiser(ViewDenoiser):
 
     @torch.no_grad()
     def sample_native_rgb(self, *, batch_size: int, height: int, width: int, generator):
-        scale = int(getattr(self.pipeline, "vae_scale_factor", 8))
-        channels = int(self.pipeline.transformer.config.in_channels)
+        scale = int(self.pipeline.vae_scale_factor)
+        channels = int(self.pipeline.unet.config.in_channels)
         latents = torch.randn(
             batch_size,
             channels,
@@ -201,4 +184,6 @@ class SanaViewDenoiser(ViewDenoiser):
             device=self.device,
             dtype=torch.float32,
         )
-        return decode_view_latents(self.pipeline.vae, latents, chunk_size=self.vae_chunk_size).float()
+        return decode_view_latents(
+            self.pipeline.vae, latents, chunk_size=self.vae_chunk_size
+        ).float()

@@ -1,10 +1,10 @@
-# Main DiffPano experiment: the only persistent global state is ERP RGB [B,3,H,W].
+# Full SANA experiment: standard ray warping and unweighted arithmetic fusion.
 experiment:
-  name: erp-rgb-sana
+  name: erp-rgb-sana-standard-average-underwater
   seed: 0
 
 model:
-  pipeline: sana                 # sana, flux, or sd2
+  pipeline: sana
   id: Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers
   path: null
   revision: null
@@ -16,13 +16,13 @@ model:
   additional_pipeline_kwargs: {}
 
 prompt:
-  path: prompts/ruins.txt
+  path: prompts/underwater.txt
   negative_path: null
 
 generation:
   num_inference_steps: 20
   guidance_scale: 4.5
-  true_cfg_scale: 1.0           # FLUX true CFG; SANA ignores it
+  true_cfg_scale: 1.0
   batch_size: 1
 
 erp:
@@ -36,7 +36,7 @@ view:
   fov_y: 80.0
 
 sampling:
-  strategy: spherediff_fixed    # spherediff_fixed or spherediff_rotated
+  strategy: spherediff_fixed
   rotation:
     enabled: false
     max_yaw_deg: 6.0
@@ -44,7 +44,7 @@ sampling:
     max_roll_deg: 2.0
 
 initialization:
-  mode: erp_rgb_noise           # erp_rgb_noise or latent_native_bootstrap
+  mode: erp_rgb_noise
   distribution: gaussian
   mean: 0.0
   std: 1.0
@@ -53,20 +53,20 @@ initialization:
   clamp_max: 1.0
 
 warp:
-  mode: lpw                     # standard or lpw
+  mode: standard
   erp_to_perspective:
     interpolation: nearest
   perspective_to_erp:
     interpolation: bilinear
   lpw:
     levels: 4
-    lod_mode: jacobian          # jacobian or none
-    lod_interpolation: nearest  # nearest or linear; separate from spatial interpolation
+    lod_mode: jacobian
+    lod_interpolation: nearest
     vertical_padding_mode: reflect
 
 fusion:
-  mode: detail_preserving_average  # average, weighted_average, detail_preserving_average
-  weight_mode: distance_to_boundary # uniform, cosine, gaussian, distance_to_boundary, spherediff_center
+  mode: average
+  weight_mode: uniform
   spherediff_temperature: 0.1
   alpha: 1.0
   power: 1.0
@@ -79,7 +79,7 @@ performance:
 
 output:
   directory: outputs
-  group: null                    # null creates an automatic YYYY-MM-DD directory
+  group: standard-average-standard-warping
   save_final: true
   save_metadata: true
   save_intermediate: false
