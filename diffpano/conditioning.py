@@ -20,7 +20,9 @@ def expand_directional_prompts(five_prompts: Sequence[str]) -> DirectionalPrompt
         raise ValueError("directional prompting requires five prompt bands")
     expanded: List[str] = []
     directions = []
-    for prompt, pitch_degrees in zip(five_prompts, (-90, -10, 0, 10, 90)):
+    # Prompt files are ordered north, upper-equatorial, equator,
+    # lower-equatorial, south. Positive pitch points north in camera geometry.
+    for prompt, pitch_degrees in zip(five_prompts, (90, 10, 0, -10, -90)):
         pitch = math.radians(pitch_degrees)
         for yaw_degrees in (0, 90, 180, 270):
             yaw = math.radians(yaw_degrees)

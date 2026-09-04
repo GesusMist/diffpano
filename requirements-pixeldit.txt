@@ -1,0 +1,6 @@
+-r requirements.txt
+# Dependencies used by NVIDIA's reference inference entrypoint.
+pyrallis==0.3.1
+termcolor>=2
+tqdm>=4.66
+torchvision

@@ -68,6 +68,20 @@ def initialize_erp_canvas(
 ) -> torch.Tensor:
     """Initialize the sole persistent state and return ``[B,3,H_erp,W_erp]``."""
 
+    if config.mode == "pixel_gaussian":
+        if config.clamp:
+            raise ValueError("Native pixel diffusion noise must not be clamped")
+        if config.distribution != "gaussian":
+            raise ValueError(f"Unsupported initialization distribution {config.distribution!r}")
+        return (
+            torch.randn(
+                batch_size, 3, height, width,
+                device=device, dtype=torch.float32, generator=generator,
+            )
+            * config.std
+            + config.mean
+        )
+
     if config.mode == "erp_rgb_noise":
         return _erp_rgb_noise(
             config,

@@ -28,6 +28,8 @@ class DiagnosticsWriter:
     def on_step(self, step_index: int, source: torch.Tensor, result: Any, stats: Any) -> None:
         if not self.config.enabled:
             return
+        if self.config.save_step_indices and step_index not in self.config.save_step_indices:
+            return
         step_dir = self.directory / f"step_{step_index:04d}"
         step_dir.mkdir(parents=True, exist_ok=True)
         if self.config.save_erp_each_step:
@@ -48,6 +50,8 @@ class DiagnosticsWriter:
 
     def on_cameras(self, step_index: int, cameras) -> None:
         if not self.config.enabled:
+            return
+        if self.config.save_step_indices and step_index not in self.config.save_step_indices:
             return
         step_dir = self.directory / f"step_{step_index:04d}"
         step_dir.mkdir(parents=True, exist_ok=True)
@@ -75,6 +79,10 @@ class DiagnosticsWriter:
     ) -> None:
         if not self.config.enabled:
             return
+        if self.config.save_step_indices and step_index not in self.config.save_step_indices:
+            return
+        if self.config.save_view_indices and view_index not in self.config.save_view_indices:
+            return
         if not any(
             (
                 self.config.save_views_before_denoise,
@@ -100,3 +108,68 @@ class DiagnosticsWriter:
             tensors["lod_map"] = contribution.lod_map.detach().cpu()
         if tensors:
             torch.save(tensors, view_dir / "projection.pt")
+
+
+class TensorStatisticsAccumulator:
+    """Streaming scalar moments for pixel-state diagnostics."""
+
+    def __init__(self):
+        self.count = 0
+        self.total = None
+        self.square_total = None
+        self.minimum = None
+        self.maximum = None
+
+    def add(self, tensor: torch.Tensor) -> None:
+        value = tensor.detach().float()
+        self.count += value.numel()
+        total = value.sum()
+        square_total = value.square().sum()
+        minimum = value.min()
+        maximum = value.max()
+        if self.total is None:
+            self.total = total
+            self.square_total = square_total
+            self.minimum = minimum
+            self.maximum = maximum
+        else:
+            self.total = self.total + total
+            self.square_total = self.square_total + square_total
+            self.minimum = torch.minimum(self.minimum, minimum)
+            self.maximum = torch.maximum(self.maximum, maximum)
+
+    def values(self, prefix: str) -> Dict[str, float]:
+        if not self.count:
+            return {}
+        mean = self.total / self.count
+        variance = (self.square_total / self.count - mean * mean).clamp_min(0.0)
+        return {
+            f"{prefix}_mean": float(mean),
+            f"{prefix}_std": float(variance.sqrt()),
+            f"{prefix}_min": float(self.minimum),
+            f"{prefix}_max": float(self.maximum),
+            f"{prefix}_l2": float(self.square_total.sqrt()),
+        }
+
+
+def tensor_state_statistics(
+    tensor: torch.Tensor,
+    prefix: str,
+    *,
+    spatial_correlation: bool = False,
+) -> Dict[str, float]:
+    accumulator = TensorStatisticsAccumulator()
+    accumulator.add(tensor)
+    result = accumulator.values(prefix)
+    if spatial_correlation:
+        value = tensor.detach().float()
+        centered = value - value.mean()
+        variance = centered.square().mean().clamp_min(1.0e-12)
+        horizontal = (centered * centered.roll(-1, dims=-1)).mean() / variance
+        if value.shape[-2] > 1:
+            vertical = (centered[..., :-1, :] * centered[..., 1:, :]).mean() / variance
+        else:
+            vertical = value.new_zeros(())
+        result[f"{prefix}_horizontal_correlation"] = float(horizontal)
+        result[f"{prefix}_vertical_correlation"] = float(vertical)
+    return result

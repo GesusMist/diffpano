@@ -3,6 +3,8 @@ __pycache__/
 .pytest_cache/
 .tmp/
 
+third_party/PixelDiT/
+pixeldit_t2i_v1.pth
 logs/*
 !logs/.gitkeep
 outputs/*

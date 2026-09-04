@@ -70,6 +70,22 @@ class CameraSamplerTests(unittest.TestCase):
         self.assertGreater(float((coverage > 1).float().mean()), 0.95)
 
 
+
+
+class ProjectionCacheTests(unittest.TestCase):
+    def test_bounded_cache_can_restore_evicted_values_from_cpu(self):
+        cache = ProjectionCache(max_entries=1, cpu_fallback=True)
+        first_key = ("erp_to_view", "cpu", "first")
+        second_key = ("erp_to_view", "cpu", "second")
+        first = torch.arange(6, dtype=torch.float32)
+        cache.put(cache.erp_to_view, first_key, first)
+        cache.put(cache.erp_to_view, second_key, torch.ones(2))
+        self.assertNotIn(first_key, cache.erp_to_view)
+        self.assertIn(first_key, cache.host_cache)
+        restored = cache.get(cache.erp_to_view, first_key)
+        self.assertTrue(torch.equal(restored, first))
+        self.assertEqual(len(cache.erp_to_view), 1)
+
 class ProjectionTests(unittest.TestCase):
     def setUp(self):
         self.cache = ProjectionCache()

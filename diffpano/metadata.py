@@ -13,18 +13,26 @@ import torch
 
 
 def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output_file: str) -> str:
+    if config.model.pipeline == "pixeldit":
+        model_source = denoiser.checkpoint_path or config.pixeldit.model_path or config.pixeldit.checkpoint_name
+    else:
+        model_source = config.model.path or config.model.id
+
     metadata = {
-        "schema_version": 4,
+        "schema_version": 5,
         "architecture": "persistent_erp_rgb",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "output_file": str(Path(output_file).resolve()),
         "experiment": asdict(config.experiment),
         "model": {
             "backend": config.model.pipeline,
-            "source": config.model.path or config.model.id,
+            "source": model_source,
+            "official_commit": getattr(denoiser, "official_commit", None),
+            "flow_shift": getattr(getattr(denoiser, "solver", None), "flow_shift", None),
             "adapter": denoiser.__class__.__name__,
         },
         "config": config.to_dict(),
+        "peak_gpu_memory_gib": getattr(result, "peak_gpu_memory_gib", {}),
         "steps": [asdict(step) for step in result.steps],
         "environment": {
             "python": sys.version.split()[0],

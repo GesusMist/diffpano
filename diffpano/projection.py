@@ -1,8 +1,9 @@
 """Exact FP32 inverse resampling between ERP and perspective RGB images."""
 
 import math
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -21,12 +22,64 @@ class ERPContribution:
 
 @dataclass
 class ProjectionCache:
-    """Device-aware geometry cache; fixed covers reuse all entries across steps."""
+    """Bounded device geometry cache with optional reusable CPU overflow."""
 
-    erp_to_view: Dict[Tuple[object, ...], torch.Tensor] = field(default_factory=dict)
-    view_to_erp: Dict[Tuple[object, ...], Tuple[torch.Tensor, torch.Tensor]] = field(default_factory=dict)
-    erp_rays: Dict[Tuple[object, ...], torch.Tensor] = field(default_factory=dict)
-    lod_maps: Dict[Tuple[object, ...], torch.Tensor] = field(default_factory=dict)
+    max_entries: Optional[int] = None
+    cpu_fallback: bool = False
+    erp_to_view: Dict[Tuple[object, ...], torch.Tensor] = field(default_factory=OrderedDict)
+    view_to_erp: Dict[Tuple[object, ...], Tuple[torch.Tensor, torch.Tensor]] = field(default_factory=OrderedDict)
+    erp_rays: Dict[Tuple[object, ...], torch.Tensor] = field(default_factory=OrderedDict)
+    lod_maps: Dict[Tuple[object, ...], torch.Tensor] = field(default_factory=OrderedDict)
+    host_cache: Dict[Tuple[object, ...], Tuple[str, Any]] = field(default_factory=OrderedDict)
+
+    @staticmethod
+    def _device_of(value: Any) -> torch.device:
+        if isinstance(value, torch.Tensor):
+            return value.device
+        if isinstance(value, tuple):
+            for item in value:
+                try:
+                    return ProjectionCache._device_of(item)
+                except ValueError:
+                    pass
+        raise ValueError("Projection cache value contains no tensor")
+
+    @staticmethod
+    def _move(value: Any, device: torch.device) -> Any:
+        if isinstance(value, torch.Tensor):
+            return value.detach().to(device=device)
+        if isinstance(value, tuple):
+            return tuple(ProjectionCache._move(item, device) for item in value)
+        return value
+
+    def get(self, mapping: Dict, key: Tuple[object, ...]) -> Any:
+        if key in mapping:
+            if hasattr(mapping, "move_to_end"):
+                mapping.move_to_end(key)
+            return mapping[key]
+        if not self.cpu_fallback or key not in self.host_cache:
+            return None
+        device_name, hosted = self.host_cache[key]
+        restored = self._move(hosted, torch.device(device_name))
+        self.put(mapping, key, restored)
+        return restored
+
+    def put(self, mapping: Dict, key: Tuple[object, ...], value: Any) -> None:
+        if self.max_entries == 0:
+            if self.cpu_fallback and key not in self.host_cache:
+                self.host_cache[key] = (str(self._device_of(value)), self._move(value, torch.device("cpu")))
+            return
+        mapping[key] = value
+        if hasattr(mapping, "move_to_end"):
+            mapping.move_to_end(key)
+        if self.max_entries is not None:
+            while len(mapping) > self.max_entries:
+                evicted_key, evicted_value = mapping.popitem(last=False)
+                if self.cpu_fallback and evicted_key not in self.host_cache:
+                    self.host_cache[evicted_key] = (
+                        str(self._device_of(evicted_value)),
+                        self._move(evicted_value, torch.device("cpu")),
+                    )
 
 
 def spherical_pad_erp(
@@ -92,13 +145,15 @@ def erp_to_perspective_grid(
     cache: Optional[ProjectionCache] = None,
 ) -> torch.Tensor:
     key = ("erp_to_view", str(device), erp_height, erp_width, *camera.cache_key())
-    if cache is not None and key in cache.erp_to_view:
-        return cache.erp_to_view[key]
+    if cache is not None:
+        cached = cache.get(cache.erp_to_view, key)
+        if cached is not None:
+            return cached
     world = perspective_world_rays(camera, device=device)
     longitude, latitude = world_to_longitude_latitude(world)
     grid = torch.stack([longitude / math.pi, -2 * latitude / math.pi], dim=-1).unsqueeze(0)
     if cache is not None:
-        cache.erp_to_view[key] = grid
+        cache.put(cache.erp_to_view, key, grid)
     return grid
 
 
@@ -130,11 +185,13 @@ def _cached_erp_rays(
     height: int, width: int, *, device: torch.device, cache: Optional[ProjectionCache]
 ) -> torch.Tensor:
     key = (str(device), height, width)
-    if cache is not None and key in cache.erp_rays:
-        return cache.erp_rays[key]
+    if cache is not None:
+        cached = cache.get(cache.erp_rays, key)
+        if cached is not None:
+            return cached
     rays = erp_world_directions(height, width, device=device)
     if cache is not None:
-        cache.erp_rays[key] = rays
+        cache.put(cache.erp_rays, key, rays)
     return rays
 
 
@@ -149,8 +206,10 @@ def perspective_to_erp_grid(
     """Map every ERP target ray into a perspective source image."""
 
     key = ("view_to_erp", str(device), erp_height, erp_width, *camera.cache_key())
-    if cache is not None and key in cache.view_to_erp:
-        return cache.view_to_erp[key]
+    if cache is not None:
+        cached = cache.get(cache.view_to_erp, key)
+        if cached is not None:
+            return cached
     world = _cached_erp_rays(erp_height, erp_width, device=device, cache=cache)
     camera_dirs = torch.einsum("ji,hwj->hwi", camera.rotation(device), world)
     x, y, z = camera_dirs.unbind(dim=-1)
@@ -163,7 +222,7 @@ def perspective_to_erp_grid(
     grid = torch.stack([x_norm, -y_norm], dim=-1).unsqueeze(0)
     mask = valid.to(torch.float32).unsqueeze(0).unsqueeze(0)
     if cache is not None:
-        cache.view_to_erp[key] = (grid, mask)
+        cache.put(cache.view_to_erp, key, (grid, mask))
     return grid, mask
 
 
@@ -213,8 +272,10 @@ def projection_lod_map(
     """Estimate perspective-source pixels per ERP pixel from the inverse-warp Jacobian."""
 
     key = ("lod", str(device), erp_height, erp_width, *camera.cache_key())
-    if cache is not None and key in cache.lod_maps:
-        return cache.lod_maps[key]
+    if cache is not None:
+        cached = cache.get(cache.lod_maps, key)
+        if cached is not None:
+            return cached
     grid, valid = perspective_to_erp_grid(camera, erp_height, erp_width, device=device, cache=cache)
     pixel_scale = grid.new_tensor([camera.width / 2, camera.height / 2])
     dx = ((grid[:, :, 1:] - grid[:, :, :-1]) * pixel_scale).norm(dim=-1)
@@ -224,5 +285,5 @@ def projection_lod_map(
     lod = torch.log2(torch.maximum(dx, dy).clamp_min(epsilon)).clamp_min(0).unsqueeze(1)
     lod = lod * valid
     if cache is not None:
-        cache.lod_maps[key] = lod
+        cache.put(cache.lod_maps, key, lod)
     return lod

@@ -37,6 +37,18 @@ def _run_directory(config: ExperimentConfig) -> Path:
 
 
 def _configure_denoiser(config: ExperimentConfig, denoiser) -> None:
+    if config.model.pipeline == "pixeldit":
+        if config.model.vae_slicing or config.model.vae_tiling:
+            raise ValueError("PixelDiT does not support autoencoder slicing or tiling")
+        if config.model.cpu_offload:
+            denoiser.enable_model_cpu_offload()
+        else:
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA is required when model.cpu_offload=false")
+            denoiser.to(
+                torch.device("cuda"), dtype=precision_dtype(config.model.precision)
+            )
+        return
     pipeline = denoiser.pipeline
     if config.model.vae_slicing:
         pipeline.enable_vae_slicing() if hasattr(pipeline, "enable_vae_slicing") else pipeline.vae.enable_slicing()
@@ -53,6 +65,8 @@ def _configure_denoiser(config: ExperimentConfig, denoiser) -> None:
 def run(config: ExperimentConfig) -> Path:
     config.validate()
     set_random_seed(config.experiment.seed)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
     run_dir = _run_directory(config)
     run_dir.mkdir(parents=True, exist_ok=False)
     OmegaConf.save(OmegaConf.create(config.to_dict()), run_dir / "config.yaml")
@@ -63,6 +77,15 @@ def run(config: ExperimentConfig) -> Path:
     _configure_denoiser(config, denoiser)
     diagnostics = DiagnosticsWriter(run_dir / "intermediates", config.debug)
     result = generate_erp_rgb(config, denoiser, diagnostics_writer=diagnostics)
+    peak_gpu_memory = {}
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        scale = 1024.0 ** 3
+        peak_gpu_memory = {
+            "allocated_gib": torch.cuda.max_memory_allocated() / scale,
+            "reserved_gib": torch.cuda.max_memory_reserved() / scale,
+        }
+    result.peak_gpu_memory_gib = peak_gpu_memory
     result_path = run_dir / "result.png"
     if config.output.save_final:
         tensor_to_pil(result.erp_rgb[0]).save(result_path)
@@ -74,8 +97,10 @@ def run(config: ExperimentConfig) -> Path:
                 f"step={step.step_index} timestep={step.scheduler_timestep} cameras={step.num_cameras} "
                 f"coverage={step.coverage_percent:.4f} overlap={step.multi_contributor_percent:.4f} "
                 f"weights=({step.weight_min:.6g},{step.weight_max:.6g},{step.weight_mean:.6g}) "
-                f"timings={step.timings_seconds}\n"
+                f"timings={step.timings_seconds} "
+                f"state={step.state_statistics}\n"
             )
+        handle.write(f"peak_gpu_memory_gib={peak_gpu_memory}\n")
         handle.write(f"completed_at={datetime.now().isoformat()}\nresult={result_path}\n")
     print(f"Run saved to {run_dir}")
     return run_dir

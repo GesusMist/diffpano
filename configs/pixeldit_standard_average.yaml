@@ -1,14 +1,14 @@
-# Main DiffPano experiment: the only persistent global state is ERP RGB [B,3,H,W].
+# Native pixel-space baseline: no autoencoder and no local state reinitialization.
 experiment:
-  name: erp-rgb-sana
+  name: erp-rgb-pixeldit-standard-average
   seed: 0
 
 model:
-  pipeline: sana                 # sana, flux, or sd2
-  id: Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers
+  pipeline: pixeldit
+  id: null
   path: null
   revision: null
-  variant: bf16
+  variant: null
   precision: bf16
   cpu_offload: false
   vae_tiling: false
@@ -23,7 +23,7 @@ pixeldit:
   expected_commit: 41f73006ae532b0b41fee72b181dc22891a5a01a
   cfg_scale: 2.75
   negative_prompt: "low quality, worst quality, over-saturated, blurry, deformed, watermark"
-  flow_shift: null               # null reads 4.0 from the official stage-3 config
+  flow_shift: null
   interval_guidance: [0.0, 1.0]
   release_text_encoder: true
   record_state_statistics: true
@@ -33,9 +33,9 @@ prompt:
   negative_path: null
 
 generation:
-  num_inference_steps: 20
-  guidance_scale: 4.5
-  true_cfg_scale: 1.0           # FLUX true CFG; SANA ignores it
+  num_inference_steps: 50
+  guidance_scale: 1.0
+  true_cfg_scale: 1.0
   batch_size: 1
 
 erp:
@@ -49,7 +49,7 @@ view:
   fov_y: 80.0
 
 sampling:
-  strategy: spherediff_fixed    # spherediff_fixed or spherediff_rotated
+  strategy: spherediff_fixed
   rotation:
     enabled: false
     max_yaw_deg: 6.0
@@ -57,7 +57,7 @@ sampling:
     max_roll_deg: 2.0
 
 initialization:
-  mode: erp_rgb_noise           # erp_rgb_noise or latent_native_bootstrap
+  mode: pixel_gaussian
   distribution: gaussian
   mean: 0.0
   std: 1.0
@@ -66,20 +66,20 @@ initialization:
   clamp_max: 1.0
 
 warp:
-  mode: lpw                     # standard or lpw
+  mode: standard
   erp_to_perspective:
     interpolation: nearest
   perspective_to_erp:
     interpolation: bilinear
   lpw:
     levels: 4
-    lod_mode: jacobian          # jacobian or none
-    lod_interpolation: nearest  # nearest or linear; separate from spatial interpolation
+    lod_mode: jacobian
+    lod_interpolation: nearest
     vertical_padding_mode: reflect
 
 fusion:
-  mode: detail_preserving_average  # average, weighted_average, detail_preserving_average
-  weight_mode: distance_to_boundary # uniform, cosine, gaussian, distance_to_boundary, spherediff_center
+  mode: average
+  weight_mode: uniform
   spherediff_temperature: 0.1
   alpha: 1.0
   power: 1.0
@@ -88,26 +88,26 @@ fusion:
 
 performance:
   view_batch_size: 1
+  projection_cache_cpu_fallback: true
   vae_chunk_size: 1
-  projection_cache_max_entries: null
+  projection_cache_max_entries: 2
 
-  projection_cache_cpu_fallback: false
 output:
   directory: outputs
-  group: null                    # null creates an automatic YYYY-MM-DD directory
+  group: pixeldit-standard-average
   save_final: true
   save_metadata: true
-  save_intermediate: false
+  save_intermediate: true
   run_id: null
 
 debug:
-  enabled: false
-  save_views_before_denoise: false
-  save_views_after_denoise: false
-  save_erp_each_step: false
+  enabled: true
+  save_views_before_denoise: true
+  save_views_after_denoise: true
+  save_erp_each_step: true
   save_masks: false
-  save_step_indices: []
-  save_view_indices: []
+  save_step_indices: [0, 9, 24, 49]
+  save_view_indices: [0]
   save_weights: false
   save_lod_maps: false
-  measure_performance: false
+  measure_performance: true

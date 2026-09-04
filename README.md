@@ -1,66 +1,101 @@
 # DiffPano
 
-DiffPano generates 360° panoramas while maintaining one persistent global state: an equirectangular RGB canvas, `erp_rgb_t` with shape `[B, 3, H_erp, W_erp]`. The sphere is used only to convert coordinates between that canvas and ordinary perspective cameras. No feature, noise, or diffusion state is stored on spherical points in the main implementation.
+DiffPano generates 360° panoramas while maintaining one persistent global tensor: an equirectangular three-channel canvas with shape `[B, 3, H_erp, W_erp]`. The sphere is used only to convert coordinates between that canvas and ordinary perspective cameras. No feature, noise, or diffusion state is stored on spherical points in the main implementation.
 
-## Algorithm
+## Backends and state semantics
 
-Every perspective view at one timestep reads the same frozen canvas. Each local model call advances its view by exactly one scheduler step; proposals are then warped back and fused together in RGB space.
+The same synchronous ERP geometry and fusion code supports two deliberately different local-model families:
 
 ```text
-                         ERP RGB I_t
-                              │
-            ┌─────────────────┼─────────────────┐
-            ↓                 ↓                 ↓
-      perspective A     perspective B     perspective C
-            ↓                 ↓                 ↓
-       VAE + local       VAE + local       VAE + local
-      diffusion step    diffusion step    diffusion step
-            ↓                 ↓                 ↓
-       RGB proposal       RGB proposal       RGB proposal
-            │                 │                 │
-            └─────────────────┼─────────────────┘
-                              ↓
-                    warp back + RGB fusion
-                              ↓
-                         ERP RGB I_t-1
+SANA / FLUX / SD2 no-sphere          PixelDiT no-sphere
+
+ERP RGB                              ERP pixel diffusion state x_t
+  → perspective RGB                    → perspective pixel state x_t
+  → VAE encode                         → PixelDiT flow prediction
+  → one latent diffusion step          → one first-order flow step
+  → VAE decode                         → perspective pixel state x_next
+  → ERP fusion                         → ERP fusion
 ```
 
-This is a synchronous (Jacobi-style) update. Camera order cannot change a deterministic result, and uncovered ERP pixels retain their previous value. The final ERP canvas is the panorama; there is no spherical-latent rendering pass.
+PixelDiT has no VAE and no latent representation. Its persistent ERP tensor is the actual floating-point pixel diffusion state expected by the model, initialized directly with an unclamped Gaussian. This removes the RGB-to-latent boundary from the architecture under test without changing its camera cover, projection, or fusion.
 
-## Supported research options
+Every view at one timestep reads the same frozen ERP source. Each model call advances exactly one perspective state by one scheduler interval; all proposals are then inverse-warped and fused once. This is a synchronous Jacobi-style update, so camera order cannot change a deterministic result and uncovered pixels retain their previous value.
 
-- Camera covers: `spherediff_fixed` (the original dense-equator 89-view cover) and `spherediff_rotated` (one deterministic global 3D rotation per step).
-- Warping: exact inverse ray-based `standard` projection and RGB Laplacian Pyramid Warping (`lpw`).
-- Spatial interpolation: independently configurable `nearest` or `bilinear` for ERP→perspective and perspective→ERP.
-- LPW: `jacobian` or `none` LOD, with separate `nearest` or `linear` LOD interpolation.
-- Fusion: `average`, `weighted_average`, or `detail_preserving_average`.
-- Weights: `uniform`, `cosine`, `gaussian`, `distance_to_boundary`, and SphereDiff-style `spherediff_center`.
-- Initialization: global `erp_rgb_noise` or one-time `latent_native_bootstrap`.
-- Local denoisers: SANA, FLUX, and Stable Diffusion 2. The global API is RGB-only and can accept a future direct-pixel `ViewDenoiser` without changes to geometry or fusion.
+## PixelDiT provenance and solver
 
-Projection, LPW, accumulation, and fusion run in FP32. Latent packing, scaling/shift conventions, model precision, prompt embeddings, and scheduler calls stay inside each backend adapter. VAE posterior encoding uses mode/mean deterministically.
+The adapter uses the official NVIDIA PixelDiT model, checkpoint loader, Gemma-2 setup, CHI prompt preprocessing, classifier-free guidance, and flow schedule from the pinned upstream commit `41f73006ae532b0b41fee72b181dc22891a5a01a`. The checked-in baseline uses the official stage-3 1024px configuration and `pixeldit_t2i_v1.pth` checkpoint.
 
-## Installation and generation
+Official single-image PixelDiT normally uses second-order multistep FlowDPM-Solver. DiffPano intentionally calls the upstream `model_fn` and `dpm_solver_first_update` primitive for one stateless first-order update per synchronized panorama interval, because ERP fusion changes the state and invalidates ordinary per-view multistep history. The official order-1 and order-2 complete samplers remain available only in the standalone validation script.
 
-Install a CUDA-compatible PyTorch build first, then:
+## Installation
+
+Install a CUDA-compatible PyTorch build first, then install the normal project:
 
 ```bash
 pip install -r requirements.txt
 pip install -e .
-python scripts/generate.py --config config.yaml
 ```
 
-The typed loader rejects stale spherical-state fields and unsupported option values. Runs are stored as `outputs/<group>/<experiment>/<run>`; a null output group becomes the current `YYYY-MM-DD`. See [`config.yaml`](config.yaml) and [`docs/USAGE.md`](docs/USAGE.md) for the complete option matrix.
+For PixelDiT, install the pinned official checkout and the extra reference dependencies:
+
+```bash
+bash scripts/setup_pixeldit.sh
+pip install -r requirements-pixeldit.txt
+```
+
+The PixelDiT model and Gemma-2 text encoder download from Hugging Face on first use. To prepare only the checkpoint:
+
+```bash
+python scripts/download_models.py --config configs/pixeldit_standard_average.yaml
+```
+
+## Generation and validation
+
+Run the recommended native-pixel baseline with:
+
+```bash
+python scripts/generate.py --config configs/pixeldit_standard_average.yaml
+```
+
+Validate the integration in increasing geometric complexity:
+
+```bash
+# DiffPano order 1 versus official order 1, same noise/schedule/prompt.
+python scripts/pixeldit_single_view_test.py --save-official-order-two
+
+# Complete schedule through ViewDenoiser, without projection or fusion.
+python scripts/pixeldit_full_image_test.py
+
+# One ERP perspective projection, model step sequence, and inverse projection.
+python scripts/pixeldit_one_view_erp_test.py
+
+# Small 89-camera standard-warp/plain-average smoke run.
+python scripts/generate.py --config configs/pixeldit_smoke.yaml
+```
+
+The real-checkpoint scripts are intentionally separate from the CPU unit suite. See [docs/USAGE.md](docs/USAGE.md) for equations, configuration, diagnostics, and expected validation behavior.
+
+## Supported research options
+
+- Camera covers: `spherediff_fixed` and deterministic per-step `spherediff_rotated`.
+- Warping: inverse ray-based `standard` projection and RGB Laplacian Pyramid Warping (`lpw`).
+- Independent nearest or bilinear sampling for ERP-to-view and view-to-ERP.
+- Fusion: `average`, `weighted_average`, or `detail_preserving_average` with all existing weights.
+- Initialization: `erp_rgb_noise` and `latent_native_bootstrap` for latent-diffusion backends; direct unclamped `pixel_gaussian` for PixelDiT.
+- Local denoisers: SANA, FLUX, Stable Diffusion 2, and PixelDiT.
+
+Projection, LPW, accumulation, and fusion run in FP32 and never clamp the evolving state. Model precision and conditioning stay inside each adapter. Only preview/final image conversion maps values to a displayable range.
 
 ## Repository layout
 
 ```text
-diffpano/                         new persistent-ERP-RGB implementation
-diffpano/pipelines/               local SANA/FLUX/SD2 ViewDenoiser adapters
+diffpano/                         persistent ERP-RGB/pixel-state implementation
+diffpano/pipelines/pixeldit.py    lazy official PixelDiT adapter
+diffpano/pipelines/pixeldit_solver.py  shifted schedule and first-order step
+configs/pixeldit_*.yaml           smoke and recommended baseline experiments
+scripts/pixeldit_*_test.py        staged real-checkpoint validation
 experiments/legacy_spherical/     archived spherical-latent DiffPano path
 spherediff/                       SphereDiff baseline namespace/config
-scripts/generate.py               new main generation entrypoint
-tests/                            CPU geometry, fusion, LPW, and sync tests
 ```
 
 Run the archived SphereDiff baseline separately:
@@ -71,13 +106,7 @@ python -m experiments.legacy_spherical.generate --config spherediff/config.yaml
 
 ## Intentional theoretical caveats
 
-This architecture exposes rather than hides three research mismatches:
-
-1. `VAE_encode(random_RGB)` is not guaranteed to follow the pretrained model's native Gaussian latent prior.
-2. Nearest projection copies samples, while bilinear projection changes Gaussian variance and introduces spatial correlation (although a linear combination of Gaussian samples remains Gaussian).
-3. Generally `encode(decode(z)) != z`; cross-view RGB fusion moves the local latent path farther from vanilla latent diffusion.
-
-These are explicit initialization/interpolation variables. The main path must not reintroduce a persistent spherical latent to avoid them.
+For latent-diffusion backends, `VAE_encode(random_RGB)` is not guaranteed to follow the native Gaussian prior and generally `encode(decode(z)) != z`. PixelDiT removes those two mismatches. Both families still expose geometry effects: nearest projection copies samples, while bilinear projection and overlap averaging can shrink variance and introduce spatial correlation. Per-step pixel-state diagnostics and `scripts/test_pixel_state_warp_statistics.py` quantify that effect.
 
 ## Tests
 
@@ -85,4 +114,4 @@ These are explicit initialization/interpolation variables. The main path must no
 python -m unittest discover -s tests -v
 ```
 
-The suite uses mocked denoising and requires no model download. It covers the ERP seam, poles, exact nearest/bilinear behavior, irregular inverse footprints, round trips, weights/DPA, LPW/LOD, rigid camera-cover rotation, full coverage, synchronous camera-order invariance, and the no-spherical-state architecture rule.
+The CPU suite requires no model download. It covers geometry/fusion behavior, synchronous camera-order invariance, direct PixelDiT Gaussian initialization, official flow-schedule and order-1 primitive equivalence, directional conditioning, actual view metadata, and projection-only state statistics.

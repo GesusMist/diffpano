@@ -15,6 +15,12 @@ def precision_dtype(precision: str) -> torch.dtype:
 
 
 def build_view_denoiser(config: Any) -> ViewDenoiser:
+    if config.model.pipeline == "pixeldit":
+        from diffpano.pipelines.pixeldit import PixelDiTViewDenoiser
+
+        return PixelDiTViewDenoiser.from_pretrained(
+            config.pixeldit, measure_performance=config.debug.measure_performance
+        )
     source = resolve_model_source(config.model.path, config.model.id)
     kwargs = dict(config.model.additional_pipeline_kwargs)
     kwargs.update(
