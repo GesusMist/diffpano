@@ -94,7 +94,17 @@ class ERPX0ConsensusPipeline:
             else clean_source
         )
         timings: Dict[str, float] = {}
-        accumulator = RGBFusionAccumulator(previous, self.fusion_config)
+        accumulator_factory = getattr(
+            self.warp_operator, "create_fusion_accumulator", None
+        )
+        accumulator = (
+            accumulator_factory(previous)
+            if accumulator_factory is not None
+            else None
+        )
+        joint_lpw = accumulator is not None
+        if accumulator is None:
+            accumulator = RGBFusionAccumulator(previous, self.fusion_config)
         collect = bool(
             getattr(self.backend, "state_diagnostics_enabled", False)
             or (
@@ -189,20 +199,29 @@ class ERPX0ConsensusPipeline:
             for offset, (camera, clean_view, predicted) in enumerate(
                 zip(camera_chunk, split_clean, split_predictions)
             ):
-                contribution = self._timed(
-                    timings,
-                    "predicted_clean_to_erp",
-                    lambda camera=camera, predicted=predicted: self.warp_operator.perspective_to_erp(
-                        predicted, camera, (erp_size[0], erp_size[1])
-                    ),
-                )
-                self._timed(
-                    timings,
-                    "clean_rgb_accumulation",
-                    lambda contribution=contribution: accumulator.accumulate(
-                        contribution
-                    ),
-                )
+                if joint_lpw:
+                    contribution = self._timed(
+                        timings,
+                        "predicted_clean_to_erp",
+                        lambda camera=camera, predicted=predicted: accumulator.accumulate(
+                            predicted, camera
+                        ),
+                    )
+                else:
+                    contribution = self._timed(
+                        timings,
+                        "predicted_clean_to_erp",
+                        lambda camera=camera, predicted=predicted: self.warp_operator.perspective_to_erp(
+                            predicted, camera, (erp_size[0], erp_size[1])
+                        ),
+                    )
+                    self._timed(
+                        timings,
+                        "clean_rgb_accumulation",
+                        lambda contribution=contribution: accumulator.accumulate(
+                            contribution
+                        ),
+                    )
                 if self.diagnostics_writer is not None:
                     method = getattr(
                         self.diagnostics_writer, "on_clean_consensus_view", None

@@ -96,7 +96,13 @@ def initialize_erp_canvas(
     if view_denoiser is None or not hasattr(view_denoiser, "sample_native_rgb"):
         raise ValueError("latent_native_bootstrap requires a denoiser with native latent sampling")
     previous = torch.zeros(batch_size, 3, height, width, device=device, dtype=torch.float32)
-    accumulator = RGBFusionAccumulator(previous, fusion_config)
+    accumulator_factory = getattr(warp_operator, "create_fusion_accumulator", None)
+    accumulator = (
+        accumulator_factory(previous) if accumulator_factory is not None else None
+    )
+    joint_lpw = accumulator is not None
+    if accumulator is None:
+        accumulator = RGBFusionAccumulator(previous, fusion_config)
     for camera in camera_sampler.sample(step_index=0, num_steps=1):
         rgb = view_denoiser.sample_native_rgb(
             batch_size=batch_size,
@@ -104,5 +110,10 @@ def initialize_erp_canvas(
             width=camera.width,
             generator=generator,
         )
-        accumulator.accumulate(warp_operator.perspective_to_erp(rgb, camera, (height, width)))
+        if joint_lpw:
+            accumulator.accumulate(rgb, camera)
+        else:
+            accumulator.accumulate(
+                warp_operator.perspective_to_erp(rgb, camera, (height, width))
+            )
     return accumulator.finalize().erp_rgb

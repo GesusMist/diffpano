@@ -1,6 +1,6 @@
 """Laplacian-pyramid utilities with ERP-aware filtering."""
 
-from typing import List, Sequence
+from typing import List, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -75,6 +75,47 @@ def reconstruct_laplacian_pyramid(pyramid: Sequence[torch.Tensor]) -> torch.Tens
     for level in reversed(pyramid[:-1]):
         current = F.interpolate(current, size=level.shape[-2:], mode="bilinear", align_corners=False) + level
     return current
+
+
+def reconstruct_masked_laplacian_pyramid(
+    pyramid: Sequence[torch.Tensor],
+    masks: Sequence[torch.Tensor],
+    epsilon: float,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Reconstruct coefficients without blending invalid zeros across boundaries.
+
+    Each level carries its own validity mask.  Coarser values are upsampled as
+    premultiplied values and normalized by the interpolated mask before the
+    finer coefficients are added.  The returned mask is the union propagated
+    through the pyramid and may be fractional at footprint boundaries.
+    """
+
+    if not pyramid:
+        raise ValueError("pyramid must contain at least one level")
+    if len(pyramid) != len(masks):
+        raise ValueError("pyramid and masks must contain the same number of levels")
+    if epsilon <= 0:
+        raise ValueError("epsilon must be positive")
+    current = pyramid[-1]
+    current_mask = masks[-1].to(device=current.device, dtype=current.dtype)
+    for level, level_mask in zip(reversed(pyramid[:-1]), reversed(masks[:-1])):
+        level_mask = level_mask.to(device=level.device, dtype=level.dtype)
+        upsampled_mask = F.interpolate(
+            current_mask,
+            size=level.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+        upsampled_values = F.interpolate(
+            current * current_mask,
+            size=level.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+        normalized = upsampled_values / upsampled_mask.clamp_min(epsilon)
+        current = level + normalized
+        current_mask = torch.maximum(level_mask, upsampled_mask)
+    return current, current_mask
 
 
 def lod_level_confidence(

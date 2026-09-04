@@ -103,7 +103,17 @@ class ERPRGBPipeline:
             )
             if self.diagnostics_writer is not None:
                 self.diagnostics_writer.on_cameras(step_index, cameras)
-            accumulator = RGBFusionAccumulator(erp_source, self.fusion_config)
+            accumulator_factory = getattr(
+                self.warp_operator, "create_fusion_accumulator", None
+            )
+            accumulator = (
+                accumulator_factory(erp_source)
+                if accumulator_factory is not None
+                else None
+            )
+            joint_lpw = accumulator is not None
+            if accumulator is None:
+                accumulator = RGBFusionAccumulator(erp_source, self.fusion_config)
 
             for start in range(0, len(cameras), self.view_batch_size):
                 camera_chunk = cameras[start:start + self.view_batch_size]
@@ -142,13 +152,22 @@ class ERPRGBPipeline:
                 for chunk_index, (camera, source_view, proposal) in enumerate(
                     zip(camera_chunk, split_views, split_proposals)
                 ):
-                    contribution = self._timed(
-                        timings,
-                        "perspective_to_erp_warp",
-                        lambda camera=camera, proposal=proposal: self.warp_operator.perspective_to_erp(
-                            proposal, camera, (erp_height, erp_width)
-                        ),
-                    )
+                    if joint_lpw:
+                        contribution = self._timed(
+                            timings,
+                            "perspective_to_erp_warp",
+                            lambda camera=camera, proposal=proposal: accumulator.accumulate(
+                                proposal, camera
+                            ),
+                        )
+                    else:
+                        contribution = self._timed(
+                            timings,
+                            "perspective_to_erp_warp",
+                            lambda camera=camera, proposal=proposal: self.warp_operator.perspective_to_erp(
+                                proposal, camera, (erp_height, erp_width)
+                            ),
+                        )
                     if self.diagnostics_writer is not None:
                         self.diagnostics_writer.on_view(
                             step_index,
@@ -157,7 +176,12 @@ class ERPRGBPipeline:
                             proposal,
                             contribution,
                         )
-                    self._timed(timings, "rgb_accumulation", lambda: accumulator.accumulate(contribution))
+                    if not joint_lpw:
+                        self._timed(
+                            timings,
+                            "rgb_accumulation",
+                            lambda: accumulator.accumulate(contribution),
+                        )
 
             fused: FusionResult = self._timed(timings, "rgb_fusion", accumulator.finalize)
             erp_rgb = fused.erp_rgb

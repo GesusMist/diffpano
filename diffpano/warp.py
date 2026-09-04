@@ -2,15 +2,20 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import replace
-from typing import Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
 
 from diffpano.camera import PerspectiveCamera
 from diffpano.config import FusionConfig, WarpConfig
-from diffpano.fusion import create_view_weight_map
-from diffpano.lpw import build_laplacian_pyramid, lod_level_confidence, reconstruct_laplacian_pyramid
+from diffpano.fusion import FusionResult, RGBFusionAccumulator, create_view_weight_map
+from diffpano.lpw import (
+    build_laplacian_pyramid,
+    lod_level_confidence,
+    reconstruct_laplacian_pyramid,
+    reconstruct_masked_laplacian_pyramid,
+)
 from diffpano.projection import (
     ERPContribution,
     ProjectionCache,
@@ -30,6 +35,13 @@ class WarpOperator(ABC):
         self, rgb_view: torch.Tensor, camera: PerspectiveCamera, erp_size: Tuple[int, int]
     ) -> ERPContribution:
         ...
+
+    def create_fusion_accumulator(
+        self, previous_erp: torch.Tensor
+    ) -> Optional["LaplacianPyramidFusionAccumulator"]:
+        """Return a dedicated multi-view accumulator when the warp requires one."""
+
+        return None
 
 
 class StandardWarpOperator(WarpOperator):
@@ -98,7 +110,7 @@ def _level_camera(camera: PerspectiveCamera, level: int) -> PerspectiveCamera:
 
 
 class LaplacianPyramidWarpOperator(StandardWarpOperator):
-    """RGB LPW with Jacobian LOD independent of scalar overlap weighting."""
+    """RGB LPW whose inverse direction is fused jointly per pyramid level."""
 
     def erp_to_perspective(self, erp_rgb: torch.Tensor, camera: PerspectiveCamera) -> torch.Tensor:
         pyramid = build_laplacian_pyramid(
@@ -123,47 +135,169 @@ class LaplacianPyramidWarpOperator(StandardWarpOperator):
     def perspective_to_erp(
         self, rgb_view: torch.Tensor, camera: PerspectiveCamera, erp_size: Tuple[int, int]
     ) -> ERPContribution:
+        del rgb_view, camera, erp_size
+        raise RuntimeError(
+            "LPW perspective-to-ERP requires joint multi-view fusion; "
+            "use create_fusion_accumulator()"
+        )
+
+    def create_fusion_accumulator(
+        self, previous_erp: torch.Tensor
+    ) -> "LaplacianPyramidFusionAccumulator":
+        return LaplacianPyramidFusionAccumulator(self, previous_erp)
+
+
+class LaplacianPyramidFusionAccumulator:
+    """Stream perspective RGB into jointly fused ERP Laplacian levels.
+
+    Only per-level running numerators/denominators are retained.  Individual
+    perspective views and their projected ERP tensors are discarded after
+    ``accumulate`` returns.  Level zero supplies the full-resolution weight and
+    contributor diagnostics exposed through :class:`FusionResult`.
+    """
+
+    def __init__(
+        self,
+        operator: LaplacianPyramidWarpOperator,
+        previous_erp: torch.Tensor,
+    ):
+        if previous_erp.ndim != 4 or previous_erp.shape[1] != 3:
+            raise ValueError("previous_erp must have shape [B,3,H,W]")
+        self.operator = operator
+        self.previous = previous_erp.to(dtype=torch.float32)
+        self.erp_size = tuple(self.previous.shape[-2:])
+        self.level_accumulators: List[RGBFusionAccumulator] = []
+        self.level_shapes: List[Tuple[int, int]] = []
+
+    def _initialize_levels(self, count: int) -> None:
+        self.level_shapes = [
+            (_level_size(self.erp_size[0], level), _level_size(self.erp_size[1], level))
+            for level in range(count)
+        ]
+        batch = self.previous.shape[0]
+        self.level_accumulators = [
+            RGBFusionAccumulator(
+                torch.zeros(
+                    batch,
+                    3,
+                    height,
+                    width,
+                    device=self.previous.device,
+                    dtype=torch.float32,
+                ),
+                self.operator.fusion_config,
+            )
+            for height, width in self.level_shapes
+        ]
+
+    def accumulate(
+        self,
+        rgb_view: torch.Tensor,
+        camera: PerspectiveCamera,
+    ) -> ERPContribution:
+        """Project one view's coefficients and update every ERP level."""
+
+        if rgb_view.shape[0] != self.previous.shape[0]:
+            raise ValueError("LPW view batch size does not match the persistent ERP")
         view_pyramid = build_laplacian_pyramid(
-            rgb_view.to(dtype=torch.float32),
-            self.warp_config.lpw.levels,
-            vertical_padding_mode=self.warp_config.lpw.vertical_padding_mode,
+            rgb_view.to(device=self.previous.device, dtype=torch.float32),
+            self.operator.warp_config.lpw.levels,
+            vertical_padding_mode=self.operator.warp_config.lpw.vertical_padding_mode,
             spherical_erp=False,
         )
-        if self.warp_config.lpw.lod_mode == "none":
-            full_lod = torch.zeros(
-                1, 1, erp_size[0], erp_size[1], device=rgb_view.device, dtype=torch.float32
+        if not self.level_accumulators:
+            self._initialize_levels(len(view_pyramid))
+        elif len(view_pyramid) != len(self.level_accumulators):
+            raise ValueError("all LPW views must produce the same number of pyramid levels")
+
+        use_lod = self.operator.warp_config.lpw.lod_mode == "jacobian"
+        if use_lod:
+            full_lod = projection_lod_map(
+                camera,
+                self.erp_size[0],
+                self.erp_size[1],
+                device=self.previous.device,
+                cache=self.operator.cache,
             )
         else:
-            full_lod = projection_lod_map(
-                camera, erp_size[0], erp_size[1], device=rgb_view.device, cache=self.cache
+            full_lod = torch.zeros(
+                1,
+                1,
+                self.erp_size[0],
+                self.erp_size[1],
+                device=self.previous.device,
+                dtype=torch.float32,
             )
-        erp_levels = []
-        base: ERPContribution = None
-        for level, coefficients in enumerate(view_pyramid):
-            level_camera = _level_camera(camera, level)
-            level_erp = (_level_size(erp_size[0], level), _level_size(erp_size[1], level))
+
+        for level, (coefficients, level_erp, accumulator) in enumerate(
+            zip(view_pyramid, self.level_shapes, self.level_accumulators)
+        ):
+            level_camera = replace(
+                camera,
+                height=coefficients.shape[-2],
+                width=coefficients.shape[-1],
+            )
             contribution = perspective_to_erp(
                 coefficients,
                 level_camera,
                 level_erp[0],
                 level_erp[1],
-                interpolation=self.warp_config.perspective_to_erp.interpolation,
-                weight_map=self._weight_map(level_camera, rgb_view.device),
-                cache=self.cache,
+                interpolation=self.operator.warp_config.perspective_to_erp.interpolation,
+                weight_map=self.operator._weight_map(level_camera, self.previous.device),
+                cache=self.operator.cache,
             )
-            lod = F.interpolate(full_lod, size=level_erp, mode="bilinear", align_corners=False)
-            confidence = lod_level_confidence(
-                lod, level, len(view_pyramid), self.warp_config.lpw.lod_interpolation
-            )
-            erp_levels.append(contribution.rgb * confidence)
-            if level == 0:
-                base = contribution
-        reconstructed = reconstruct_laplacian_pyramid(erp_levels)
-        return ERPContribution(
-            rgb=reconstructed * base.valid_mask,
-            valid_mask=base.valid_mask,
-            weight=base.weight,
-            lod_map=full_lod,
+            if not use_lod:
+                # lod_mode=none retains every band; it does not mean LOD zero,
+                # which would incorrectly select only band zero.
+                confidence = torch.ones_like(contribution.valid_mask[:1])
+            else:
+                level_lod = F.interpolate(
+                    full_lod,
+                    size=level_erp,
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                confidence = lod_level_confidence(
+                    level_lod,
+                    level,
+                    len(view_pyramid),
+                    self.operator.warp_config.lpw.lod_interpolation,
+                )
+            accumulator.accumulate(contribution, confidence=confidence)
+
+        # This standard RGB projection is diagnostic-only.  LPW fusion above
+        # consumes pyramid coefficients, never this reconstructed/full RGB view.
+        diagnostic = perspective_to_erp(
+            rgb_view.to(device=self.previous.device, dtype=torch.float32),
+            camera,
+            self.erp_size[0],
+            self.erp_size[1],
+            interpolation=self.operator.warp_config.perspective_to_erp.interpolation,
+            weight_map=self.operator._weight_map(camera, self.previous.device),
+            cache=self.operator.cache,
+        )
+        diagnostic.lod_map = full_lod
+        return diagnostic
+
+    def finalize(self) -> FusionResult:
+        if not self.level_accumulators:
+            return RGBFusionAccumulator(
+                self.previous, self.operator.fusion_config
+            ).finalize()
+        levels = [accumulator.finalize() for accumulator in self.level_accumulators]
+        reconstructed, reconstructed_mask = reconstruct_masked_laplacian_pyramid(
+            [level.erp_rgb for level in levels],
+            [level.coverage_mask for level in levels],
+            self.operator.fusion_config.epsilon,
+        )
+        covered = reconstructed_mask > self.operator.fusion_config.epsilon
+        fused = torch.where(covered, reconstructed, self.previous)
+        finest = levels[0]
+        return FusionResult(
+            erp_rgb=fused,
+            accumulated_weight=finest.accumulated_weight,
+            contributor_count=finest.contributor_count,
+            coverage_mask=covered,
         )
 
 

@@ -21,6 +21,7 @@ from diffpano.config import (
     load_experiment_config,
 )
 from diffpano.erp_x0_pipeline import ERPX0ConsensusPipeline
+from diffpano.fusion import RGBFusionAccumulator
 from diffpano.noise import FixedPatchNoiseBank
 from diffpano.pipelines.clean_prediction import (
     ddim_predicted_clean,
@@ -68,6 +69,46 @@ class FullFrameWarp:
             valid_mask=mask,
             weight=mask,
         )
+
+
+class FullFrameJointAccumulator:
+    def __init__(self, owner, previous):
+        self.owner = owner
+        self.inner = RGBFusionAccumulator(
+            previous, FusionConfig(mode="average", weight_mode="uniform")
+        )
+
+    def accumulate(self, rgb_view, camera):
+        del camera
+        self.owner.joint_inputs.append(rgb_view.clone())
+        mask = torch.ones(
+            rgb_view.shape[0],
+            1,
+            *rgb_view.shape[-2:],
+            device=rgb_view.device,
+            dtype=torch.float32,
+        )
+        projected = ERPContribution(rgb_view.float(), mask, mask)
+        self.inner.accumulate(projected)
+        return projected
+
+    def finalize(self):
+        return self.inner.finalize()
+
+
+class FullFrameJointWarp(FullFrameWarp):
+    def __init__(self):
+        super().__init__()
+        self.joint_inputs = []
+        self.direct_inverse_calls = 0
+
+    def perspective_to_erp(self, rgb_view, camera, erp_size):
+        del rgb_view, camera, erp_size
+        self.direct_inverse_calls += 1
+        raise AssertionError("joint LPW path must not call per-view inverse warp")
+
+    def create_fusion_accumulator(self, previous):
+        return FullFrameJointAccumulator(self, previous)
 
 
 class MockCleanBackend:
@@ -295,6 +336,34 @@ class X0PipelineTests(unittest.TestCase):
             all(
                 torch.equal(value, torch.full_like(value, 7.0))
                 for value in warp.forward_inputs
+            )
+        )
+
+    def test_lpw_style_accumulator_sees_predicted_clean_rgb_only(self):
+        backend = MockCleanBackend(constant=7.0)
+        warp = FullFrameJointWarp()
+        pipeline = ERPX0ConsensusPipeline(
+            camera_sampler=OrderedSampler(self.cameras),
+            warp_operator=warp,
+            fusion_config=FusionConfig(mode="average", weight_mode="uniform"),
+            consensus_config=CleanConsensusConfig(),
+            backend=backend,
+            seed=19,
+        )
+        result = pipeline.run(
+            None, batch_size=1, erp_height=4, erp_width=4
+        )
+        self.assertEqual(warp.direct_inverse_calls, 0)
+        self.assertEqual(len(warp.joint_inputs), 6)
+        self.assertTrue(
+            all(
+                torch.equal(value, torch.full_like(value, 7.0))
+                for value in warp.joint_inputs
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                result.erp_rgb, torch.full_like(result.erp_rgb, 7.0)
             )
         )
 

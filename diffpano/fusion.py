@@ -67,7 +67,19 @@ class RGBFusionAccumulator:
             self.detail_num = torch.zeros_like(self.previous)
             self.detail_den = torch.zeros_like(self.previous)
 
-    def accumulate(self, contribution: ERPContribution) -> None:
+    def accumulate(
+        self,
+        contribution: ERPContribution,
+        confidence: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Accumulate one contribution with optional multiplicative trust.
+
+        ``confidence`` is deliberately part of the effective fusion weight,
+        not the coefficient value.  Standard warp never supplies it and is
+        therefore numerically unchanged; LPW uses it for per-level Jacobian
+        LOD confidence.
+        """
+
         rgb = contribution.rgb.to(device=self.previous.device, dtype=torch.float32)
         mask = contribution.valid_mask.to(device=self.previous.device, dtype=torch.float32)
         weight = contribution.weight.to(device=self.previous.device, dtype=torch.float32)
@@ -76,6 +88,13 @@ class RGBFusionAccumulator:
         if self.config.mode == "average":
             weight = torch.ones_like(mask)
         effective = mask * weight
+        if confidence is not None:
+            confidence = confidence.to(device=self.previous.device, dtype=torch.float32)
+            if confidence.shape[0] == 1 and mask.shape[0] != 1:
+                confidence = confidence.expand(mask.shape[0], -1, -1, -1)
+            if confidence.shape != mask.shape:
+                raise ValueError("fusion confidence shape does not match the contribution mask")
+            effective = effective * confidence
         self.ordinary_num.add_(rgb * effective)
         self.ordinary_den.add_(effective)
         self.contributor_count.add_((mask > 0).to(torch.float32))
