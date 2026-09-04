@@ -109,6 +109,64 @@ class DiagnosticsWriter:
         if tensors:
             torch.save(tensors, view_dir / "projection.pt")
 
+    def on_clean_consensus_view(
+        self,
+        step_index: int,
+        view_index: int,
+        clean_view: torch.Tensor,
+        predicted_clean: torch.Tensor,
+        contribution: Any,
+    ) -> None:
+        """Save only clean RGB images from the x0-consensus path."""
+
+        if not self.config.enabled:
+            return
+        if self.config.save_step_indices and step_index not in self.config.save_step_indices:
+            return
+        if self.config.save_view_indices and view_index not in self.config.save_view_indices:
+            return
+        view_dir = self.directory / f"step_{step_index:04d}" / f"view_{view_index:03d}"
+        view_dir.mkdir(parents=True, exist_ok=True)
+        if clean_view is not None and self.config.save_views_before_denoise:
+            tensor_to_pil(clean_view[0]).save(view_dir / "clean_view.png")
+        if self.config.save_views_after_denoise:
+            tensor_to_pil(predicted_clean[0]).save(
+                view_dir / "predicted_clean_view.png"
+            )
+            tensor_to_pil(contribution.rgb[0]).save(
+                view_dir / "predicted_clean_erp_contribution.png"
+            )
+        tensors = {}
+        if self.config.save_masks:
+            tensors["predicted_clean_valid_mask"] = contribution.valid_mask.detach().cpu()
+        if self.config.save_weights:
+            tensors["predicted_clean_weight"] = contribution.weight.detach().cpu()
+        if self.config.save_lod_maps and contribution.lod_map is not None:
+            tensors["predicted_clean_lod_map"] = contribution.lod_map.detach().cpu()
+        if tensors:
+            torch.save(tensors, view_dir / "predicted_clean_projection.pt")
+
+    def on_clean_consensus_step(
+        self, step_index: int, source: Any, result: Any, stats: Any
+    ) -> None:
+        """Save explicitly named clean ERP snapshots without changing old diagnostics."""
+
+        if not self.config.enabled:
+            return
+        if self.config.save_step_indices and step_index not in self.config.save_step_indices:
+            return
+        step_dir = self.directory / f"step_{step_index:04d}"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        if self.config.save_erp_each_step:
+            if source is not None:
+                tensor_to_pil(source[0]).save(step_dir / "clean_erp_before.png")
+            tensor_to_pil(result.erp_rgb[0]).save(step_dir / "fused_clean_erp.png")
+        (step_dir / "clean_consensus_stats.txt").write_text(
+            "\n".join(f"{key}={value}" for key, value in asdict(stats).items())
+            + "\n",
+            encoding="utf-8",
+        )
+
 
 class TensorStatisticsAccumulator:
     """Streaming scalar moments for pixel-state diagnostics."""

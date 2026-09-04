@@ -341,6 +341,58 @@ class PixelDiTViewDenoiser(ViewDenoiser):
             ),
         )
 
+    def sample_fixed_noise(
+        self, *, batch_size: int, height: int, width: int, generator
+    ) -> torch.Tensor:
+        return torch.randn(
+            batch_size,
+            3,
+            height,
+            width,
+            generator=generator,
+            device=generator.device,
+            dtype=torch.float32,
+        )
+
+    def make_initial_noisy_state(
+        self, fixed_noise: torch.Tensor, timestep: Any
+    ) -> torch.Tensor:
+        self.solver.bounds_for(timestep)
+        return fixed_noise.to(device=self.device, dtype=torch.float32)
+
+    def encode_clean(self, rgb_clean: torch.Tensor) -> torch.Tensor:
+        return rgb_clean.to(device=self.device, dtype=torch.float32)
+
+    def add_fixed_noise(
+        self, clean_state: torch.Tensor, fixed_noise: torch.Tensor, timestep: Any
+    ) -> torch.Tensor:
+        current, _ = self.solver.bounds_for(timestep)
+        current = current.to(device=clean_state.device, dtype=clean_state.dtype)
+        return (1.0 - current) * clean_state + current * fixed_noise.to(
+            clean_state
+        )
+
+    def predict_clean_native(
+        self,
+        noisy_state: torch.Tensor,
+        timestep: Any,
+        conditioning: PixelDiTConditioning,
+    ) -> torch.Tensor:
+        if noisy_state.ndim != 4 or noisy_state.shape[1] != 3:
+            raise ValueError("PixelDiT state must have shape [B,3,H,W]")
+        self.last_timings = {}
+        current, _ = self.solver.bounds_for(timestep)
+        reference = self._official_solver(noisy_state, conditioning)
+        predicted_clean = self._timed(
+            "model_forward",
+            lambda: reference.model_fn(noisy_state.float(), current),
+        )
+        self.last_model_prediction = predicted_clean.detach()
+        return predicted_clean.float()
+
+    def decode_clean(self, clean_state: torch.Tensor) -> torch.Tensor:
+        return clean_state.to(device=self.device, dtype=torch.float32)
+
     def sample_native_rgb(self, *, batch_size: int, height: int, width: int, generator):
         del batch_size, height, width, generator
         raise RuntimeError("PixelDiT requires initialization.mode=pixel_gaussian")

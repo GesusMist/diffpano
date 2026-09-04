@@ -14,6 +14,7 @@ from diffpano.pipelines.base import (
     release_prompt_encoders,
     reset_scheduler_step_state,
 )
+from diffpano.pipelines.clean_prediction import ddim_predicted_clean
 from diffpano.vae import decode_view_latents, encode_view_images
 
 
@@ -133,17 +134,19 @@ class SD2ViewDenoiser(ViewDenoiser):
             return positive
         return torch.cat([prepared_conditioning.negative[indices], positive], dim=0)
 
-    @torch.no_grad()
-    def denoise_step(self, rgb_view: torch.Tensor, timestep: Any, conditioning: Any) -> torch.Tensor:
-        self.last_timings = {}
-        latents = self._timed(
-            "vae_encode",
-            lambda: encode_view_images(self.pipeline.vae, rgb_view.float(), chunk_size=self.vae_chunk_size),
-        )
+    def _predict_noise(
+        self, native_state: torch.Tensor, timestep: Any, conditioning: Any
+    ) -> torch.Tensor:
         do_cfg = self.guidance_scale > 1.0
-        model_input = torch.cat([latents, latents], dim=0) if do_cfg else latents
+        model_input = (
+            torch.cat([native_state, native_state], dim=0)
+            if do_cfg
+            else native_state
+        )
         timestep_tensor = torch.as_tensor(timestep, device=self.device)
-        model_input = self.pipeline.scheduler.scale_model_input(model_input, timestep_tensor)
+        model_input = self.pipeline.scheduler.scale_model_input(
+            model_input, timestep_tensor
+        )
         prediction = self._timed(
             "model_forward",
             lambda: self.pipeline.unet(
@@ -156,7 +159,20 @@ class SD2ViewDenoiser(ViewDenoiser):
         )
         if do_cfg:
             unconditional, conditional = prediction.chunk(2)
-            prediction = unconditional + self.guidance_scale * (conditional - unconditional)
+            prediction = unconditional + self.guidance_scale * (
+                conditional - unconditional
+            )
+        return prediction
+
+    @torch.no_grad()
+    def denoise_step(self, rgb_view: torch.Tensor, timestep: Any, conditioning: Any) -> torch.Tensor:
+        self.last_timings = {}
+        latents = self._timed(
+            "vae_encode",
+            lambda: encode_view_images(self.pipeline.vae, rgb_view.float(), chunk_size=self.vae_chunk_size),
+        )
+        timestep_tensor = torch.as_tensor(timestep, device=self.device)
+        prediction = self._predict_noise(latents, timestep_tensor, conditioning)
         reset_scheduler_step_state(self.pipeline.scheduler)
         next_latents = self._timed(
             "scheduler_step",
@@ -170,6 +186,60 @@ class SD2ViewDenoiser(ViewDenoiser):
                 self.pipeline.vae, next_latents.float(), chunk_size=self.vae_chunk_size
             ).float(),
         )
+
+    def sample_fixed_noise(
+        self, *, batch_size: int, height: int, width: int, generator
+    ) -> torch.Tensor:
+        scale = int(self.pipeline.vae_scale_factor)
+        channels = int(self.pipeline.unet.config.in_channels)
+        return torch.randn(
+            batch_size,
+            channels,
+            height // scale,
+            width // scale,
+            generator=generator,
+            device=generator.device,
+            dtype=torch.float32,
+        )
+
+    def make_initial_noisy_state(
+        self, fixed_noise: torch.Tensor, timestep: Any
+    ) -> torch.Tensor:
+        del timestep
+        return fixed_noise.to(self.device) * float(
+            self.pipeline.scheduler.init_noise_sigma
+        )
+
+    def encode_clean(self, rgb_clean: torch.Tensor) -> torch.Tensor:
+        return encode_view_images(
+            self.pipeline.vae, rgb_clean.float(), chunk_size=self.vae_chunk_size
+        )
+
+    def add_fixed_noise(
+        self, clean_state: torch.Tensor, fixed_noise: torch.Tensor, timestep: Any
+    ) -> torch.Tensor:
+        timestep_batch = torch.as_tensor(
+            timestep, device=clean_state.device, dtype=torch.long
+        ).reshape(1)
+        timestep_batch = timestep_batch.expand(clean_state.shape[0])
+        return self.pipeline.scheduler.add_noise(
+            clean_state, fixed_noise.to(clean_state), timestep_batch
+        )
+
+    def predict_clean_native(
+        self, noisy_state: torch.Tensor, timestep: Any, conditioning: Any
+    ) -> torch.Tensor:
+        self.last_timings = {}
+        prediction = self._predict_noise(noisy_state, timestep, conditioning)
+        self.last_model_prediction = prediction.detach()
+        return ddim_predicted_clean(
+            self.pipeline.scheduler, noisy_state, prediction, timestep
+        )
+
+    def decode_clean(self, clean_state: torch.Tensor) -> torch.Tensor:
+        return decode_view_latents(
+            self.pipeline.vae, clean_state.float(), chunk_size=self.vae_chunk_size
+        ).float()
 
     @torch.no_grad()
     def sample_native_rgb(self, *, batch_size: int, height: int, width: int, generator):

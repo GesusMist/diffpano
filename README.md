@@ -1,8 +1,8 @@
 # DiffPano
 
-DiffPano generates 360° panoramas while maintaining one persistent global tensor: an equirectangular three-channel canvas with shape `[B, 3, H_erp, W_erp]`. The sphere is used only to convert coordinates between that canvas and ordinary perspective cameras. No feature, noise, or diffusion state is stored on spherical points in the main implementation.
+DiffPano generates 360° panoramas with a selectable global ERP pipeline. The original `erp_rgb_state` mode persists an equirectangular three-channel diffusion/RGB state. The new `erp_x0_consensus` mode persists only fused predicted-clean ERP RGB. Both have shape `[B, 3, H_erp, W_erp]`; the sphere is used only for coordinate conversion between the ERP and ordinary perspective cameras.
 
-## Backends and state semantics
+## Original state semantics (`erp_rgb_state`)
 
 The same synchronous ERP geometry and fusion code supports two deliberately different local-model families:
 
@@ -20,6 +20,22 @@ ERP RGB                              ERP pixel diffusion state x_t
 PixelDiT has no VAE and no latent representation. Its persistent ERP tensor is the actual floating-point pixel diffusion state expected by the model, initialized directly with an unclamped Gaussian. This removes the RGB-to-latent boundary from the architecture under test without changing its camera cover, projection, or fusion.
 
 Every view at one timestep reads the same frozen ERP source. Each model call advances exactly one perspective state by one scheduler interval; all proposals are then inverse-warped and fused once. This is a synchronous Jacobi-style update, so camera order cannot change a deterministic result and uncovered pixels retain their previous value.
+
+## Predicted-clean consensus (`erp_x0_consensus`)
+
+This second pipeline never persists a noisy diffusion state. It samples one backend-native Gaussian noise tensor per camera slot before the loop and reuses that tensor bit-for-bit at every timestep. The first timestep starts from native noise. Every later timestep projects the frozen clean ERP into each camera, encodes it only when the backend is latent, applies the backend scheduler's exact forward noising equation with the fixed camera noise, predicts the clean state, decodes clean RGB, inverse-warps it, and fuses all clean proposals.
+
+Noise is never stored in ERP space and never passes through projection or fusion. PixelDiT stays in native RGB throughout; SANA, FLUX, and SD2 use their existing loaded VAE and model objects without duplicate loading. See [docs/USAGE.md](docs/USAGE.md) for the exact scheduler equations and invariants.
+
+`erp_x0_consensus` never fuses noisy diffusion states. ERP synchronization is performed exclusively on predicted-clean RGB images.
+
+```text
+SANA / FLUX / SD2: clean ERP RGB -> clean VAE latent -> fixed native
+noise at the current level -> model -> predicted-clean latent -> clean RGB
+
+PixelDiT: clean ERP RGB -> fixed native pixel noise at the current shifted
+flow time -> upstream model_fn -> predicted-clean RGB (no VAE)
+```
 
 ## PixelDiT provenance and solver
 
@@ -57,6 +73,15 @@ Run the recommended native-pixel baseline with:
 python scripts/generate.py --config configs/pixeldit_standard_average.yaml
 ```
 
+Run predicted-clean ERP consensus with any supported backend:
+
+```bash
+python scripts/generate.py --config configs/x0_consensus_sana.yaml
+python scripts/generate.py --config configs/x0_consensus_flux.yaml
+python scripts/generate.py --config configs/x0_consensus_sd2.yaml
+python scripts/generate.py --config configs/x0_consensus_pixeldit.yaml
+```
+
 Validate the integration in increasing geometric complexity:
 
 ```bash
@@ -90,10 +115,13 @@ Projection, LPW, accumulation, and fusion run in FP32 and never clamp the evolvi
 
 ```text
 diffpano/                         persistent ERP-RGB/pixel-state implementation
+diffpano/erp_x0_pipeline.py       predicted-clean ERP consensus pipeline
+diffpano/noise.py                 fixed backend-native per-camera noise bank
 diffpano/pipelines/pixeldit.py    lazy official PixelDiT adapter
 diffpano/pipelines/pixeldit_solver.py  shifted schedule and first-order step
 configs/pixeldit_*.yaml           smoke and recommended baseline experiments
 scripts/pixeldit_*_test.py        staged real-checkpoint validation
+scripts/x0_consensus_*_test.py    backend-neutral clean-consensus validation
 experiments/legacy_spherical/     archived spherical-latent DiffPano path
 spherediff/                       SphereDiff baseline namespace/config
 ```

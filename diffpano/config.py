@@ -44,6 +44,20 @@ class PixelDiTConfig:
 
 
 @dataclass
+class CleanConsensusConfig:
+    bootstrap: str = "native_noise"
+    noise_storage: str = "cpu"
+    noise_binding: str = "camera_index"
+    noise_dtype: str = "fp32"
+
+
+@dataclass
+class GlobalPipelineConfig:
+    mode: str = "erp_rgb_state"
+    clean_consensus: CleanConsensusConfig = field(default_factory=CleanConsensusConfig)
+
+
+@dataclass
 class PromptConfig:
     path: str = "prompts/ruins.txt"
     negative_path: Optional[str] = None
@@ -169,6 +183,7 @@ class ExperimentConfig:
     experiment: ExperimentSection = field(default_factory=ExperimentSection)
     model: ModelConfig = field(default_factory=ModelConfig)
     pixeldit: PixelDiTConfig = field(default_factory=PixelDiTConfig)
+    global_pipeline: GlobalPipelineConfig = field(default_factory=GlobalPipelineConfig)
     prompt: PromptConfig = field(default_factory=PromptConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     erp: ERPConfig = field(default_factory=ERPConfig)
@@ -182,6 +197,21 @@ class ExperimentConfig:
     debug: DebugConfig = field(default_factory=DebugConfig)
 
     def validate(self) -> None:
+        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus"}:
+            raise ValueError(
+                "global_pipeline.mode must be erp_rgb_state or erp_x0_consensus"
+            )
+        consensus = self.global_pipeline.clean_consensus
+        if consensus.bootstrap != "native_noise":
+            raise ValueError("clean_consensus.bootstrap currently must be native_noise")
+        if consensus.noise_storage not in {"cpu", "gpu", "seed"}:
+            raise ValueError("clean_consensus.noise_storage must be cpu, gpu, or seed")
+        if consensus.noise_binding != "camera_index":
+            raise ValueError(
+                "clean_consensus.noise_binding currently must be camera_index"
+            )
+        if consensus.noise_dtype != "fp32":
+            raise ValueError("clean_consensus.noise_dtype currently must be fp32")
         if self.model.pipeline not in {"sana", "flux", "sd2", "pixeldit"}:
             raise ValueError("model.pipeline must be 'sana', 'flux', 'sd2', or 'pixeldit'")
         if self.model.pipeline != "pixeldit" and not self.model.path and not self.model.id:
@@ -194,9 +224,17 @@ class ExperimentConfig:
             "erp_rgb_noise", "latent_native_bootstrap", "pixel_gaussian"
         }:
             raise ValueError("unsupported initialization.mode")
-        if self.model.pipeline == "pixeldit" and self.initialization.mode != "pixel_gaussian":
+        if (
+            self.global_pipeline.mode == "erp_rgb_state"
+            and self.model.pipeline == "pixeldit"
+            and self.initialization.mode != "pixel_gaussian"
+        ):
             raise ValueError("PixelDiT requires initialization.mode=pixel_gaussian")
-        if self.model.pipeline != "pixeldit" and self.initialization.mode == "pixel_gaussian":
+        if (
+            self.global_pipeline.mode == "erp_rgb_state"
+            and self.model.pipeline != "pixeldit"
+            and self.initialization.mode == "pixel_gaussian"
+        ):
             raise ValueError("initialization.mode=pixel_gaussian is reserved for PixelDiT")
         if self.initialization.mode == "pixel_gaussian" and self.initialization.clamp:
             raise ValueError("PixelDiT Gaussian state initialization must not be clamped")
@@ -305,6 +343,12 @@ def load_experiment_config(path: str) -> ExperimentConfig:
         experiment=_construct(ExperimentSection, data.get("experiment"), "experiment"),
         model=_construct(ModelConfig, data.get("model"), "model"),
         pixeldit=_construct(PixelDiTConfig, data.get("pixeldit"), "pixeldit"),
+        global_pipeline=_construct(
+            GlobalPipelineConfig,
+            data.get("global_pipeline"),
+            "global_pipeline",
+            nested={"clean_consensus": CleanConsensusConfig},
+        ),
         prompt=_construct(PromptConfig, data.get("prompt"), "prompt"),
         generation=_construct(GenerationConfig, data.get("generation"), "generation"),
         erp=_construct(ERPConfig, data.get("erp"), "erp"),

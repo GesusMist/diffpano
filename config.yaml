@@ -15,6 +15,14 @@ model:
   vae_slicing: false
   additional_pipeline_kwargs: {}
 
+global_pipeline:
+  mode: erp_rgb_state
+  clean_consensus:
+    bootstrap: native_noise
+    noise_storage: cpu
+    noise_binding: camera_index
+    noise_dtype: fp32
+
 pixeldit:
   repo_path: third_party/PixelDiT
   config_path: third_party/PixelDiT/t2i/configs/PixelDiT_1024px_pixel_diffusion_stage3.yaml

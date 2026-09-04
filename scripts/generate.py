@@ -12,6 +12,7 @@ from omegaconf import OmegaConf
 from diffpano.config import ExperimentConfig, load_experiment_config
 from diffpano.diagnostics import DiagnosticsWriter, tensor_to_pil
 from diffpano.erp_pipeline import generate_erp_rgb
+from diffpano.erp_x0_pipeline import generate_erp_x0_consensus
 from diffpano.initialization import set_random_seed
 from diffpano.metadata import save_run_metadata
 from diffpano.pipelines import build_view_denoiser, precision_dtype
@@ -62,6 +63,20 @@ def _configure_denoiser(config: ExperimentConfig, denoiser) -> None:
         denoiser.to(torch.device("cuda"), dtype=precision_dtype(config.model.precision))
 
 
+def _generate_with_selected_global_pipeline(config, denoiser, diagnostics):
+    if config.global_pipeline.mode == "erp_rgb_state":
+        return generate_erp_rgb(
+            config, denoiser, diagnostics_writer=diagnostics
+        )
+    if config.global_pipeline.mode == "erp_x0_consensus":
+        return generate_erp_x0_consensus(
+            config, denoiser, diagnostics_writer=diagnostics
+        )
+    raise ValueError(
+        f"Unsupported global pipeline {config.global_pipeline.mode!r}"
+    )
+
+
 def run(config: ExperimentConfig) -> Path:
     config.validate()
     set_random_seed(config.experiment.seed)
@@ -76,7 +91,9 @@ def run(config: ExperimentConfig) -> Path:
     denoiser = build_view_denoiser(config)
     _configure_denoiser(config, denoiser)
     diagnostics = DiagnosticsWriter(run_dir / "intermediates", config.debug)
-    result = generate_erp_rgb(config, denoiser, diagnostics_writer=diagnostics)
+    result = _generate_with_selected_global_pipeline(
+        config, denoiser, diagnostics
+    )
     peak_gpu_memory = {}
     if torch.cuda.is_available():
         torch.cuda.synchronize()

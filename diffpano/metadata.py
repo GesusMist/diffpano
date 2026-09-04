@@ -19,8 +19,13 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
         model_source = config.model.path or config.model.id
 
     metadata = {
-        "schema_version": 5,
-        "architecture": "persistent_erp_rgb",
+        "schema_version": 6,
+        "architecture": (
+            "persistent_erp_rgb"
+            if config.global_pipeline.mode == "erp_rgb_state"
+            else "persistent_predicted_clean_erp_rgb"
+        ),
+        "global_pipeline_mode": config.global_pipeline.mode,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "output_file": str(Path(output_file).resolve()),
         "experiment": asdict(config.experiment),
@@ -33,6 +38,9 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
         },
         "config": config.to_dict(),
         "peak_gpu_memory_gib": getattr(result, "peak_gpu_memory_gib", {}),
+        "fixed_noise_identities": getattr(
+            result, "fixed_noise_identities", {}
+        ),
         "steps": [asdict(step) for step in result.steps],
         "environment": {
             "python": sys.version.split()[0],

@@ -1,10 +1,118 @@
-# DiffPano ERP-RGB and PixelDiT usage
+# DiffPano global ERP pipelines
+
+## Pipeline selection
+
+The default remains the original pipeline, including for configurations that omit `global_pipeline`:
+
+```yaml
+global_pipeline:
+  mode: erp_rgb_state
+```
+
+Select predicted-clean consensus explicitly:
+
+```yaml
+global_pipeline:
+  mode: erp_x0_consensus
+  clean_consensus:
+    bootstrap: native_noise
+    noise_storage: cpu
+    noise_binding: camera_index
+    noise_dtype: fp32
+```
+
+The original `diffpano.erp_pipeline.ERPRGBPipeline` and its numerical behavior are unchanged. Both modes use the same model instance, prompt conditioning, camera cover, warp operators, and fusion implementation.
 
 ## Persistent-state invariant
 
 `diffpano.erp_pipeline.ERPRGBPipeline` carries one FP32 tensor shaped `[B,3,H_erp,W_erp]` between global timesteps. Every camera reads the same frozen source tensor. Each proposal is accumulated into streaming full-ERP sums, and fusion updates the ERP only after the complete camera cover. No `N_views × ERP` tensor stack is retained.
 
 For SANA, FLUX, and SD2, the tensor is an RGB synchronization canvas and each adapter performs its existing deterministic encode/model-step/decode sequence. For PixelDiT, the tensor is the actual pixel-space diffusion state `X_t`; projection, the model, the solver step, and fusion all operate directly on three-channel floating-point pixels. No autoencoder boundary or alternate persistent representation exists in the PixelDiT backend.
+
+## Predicted-clean consensus invariant
+
+`diffpano.erp_x0_pipeline.ERPX0ConsensusPipeline` carries only the fused predicted-clean ERP RGB tensor between global timesteps. For camera slot `i`, one backend-native Gaussian tensor `epsilon_i` is sampled before the loop and reused exactly for all timesteps. With the fixed cover, slot `i` always denotes the same camera; with the rotated cover, its noise follows that camera slot as the complete cover rotates.
+
+At the first scheduler timestep, each backend consumes its official native initial noise state and directly produces a clean prediction. The first timestep is therefore not discarded. For every later timestep, all cameras read the same frozen clean ERP `X0_erp`, then perform:
+
+```text
+clean ERP RGB
+  -> perspective clean RGB
+  -> backend-native clean state (identity for PixelDiT)
+  -> exact scheduler forward noising with fixed epsilon_i
+  -> one model evaluation yielding predicted clean native state
+  -> clean RGB (identity for PixelDiT)
+  -> perspective-to-ERP warp
+  -> synchronous clean-RGB fusion after all cameras
+```
+
+Only the predicted-clean RGB proposal enters projection and fusion. Neither `epsilon_i` nor the constructed noisy native state is projected, inverse-projected, averaged, or persisted. The model is evaluated exactly `N_steps * N_views` times.
+
+The checked-in baseline uses CPU noise storage, FP32 noise, `camera_index` binding, the fixed 89-camera SphereDiff cover, standard bilinear projection in both directions, and plain uniform averaging. `noise_storage: gpu` retains the same tensors on the model device; `noise_storage: seed` regenerates deterministically from one seed per camera slot.
+
+### SANA and FLUX flow math
+
+For the exact inference sigma associated with the current scheduler timestep:
+
+```text
+x_sigma = (1 - sigma) x0 + sigma epsilon_i
+v_theta = epsilon - x0
+x0_hat = x_sigma - sigma v_theta(x_sigma, sigma, conditioning)
+```
+
+FLUX uses `FlowMatchEulerDiscreteScheduler.scale_noise`. SANA uses `DPMSolverMultistepScheduler.add_noise` with `use_flow_sigmas=True`; its official `_sigma_to_alpha_sigma_t` returns `alpha=1-sigma`, `sigma_t=sigma`. Clean conversion mirrors its `flow_prediction` conversion and does not call `scheduler.step`.
+
+### SD2 DDIM math
+
+SD2 constructs `x_t` with `DDIMScheduler.add_noise`. Let `alpha_bar_t` be the scheduler's exact cumulative alpha and `beta_bar_t=1-alpha_bar_t`. Clean recovery follows the configured prediction type:
+
+```text
+epsilon:      x0_hat = (x_t - sqrt(beta_bar_t) epsilon_theta) / sqrt(alpha_bar_t)
+sample:       x0_hat = model_output
+v_prediction: x0_hat = sqrt(alpha_bar_t) x_t - sqrt(beta_bar_t) v_theta
+```
+
+Scheduler thresholding or sample clipping is applied exactly as in DDIM's predicted-original-sample path. No DDIM update is performed.
+
+### PixelDiT shifted-flow math
+
+PixelDiT uses the official shifted continuous time `s` from its pinned `time_uniform_flow` schedule:
+
+```text
+x_s = (1 - s) x0 + s epsilon_i
+x0_hat = upstream model_fn(x_s, s)
+```
+
+The upstream wrapper passes `1000*s` to the network. The clean-consensus path calls the upstream `model_fn` directly and performs no first- or second-order solver update. There is no VAE encode/decode in this path.
+
+## Predicted-clean baseline and validation
+
+The four complete 89-camera experiment configs are:
+
+- [SANA](../configs/x0_consensus_sana.yaml)
+- [FLUX](../configs/x0_consensus_flux.yaml)
+- [SD2](../configs/x0_consensus_sd2.yaml)
+- [PixelDiT](../configs/x0_consensus_pixeldit.yaml)
+
+Run validation in increasing geometric complexity:
+
+```bash
+# CPU scheduler, reuse, routing, synchronous fusion, and real-geometry mock tests.
+python -m unittest discover -s tests -v
+
+# One real camera for all timesteps, with no ERP projection or fusion.
+python scripts/x0_consensus_single_view_test.py \
+  --config configs/x0_consensus_sana.yaml --output outputs/x0-single-sana
+
+# One real camera through ERP projection and fusion.
+python scripts/x0_consensus_one_view_erp_test.py \
+  --config configs/x0_consensus_sana.yaml --output outputs/x0-one-erp-sana
+
+# Complete fixed 89-camera experiment.
+python scripts/generate.py --config configs/x0_consensus_sana.yaml
+```
+
+Replace `sana` with `flux`, `sd2`, or `pixeldit`. The single-view report records all clean-state statistics, the fixed-noise identity, model evaluation count, and peak GPU memory. The one-view ERP report adds projection coverage and per-stage timing. Full-run metadata stores the global pipeline mode and all per-camera fixed-noise identities; debug images are explicitly named as clean-source views, predicted-clean views, and fused clean ERP states.
 
 ## Official PixelDiT integration
 
