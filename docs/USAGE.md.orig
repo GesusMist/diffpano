@@ -84,14 +84,6 @@ global_pipeline:
 
 The original `diffpano.erp_pipeline.ERPRGBPipeline` and its numerical behavior are unchanged. Both modes use the same model instance, prompt conditioning, camera cover, warp operators, and fusion implementation.
 
-The canonical planar experiments use model-specific patch geometry so every
-latent backend sees a 20 x 20 native latent: SANA uses `patch_size: 640` and
-`stride: 200` (32x VAE downsampling), while FLUX and SD2 use
-`patch_size: 160` and `stride: 50` (8x VAE downsampling). PixelDiT has no VAE
-latent and uses the requested FLUX-matched `160/50` geometry. Planar config
-validation rejects other values so an experiment cannot silently revert to
-the former 1024/512 setting.
-
 ## Persistent-state invariant
 
 `diffpano.erp_pipeline.ERPRGBPipeline` carries one FP32 tensor shaped `[B,3,H_erp,W_erp]` between global timesteps. Every camera reads the same frozen source tensor. Each proposal is accumulated into streaming full-ERP sums, and fusion updates the ERP only after the complete camera cover. No `N_views × ERP` tensor stack is retained.

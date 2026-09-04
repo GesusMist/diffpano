@@ -1,6 +1,22 @@
 # DiffPano
 
-DiffPano generates 360° panoramas with a selectable global ERP pipeline. The original `erp_rgb_state` mode persists an equirectangular three-channel diffusion/RGB state. The new `erp_x0_consensus` mode persists only fused predicted-clean ERP RGB. Both have shape `[B, 3, H_erp, W_erp]`; the sphere is used only for coordinate conversion between the ERP and ordinary perspective cameras.
+DiffPano supports three orthogonal axes: a model backend (SANA, FLUX, SD2, or PixelDiT), global-state semantics (`erp_rgb_state` or `erp_x0_consensus`), and a canvas domain (`erp` or `planar`). The ERP-prefixed global-mode names remain for configuration compatibility; both modes also run on a rectangular planar canvas.
+
+Planar mode is the geometry-free control experiment. It maintains `[B,3,H,W]` RGB, extracts exact square tensor slices, and writes model proposals back to the identical `(y,x)` rectangles. It performs no perspective projection, inverse projection, camera sampling, wrapping, warping, interpolation, or resizing.
+
+| Property | ERP | Planar |
+|---|---|---|
+| Canvas | ERP RGB | Rectangular RGB |
+| Patch extraction | Perspective projection | Exact crop |
+| Patch return | Inverse projection | Exact placement |
+| Resampling | Yes | No |
+| Sphere geometry | Yes | No |
+| Seam/poles | Yes | No |
+| Fusion | RGB | RGB |
+| SANA / FLUX / SD2 / PixelDiT | Yes | Yes |
+| RGB-state / x0-consensus | Yes | Yes |
+
+Select it with `canvas.mode: planar`; omitted `canvas` sections still default to ERP. See [docs/USAGE.md](docs/USAGE.md) for layout, fixed-noise, and validation details.
 
 ## Original state semantics (`erp_rgb_state`)
 
@@ -82,6 +98,20 @@ python scripts/generate.py --config configs/x0_consensus_sd2.yaml
 python scripts/generate.py --config configs/x0_consensus_pixeldit.yaml
 ```
 
+Run the new planar baselines through the same canonical entrypoint:
+
+```bash
+python scripts/generate.py --config configs/planar/rgb_state/sana.yaml
+python scripts/generate.py --config configs/planar/x0_consensus/sana.yaml
+```
+
+Equivalent configs are provided for `flux`, `sd2`, and `pixeldit` in those two directories.
+The canonical planar geometry keeps the native latent patch at 20 x 20:
+SANA uses 640-pixel patches with stride 200, while FLUX and SD2 use
+160-pixel patches with stride 50. PixelDiT is pixel-native and uses the
+requested FLUX-matched 160/50 geometry. Configuration validation enforces
+these model-specific values for planar runs.
+
 Validate the integration in increasing geometric complexity:
 
 ```bash
@@ -108,6 +138,7 @@ The real-checkpoint scripts are intentionally separate from the CPU unit suite. 
 - Fusion: `average`, `weighted_average`, or `detail_preserving_average` with all existing weights.
 - Initialization: `erp_rgb_noise` and `latent_native_bootstrap` for latent-diffusion backends; direct unclamped `pixel_gaussian` for PixelDiT.
 - Local denoisers: SANA, FLUX, Stable Diffusion 2, and PixelDiT.
+- Canvas domains: projected ERP or exact-crop planar.
 
 Projection, LPW, accumulation, and fusion run in FP32 and never clamp the evolving state. Model precision and conditioning stay inside each adapter. Only preview/final image conversion maps values to a displayable range.
 
@@ -116,6 +147,8 @@ Projection, LPW, accumulation, and fusion run in FP32 and never clamp the evolvi
 ```text
 diffpano/                         persistent ERP-RGB/pixel-state implementation
 diffpano/erp_x0_pipeline.py       predicted-clean ERP consensus pipeline
+diffpano/planar.py                exact planar layout and streaming fusion
+diffpano/planar_pipeline.py       planar RGB-state and x0-consensus loops
 diffpano/noise.py                 fixed backend-native per-camera noise bank
 diffpano/pipelines/pixeldit.py    lazy official PixelDiT adapter
 diffpano/pipelines/pixeldit_solver.py  shifted schedule and first-order step
@@ -125,6 +158,8 @@ scripts/x0_consensus_*_test.py    backend-neutral clean-consensus validation
 experiments/legacy_spherical/     archived spherical-latent DiffPano path
 spherediff/                       SphereDiff baseline namespace/config
 ```
+
+Earlier planar experiments (on revisions that contain `experiments/planar/` and `scripts/planar_test.py`) are historical persistent-latent, model-specific experiments. The new planar canvas path is separate: it uses the current generic backends, includes PixelDiT, persists RGB or clean RGB, and is selected by `canvas.mode` in `scripts/generate.py`.
 
 Run the archived SphereDiff baseline separately:
 

@@ -39,3 +39,24 @@ def camera_prompt_indices(cameras: Sequence[PerspectiveCamera], prompt_direction
     camera_directions = torch.stack([camera.forward() for camera in cameras])
     directions = prompt_directions.to(dtype=torch.float32, device=camera_directions.device)
     return (camera_directions @ directions.t()).argmax(dim=1)
+
+
+def expanded_prompt_indices(
+    prompt_indices: Sequence[int],
+    *,
+    batch_size: int,
+    num_prompts: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Repeat spatial prompt slots for the image batch on a backend device."""
+
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    indices = torch.as_tensor(prompt_indices, dtype=torch.long)
+    if indices.ndim != 1:
+        raise ValueError("prompt_indices must be one-dimensional")
+    if indices.numel() and (
+        int(indices.min()) < 0 or int(indices.max()) >= num_prompts
+    ):
+        raise IndexError("prompt index is outside the prepared conditioning bank")
+    return indices.repeat_interleave(batch_size).to(device=device)

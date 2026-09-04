@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a panorama with a persistent ERP RGB diffusion state."""
+"""Generate with a persistent ERP or rectangular planar RGB canvas."""
 
 import argparse
 import os
@@ -15,6 +15,10 @@ from diffpano.erp_pipeline import generate_erp_rgb
 from diffpano.erp_x0_pipeline import generate_erp_x0_consensus
 from diffpano.initialization import set_random_seed
 from diffpano.metadata import save_run_metadata
+from diffpano.planar_pipeline import (
+    generate_planar_rgb,
+    generate_planar_x0_consensus,
+)
 from diffpano.pipelines import build_view_denoiser, precision_dtype
 
 
@@ -64,16 +68,27 @@ def _configure_denoiser(config: ExperimentConfig, denoiser) -> None:
 
 
 def _generate_with_selected_global_pipeline(config, denoiser, diagnostics):
-    if config.global_pipeline.mode == "erp_rgb_state":
-        return generate_erp_rgb(
-            config, denoiser, diagnostics_writer=diagnostics
-        )
-    if config.global_pipeline.mode == "erp_x0_consensus":
-        return generate_erp_x0_consensus(
-            config, denoiser, diagnostics_writer=diagnostics
-        )
+    if config.canvas.mode == "erp":
+        if config.global_pipeline.mode == "erp_rgb_state":
+            return generate_erp_rgb(
+                config, denoiser, diagnostics_writer=diagnostics
+            )
+        if config.global_pipeline.mode == "erp_x0_consensus":
+            return generate_erp_x0_consensus(
+                config, denoiser, diagnostics_writer=diagnostics
+            )
+    elif config.canvas.mode == "planar":
+        if config.global_pipeline.mode == "erp_rgb_state":
+            return generate_planar_rgb(
+                config, denoiser, diagnostics_writer=diagnostics
+            )
+        if config.global_pipeline.mode == "erp_x0_consensus":
+            return generate_planar_x0_consensus(
+                config, denoiser, diagnostics_writer=diagnostics
+            )
     raise ValueError(
-        f"Unsupported global pipeline {config.global_pipeline.mode!r}"
+        f"Unsupported canvas/global pipeline combination: "
+        f"{config.canvas.mode!r}/{config.global_pipeline.mode!r}"
     )
 
 
@@ -104,14 +119,23 @@ def run(config: ExperimentConfig) -> Path:
         }
     result.peak_gpu_memory_gib = peak_gpu_memory
     result_path = run_dir / "result.png"
+    result_rgb = (
+        result.canvas_rgb if config.canvas.mode == "planar" else result.erp_rgb
+    )
     if config.output.save_final:
-        tensor_to_pil(result.erp_rgb[0]).save(result_path)
+        tensor_to_pil(result_rgb[0]).save(result_path)
     if config.output.save_metadata:
         save_run_metadata(str(run_dir / "metadata.json"), config, denoiser, result, str(result_path))
     with log_path.open("a", encoding="utf-8") as handle:
         for step in result.steps:
+            spatial_count = getattr(step, "num_patches", None)
+            spatial_label = "patches"
+            if spatial_count is None:
+                spatial_count = step.num_cameras
+                spatial_label = "cameras"
             handle.write(
-                f"step={step.step_index} timestep={step.scheduler_timestep} cameras={step.num_cameras} "
+                f"step={step.step_index} timestep={step.scheduler_timestep} "
+                f"{spatial_label}={spatial_count} "
                 f"coverage={step.coverage_percent:.4f} overlap={step.multi_contributor_percent:.4f} "
                 f"weights=({step.weight_min:.6g},{step.weight_max:.6g},{step.weight_mean:.6g}) "
                 f"timings={step.timings_seconds} "
@@ -124,7 +148,9 @@ def run(config: ExperimentConfig) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate DiffPano with a persistent ERP RGB canvas.")
+    parser = argparse.ArgumentParser(
+        description="Generate DiffPano with a persistent ERP or planar RGB canvas."
+    )
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()
     run(load_experiment_config(args.config))

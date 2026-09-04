@@ -7,7 +7,11 @@ from typing import Any, Optional, Sequence
 import torch
 
 from diffpano.camera import PerspectiveCamera
-from diffpano.conditioning import camera_prompt_indices, expand_directional_prompts
+from diffpano.conditioning import (
+    camera_prompt_indices,
+    expand_directional_prompts,
+    expanded_prompt_indices,
+)
 from diffpano.pipelines.base import (
     ViewDenoiser,
     ensure_first_order_scheduler,
@@ -129,6 +133,24 @@ class SD2ViewDenoiser(ViewDenoiser):
     ):
         indices = camera_prompt_indices(cameras, prepared_conditioning.prompt_directions)
         indices = indices.repeat_interleave(batch_size).to(device=self.device)
+        positive = prepared_conditioning.positive[indices]
+        if prepared_conditioning.negative is None:
+            return positive
+        return torch.cat([prepared_conditioning.negative[indices], positive], dim=0)
+
+    def conditioning_for_prompt_indices(
+        self,
+        prepared_conditioning: SD2PromptBank,
+        prompt_indices: Sequence[int],
+        *,
+        batch_size: int,
+    ):
+        indices = expanded_prompt_indices(
+            prompt_indices,
+            batch_size=batch_size,
+            num_prompts=prepared_conditioning.positive.shape[0],
+            device=self.device,
+        )
         positive = prepared_conditioning.positive[indices]
         if prepared_conditioning.negative is None:
             return positive

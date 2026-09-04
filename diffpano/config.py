@@ -1,7 +1,18 @@
-"""Typed configuration for the ERP-RGB DiffPano architecture."""
+"""Typed configuration for DiffPano's ERP and planar RGB canvases."""
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
+
+
+# The canonical planar experiment geometry keeps each model invocation at the
+# same 20 x 20 native latent grid. PixelDiT is pixel-native, so its requested
+# geometry explicitly follows FLUX.
+PLANAR_NATIVE20_GEOMETRY = {
+    "sana": (640, 200),
+    "flux": (160, 50),
+    "sd2": (160, 50),
+    "pixeldit": (160, 50),
+}
 
 
 @dataclass
@@ -72,9 +83,25 @@ class GenerationConfig:
 
 
 @dataclass
+class CanvasConfig:
+    mode: str = "erp"
+
+
+@dataclass
 class ERPConfig:
     height: int = 2048
     width: int = 4096
+
+
+@dataclass
+class PlanarConfig:
+    height: int = 2048
+    width: int = 4096
+    patch_size: int = 640
+    stride: int = 200
+    patch_strategy: str = "fixed"
+    dynamic_step_size: int = 64
+    prompt_assignment: str = "legacy_directional"
 
 
 @dataclass
@@ -186,7 +213,9 @@ class ExperimentConfig:
     global_pipeline: GlobalPipelineConfig = field(default_factory=GlobalPipelineConfig)
     prompt: PromptConfig = field(default_factory=PromptConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
+    canvas: CanvasConfig = field(default_factory=CanvasConfig)
     erp: ERPConfig = field(default_factory=ERPConfig)
+    planar: PlanarConfig = field(default_factory=PlanarConfig)
     view: ViewConfig = field(default_factory=ViewConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     initialization: InitializationConfig = field(default_factory=InitializationConfig)
@@ -197,6 +226,8 @@ class ExperimentConfig:
     debug: DebugConfig = field(default_factory=DebugConfig)
 
     def validate(self) -> None:
+        if self.canvas.mode not in {"erp", "planar"}:
+            raise ValueError("canvas.mode must be erp or planar")
         if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus"}:
             raise ValueError(
                 "global_pipeline.mode must be erp_rgb_state or erp_x0_consensus"
@@ -221,9 +252,11 @@ class ExperimentConfig:
         if self.sampling.strategy not in {"spherediff_fixed", "spherediff_rotated"}:
             raise ValueError("sampling.strategy must be spherediff_fixed or spherediff_rotated")
         if self.initialization.mode not in {
-            "erp_rgb_noise", "latent_native_bootstrap", "pixel_gaussian"
+            "erp_rgb_noise", "canvas_rgb_noise", "latent_native_bootstrap", "pixel_gaussian"
         }:
             raise ValueError("unsupported initialization.mode")
+        if self.canvas.mode == "erp" and self.initialization.mode == "canvas_rgb_noise":
+            raise ValueError("initialization.mode=canvas_rgb_noise is only valid for planar mode")
         if (
             self.global_pipeline.mode == "erp_rgb_state"
             and self.model.pipeline == "pixeldit"
@@ -246,6 +279,10 @@ class ExperimentConfig:
             raise ValueError("initialization clamp_min must be less than clamp_max")
         if self.warp.mode not in {"standard", "lpw"}:
             raise ValueError("warp.mode must be standard or lpw")
+        if self.canvas.mode == "planar" and self.warp.mode != "standard":
+            raise ValueError(
+                "canvas.mode=planar requires warp.mode=standard; planar uses exact direct placement and does not support ERP LPW"
+            )
         for name, direction in (
             ("warp.erp_to_perspective", self.warp.erp_to_perspective),
             ("warp.perspective_to_erp", self.warp.perspective_to_erp),
@@ -271,6 +308,11 @@ class ExperimentConfig:
             "generation.batch_size": self.generation.batch_size,
             "erp.height": self.erp.height,
             "erp.width": self.erp.width,
+            "planar.height": self.planar.height,
+            "planar.width": self.planar.width,
+            "planar.patch_size": self.planar.patch_size,
+            "planar.stride": self.planar.stride,
+            "planar.dynamic_step_size": self.planar.dynamic_step_size,
             "view.height": self.view.height,
             "view.width": self.view.width,
             "performance.view_batch_size": self.performance.view_batch_size,
@@ -280,8 +322,37 @@ class ExperimentConfig:
         for name, value in positive.items():
             if value < 1:
                 raise ValueError(f"{name} must be positive")
-        if self.erp.width % 2:
+        if self.canvas.mode == "erp" and self.erp.width % 2:
             raise ValueError("erp.width must be even for exact pole reflection")
+        if self.planar.stride > self.planar.patch_size:
+            raise ValueError("planar.stride cannot exceed planar.patch_size because that would leave gaps")
+        if self.planar.patch_size > min(self.planar.height, self.planar.width):
+            raise ValueError("planar.patch_size cannot exceed either canvas dimension")
+        if self.planar.patch_strategy not in {"fixed", "shifted", "dynamic"}:
+            raise ValueError("planar.patch_strategy must be fixed, shifted, or dynamic")
+        if self.planar.prompt_assignment not in {"global", "legacy_directional"}:
+            raise ValueError("planar.prompt_assignment must be global or legacy_directional")
+        if (
+            self.canvas.mode == "planar"
+            and self.global_pipeline.mode == "erp_x0_consensus"
+            and self.planar.patch_strategy != "fixed"
+        ):
+            raise ValueError(
+                "planar x0-consensus currently requires patch_strategy=fixed so fixed noise remains bound to stable patch slots"
+            )
+        if self.canvas.mode == "planar":
+            expected_patch_size, expected_stride = PLANAR_NATIVE20_GEOMETRY[
+                self.model.pipeline
+            ]
+            if (
+                self.planar.patch_size != expected_patch_size
+                or self.planar.stride != expected_stride
+            ):
+                raise ValueError(
+                    "the native-20 planar geometry for "
+                    f"{self.model.pipeline} requires patch_size={expected_patch_size} "
+                    f"and stride={expected_stride}"
+                )
         if not 0 < self.view.fov_x < 180 or not 0 < self.view.fov_y < 180:
             raise ValueError("view FOVs must be between 0 and 180 degrees")
         if self.fusion.epsilon <= 0 or self.fusion.power < 0:
@@ -351,7 +422,9 @@ def load_experiment_config(path: str) -> ExperimentConfig:
         ),
         prompt=_construct(PromptConfig, data.get("prompt"), "prompt"),
         generation=_construct(GenerationConfig, data.get("generation"), "generation"),
+        canvas=_construct(CanvasConfig, data.get("canvas"), "canvas"),
         erp=_construct(ERPConfig, data.get("erp"), "erp"),
+        planar=_construct(PlanarConfig, data.get("planar"), "planar"),
         view=_construct(ViewConfig, data.get("view"), "view"),
         sampling=_construct(
             SamplingConfig, data.get("sampling"), "sampling", nested={"rotation": RotationConfig}

@@ -1,0 +1,431 @@
+import inspect
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import torch
+
+from diffpano.config import (
+    CleanConsensusConfig,
+    ExperimentConfig,
+    FusionConfig,
+    PLANAR_NATIVE20_GEOMETRY,
+    PlanarConfig,
+    load_experiment_config,
+)
+from diffpano.pipelines.base import MockViewDenoiser
+from diffpano.planar import (
+    PlanarFusionAccumulator,
+    build_planar_patch_layout,
+    build_planar_patch_layout_for_step,
+    extract_planar_patch,
+    extract_planar_patches,
+    fuse_planar_patches,
+    planar_prompt_indices,
+)
+from diffpano.planar_pipeline import (
+    PlanarRGBPipeline,
+    PlanarX0ConsensusPipeline,
+    generate_planar_rgb,
+)
+from scripts.generate import _generate_with_selected_global_pipeline
+
+
+class MockCleanBackend:
+    def __init__(self, num_steps=3):
+        self._timesteps = torch.arange(num_steps - 1, -1, -1)
+        self.noisy_inputs = []
+        self.prediction_calls = 0
+        self.encode_calls = 0
+        self.decode_calls = 0
+
+    @property
+    def device(self):
+        return torch.device("cpu")
+
+    @property
+    def timesteps(self):
+        return self._timesteps
+
+    def sample_fixed_noise(self, *, batch_size, height, width, generator):
+        return torch.randn(batch_size, 3, height, width, generator=generator)
+
+    def make_initial_noisy_state(self, fixed_noise, timestep):
+        del timestep
+        return fixed_noise
+
+    def encode_clean(self, rgb_clean):
+        self.encode_calls += 1
+        return rgb_clean
+
+    def add_fixed_noise(self, clean_state, fixed_noise, timestep):
+        del clean_state, timestep
+        return fixed_noise
+
+    def predict_clean_native(self, noisy_state, timestep, conditioning):
+        del timestep, conditioning
+        self.prediction_calls += noisy_state.shape[0]
+        self.noisy_inputs.append(noisy_state.clone())
+        return noisy_state
+
+    def decode_clean(self, clean_state):
+        self.decode_calls += 1
+        return clean_state
+
+    def conditioning_for_cameras(self, prepared, cameras, *, batch_size):
+        del prepared, cameras, batch_size
+        return None
+
+    def conditioning_for_prompt_indices(
+        self, prepared, prompt_indices, *, batch_size
+    ):
+        del prepared
+        return torch.tensor(prompt_indices).repeat_interleave(batch_size)
+
+
+class PreparedMockViewDenoiser(MockViewDenoiser):
+    def prepare_prompt_conditioning(self, prompts, negative_prompt=""):
+        del negative_prompt
+        return prompts
+
+
+class PlanarLayoutTests(unittest.TestCase):
+    def test_layout_covers_canvas_and_appends_final_edges(self):
+        layout = build_planar_patch_layout(11, 17, 6, 4)
+        coverage = torch.zeros(11, 17, dtype=torch.bool)
+        for item in layout.patches:
+            self.assertEqual(item.size, 6)
+            coverage[item.y : item.y + 6, item.x : item.x + 6] = True
+        self.assertTrue(coverage.all())
+        self.assertIn(5, {patch.y for patch in layout.patches})
+        self.assertIn(11, {patch.x for patch in layout.patches})
+
+    def test_shifted_layout_is_deterministic_covering_and_nonwrapping(self):
+        config = PlanarConfig(
+            height=15,
+            width=23,
+            patch_size=8,
+            stride=5,
+            patch_strategy="shifted",
+            dynamic_step_size=2,
+        )
+        first = build_planar_patch_layout_for_step(config, 1)
+        second = build_planar_patch_layout_for_step(config, 1)
+        self.assertEqual(first, second)
+        coverage = torch.zeros(config.height, config.width, dtype=torch.bool)
+        for item in first.patches:
+            self.assertGreaterEqual(item.y, 0)
+            self.assertGreaterEqual(item.x, 0)
+            self.assertLessEqual(item.y + item.size, config.height)
+            self.assertLessEqual(item.x + item.size, config.width)
+            coverage[item.y : item.y + item.size, item.x : item.x + item.size] = True
+        self.assertTrue(coverage.all())
+
+    def test_exact_extraction_is_the_tensor_slice(self):
+        canvas = torch.arange(2 * 3 * 9 * 13).reshape(2, 3, 9, 13)
+        layout = build_planar_patch_layout(9, 13, 5, 3)
+        item = layout.patches[3]
+        actual = extract_planar_patch(canvas, item)
+        expected = canvas[..., item.y : item.y + 5, item.x : item.x + 5]
+        self.assertTrue(torch.equal(actual, expected))
+
+    def test_corrected_legacy_prompt_rows_run_north_to_south(self):
+        layout = build_planar_patch_layout(20, 4, 4, 4)
+        groups = [
+            index // 4
+            for index in planar_prompt_indices(
+                layout, layout.patches, "legacy_directional"
+            )
+        ]
+        self.assertEqual(groups, [0, 1, 2, 3, 4])
+
+
+class PlanarFusionTests(unittest.TestCase):
+    def test_exact_crop_fuse_identity_for_all_modes(self):
+        torch.manual_seed(11)
+        source = torch.randn(2, 3, 11, 17)
+        layout = build_planar_patch_layout(11, 17, 6, 4)
+        patches = extract_planar_patches(source, layout)
+        for mode in ("average", "weighted_average", "detail_preserving_average"):
+            with self.subTest(mode=mode):
+                result = fuse_planar_patches(
+                    source,
+                    layout,
+                    patches,
+                    FusionConfig(mode=mode, weight_mode="gaussian"),
+                )
+                self.assertTrue(
+                    torch.allclose(result.canvas_rgb, source, atol=4e-7, rtol=0)
+                )
+                self.assertTrue(result.coverage_mask.all())
+
+    def test_all_local_weight_modes_preserve_identity(self):
+        torch.manual_seed(12)
+        source = torch.randn(1, 3, 8, 12)
+        layout = build_planar_patch_layout(8, 12, 6, 3)
+        patches = extract_planar_patches(source, layout)
+        for weight in (
+            "uniform",
+            "cosine",
+            "gaussian",
+            "distance_to_boundary",
+            "spherediff_center",
+        ):
+            with self.subTest(weight=weight):
+                result = fuse_planar_patches(
+                    source,
+                    layout,
+                    patches,
+                    FusionConfig(mode="weighted_average", weight_mode=weight),
+                )
+                self.assertTrue(
+                    torch.allclose(result.canvas_rgb, source, atol=4e-7, rtol=0)
+                )
+
+    def test_streaming_fusion_is_order_independent(self):
+        torch.manual_seed(13)
+        source = torch.randn(1, 3, 11, 17)
+        layout = build_planar_patch_layout(11, 17, 6, 4)
+        for mode in ("average", "weighted_average", "detail_preserving_average"):
+            config = FusionConfig(mode=mode, weight_mode="cosine")
+            outputs = []
+            for items in (layout.patches, tuple(reversed(layout.patches))):
+                accumulator = PlanarFusionAccumulator(source, config)
+                for item in items:
+                    accumulator.accumulate(extract_planar_patch(source, item), item)
+                outputs.append(accumulator.finalize().canvas_rgb)
+            self.assertTrue(torch.allclose(outputs[0], outputs[1], atol=5e-7, rtol=0))
+
+    def test_identity_loop_preserves_gaussian_variance(self):
+        torch.manual_seed(14)
+        source = torch.randn(1, 3, 16, 24)
+        backend = MockViewDenoiser(num_steps=5, delta=0.0)
+        output = PlanarRGBPipeline(
+            planar_config=PlanarConfig(
+                height=16, width=24, patch_size=8, stride=4
+            ),
+            fusion_config=FusionConfig(
+                mode="detail_preserving_average", weight_mode="gaussian"
+            ),
+            backend=backend,
+            patch_batch_size=2,
+        ).run(source, None).canvas_rgb
+        self.assertTrue(torch.allclose(output, source, atol=1e-6, rtol=0))
+        self.assertAlmostEqual(output.std().item() / source.std().item(), 1.0, places=6)
+
+
+class PlanarPipelineTests(unittest.TestCase):
+    def test_rgb_state_uses_frozen_source_and_is_patch_order_independent(self):
+        source = torch.randn(1, 3, 12, 16)
+        planar = PlanarConfig(height=12, width=16, patch_size=8, stride=4)
+        layout = build_planar_patch_layout_for_step(planar, 0)
+        outputs = []
+        for order in (
+            list(range(layout.num_patches)),
+            list(reversed(range(layout.num_patches))),
+        ):
+            outputs.append(
+                PlanarRGBPipeline(
+                    planar_config=planar,
+                    fusion_config=FusionConfig(
+                        mode="detail_preserving_average", weight_mode="cosine"
+                    ),
+                    backend=MockViewDenoiser(num_steps=2, delta=0.1),
+                    patch_order=order,
+                ).run(source.clone(), None).canvas_rgb
+            )
+        self.assertTrue(torch.allclose(outputs[0], outputs[1], atol=1e-6, rtol=0))
+
+    def test_x0_uses_fixed_distinct_noise_and_exactly_n_evaluations(self):
+        backend = MockCleanBackend(num_steps=3)
+        planar = PlanarConfig(height=8, width=12, patch_size=8, stride=4)
+        layout = build_planar_patch_layout_for_step(planar, 0)
+        result = PlanarX0ConsensusPipeline(
+            planar_config=planar,
+            fusion_config=FusionConfig(mode="average", weight_mode="uniform"),
+            consensus_config=CleanConsensusConfig(),
+            backend=backend,
+            seed=27,
+        ).run(None, batch_size=1)
+        self.assertEqual(backend.prediction_calls, 3 * layout.num_patches)
+        self.assertEqual(len(result.fixed_noise_identities), layout.num_patches)
+        self.assertEqual(
+            len(set(result.fixed_noise_identities.values())), layout.num_patches
+        )
+        for patch_index in range(layout.num_patches):
+            reference = backend.noisy_inputs[patch_index]
+            for step in range(1, 3):
+                self.assertTrue(
+                    torch.equal(
+                        reference,
+                        backend.noisy_inputs[step * layout.num_patches + patch_index],
+                    )
+                )
+
+    def test_x0_is_patch_order_independent_for_all_fusion_modes(self):
+        planar = PlanarConfig(height=8, width=12, patch_size=8, stride=4)
+        layout = build_planar_patch_layout_for_step(planar, 0)
+        for mode in ("average", "weighted_average", "detail_preserving_average"):
+            outputs = []
+            for order in (
+                list(range(layout.num_patches)),
+                list(reversed(range(layout.num_patches))),
+            ):
+                outputs.append(
+                    PlanarX0ConsensusPipeline(
+                        planar_config=planar,
+                        fusion_config=FusionConfig(
+                            mode=mode, weight_mode="gaussian"
+                        ),
+                        consensus_config=CleanConsensusConfig(),
+                        backend=MockCleanBackend(num_steps=2),
+                        seed=31,
+                        patch_order=order,
+                    ).run(None, batch_size=1).canvas_rgb
+                )
+            self.assertTrue(
+                torch.allclose(outputs[0], outputs[1], atol=1e-6, rtol=0)
+            )
+
+    def test_planar_generation_does_not_construct_geometry(self):
+        config = ExperimentConfig()
+        config.canvas.mode = "planar"
+        config.warp.mode = "standard"
+        config.planar = PlanarConfig(height=8, width=16, patch_size=8, stride=4)
+        config.generation.num_inference_steps = 1
+        config.initialization.mode = "canvas_rgb_noise"
+        with tempfile.TemporaryDirectory() as directory:
+            prompt_path = Path(directory) / "prompt.txt"
+            prompt_path.write_text("one prompt\n", encoding="utf-8")
+            config.prompt.path = str(prompt_path)
+            forbidden = AssertionError("planar path called ERP geometry")
+            with (
+                patch("diffpano.camera.build_camera_sampler", side_effect=forbidden),
+                patch("diffpano.warp.build_warp_operator", side_effect=forbidden),
+                patch("diffpano.projection.ProjectionCache", side_effect=forbidden),
+            ):
+                result = generate_planar_rgb(
+                    config, PreparedMockViewDenoiser(num_steps=1)
+                )
+        self.assertEqual(tuple(result.canvas_rgb.shape), (1, 3, 8, 16))
+
+    def test_planar_orchestrator_source_has_no_projection_operations(self):
+        source = inspect.getsource(__import__("diffpano.planar_pipeline", fromlist=["*"]))
+        for forbidden in (
+            "grid_sample",
+            "interpolate",
+            "erp_to_perspective",
+            "perspective_to_erp",
+            "ProjectionCache",
+            "build_camera_sampler",
+            "build_warp_operator",
+        ):
+            self.assertNotIn(forbidden, source)
+
+
+class PlanarConfigTests(unittest.TestCase):
+    def _config(self, backend="sana"):
+        config = ExperimentConfig()
+        config.canvas.mode = "planar"
+        config.warp.mode = "standard"
+        config.model.pipeline = backend
+        config.planar.patch_size, config.planar.stride = PLANAR_NATIVE20_GEOMETRY[
+            backend
+        ]
+        if backend == "pixeldit":
+            config.initialization.mode = "pixel_gaussian"
+        return config
+
+    def test_all_four_existing_backend_names_validate(self):
+        for backend in ("sana", "flux", "sd2", "pixeldit"):
+            with self.subTest(backend=backend):
+                self._config(backend).validate()
+
+    def test_all_eight_example_configs_load(self):
+        for mode in ("rgb_state", "x0_consensus"):
+            for backend in ("sana", "flux", "sd2", "pixeldit"):
+                with self.subTest(mode=mode, backend=backend):
+                    config = load_experiment_config(
+                        f"configs/planar/{mode}/{backend}.yaml"
+                    )
+                    self.assertEqual(config.canvas.mode, "planar")
+                    self.assertEqual(config.model.pipeline, backend)
+                    self.assertEqual(
+                        (config.planar.patch_size, config.planar.stride),
+                        PLANAR_NATIVE20_GEOMETRY[backend],
+                    )
+
+    def test_canonical_router_selects_both_planar_global_modes(self):
+        config = self._config()
+        rgb_result = object()
+        clean_result = object()
+        with patch(
+            "scripts.generate.generate_planar_rgb", return_value=rgb_result
+        ) as rgb, patch(
+            "scripts.generate.generate_planar_x0_consensus",
+            return_value=clean_result,
+        ) as clean:
+            self.assertIs(
+                _generate_with_selected_global_pipeline(config, object(), None),
+                rgb_result,
+            )
+            rgb.assert_called_once()
+            clean.assert_not_called()
+            config.global_pipeline.mode = "erp_x0_consensus"
+            self.assertIs(
+                _generate_with_selected_global_pipeline(config, object(), None),
+                clean_result,
+            )
+            clean.assert_called_once()
+
+    def test_existing_configs_default_to_erp(self):
+        self.assertEqual(ExperimentConfig().canvas.mode, "erp")
+
+    def test_planar_rejects_erp_lpw(self):
+        config = self._config()
+        config.warp.mode = "lpw"
+        with self.assertRaisesRegex(ValueError, "does not support ERP LPW"):
+            config.validate()
+
+    def test_x0_rejects_dynamic_layout_noise_binding(self):
+        config = self._config()
+        config.global_pipeline.mode = "erp_x0_consensus"
+        config.planar.patch_strategy = "shifted"
+        with self.assertRaisesRegex(ValueError, "stable patch slots"):
+            config.validate()
+
+    def test_native_20_geometry_is_enforced_for_every_backend(self):
+        for backend in ("sana", "flux", "sd2", "pixeldit"):
+            with self.subTest(backend=backend):
+                config = self._config(backend)
+                config.planar.patch_size += 1
+                with self.assertRaisesRegex(ValueError, "native-20 planar geometry"):
+                    config.validate()
+
+    def test_native_latent_patch_is_20_square(self):
+        downsample = {"sana": 32, "flux": 8, "sd2": 8}
+        for backend, scale in downsample.items():
+            patch_size, _ = PLANAR_NATIVE20_GEOMETRY[backend]
+            self.assertEqual(patch_size // scale, 20)
+        self.assertEqual(PLANAR_NATIVE20_GEOMETRY["pixeldit"], (160, 50))
+
+
+class PixelDiTPlanarTests(unittest.TestCase):
+    def test_pixeldit_adapter_has_no_vae_calls_in_native_clean_methods(self):
+        from diffpano.pipelines.pixeldit import PixelDiTViewDenoiser
+
+        for method in (
+            PixelDiTViewDenoiser.encode_clean,
+            PixelDiTViewDenoiser.decode_clean,
+            PixelDiTViewDenoiser.denoise_step,
+            PixelDiTViewDenoiser.predict_clean_native,
+        ):
+            source = inspect.getsource(method)
+            self.assertNotIn("encode_view_images", source)
+            self.assertNotIn("decode_view_latents", source)
+            self.assertNotIn("vae", source.lower())
+
+
+if __name__ == "__main__":
+    unittest.main()

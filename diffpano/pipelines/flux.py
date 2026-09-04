@@ -9,7 +9,11 @@ import numpy as np
 import torch
 
 from diffpano.camera import PerspectiveCamera
-from diffpano.conditioning import camera_prompt_indices, expand_directional_prompts
+from diffpano.conditioning import (
+    camera_prompt_indices,
+    expand_directional_prompts,
+    expanded_prompt_indices,
+)
 from diffpano.pipelines.base import (
     ViewDenoiser,
     ensure_first_order_scheduler,
@@ -181,6 +185,32 @@ class FluxViewDenoiser(ViewDenoiser):
     ):
         indices = camera_prompt_indices(cameras, prepared_conditioning.prompt_directions)
         indices = indices.repeat_interleave(batch_size).to(device=self.device)
+        result = {
+            "embeds": prepared_conditioning.positive[indices],
+            "pooled": prepared_conditioning.pooled[indices],
+            "text_ids": prepared_conditioning.text_ids,
+        }
+        if prepared_conditioning.negative is not None:
+            result.update(
+                negative=prepared_conditioning.negative[indices],
+                negative_pooled=prepared_conditioning.negative_pooled[indices],
+                negative_text_ids=prepared_conditioning.negative_text_ids,
+            )
+        return result
+
+    def conditioning_for_prompt_indices(
+        self,
+        prepared_conditioning: FluxPromptBank,
+        prompt_indices: Sequence[int],
+        *,
+        batch_size: int,
+    ):
+        indices = expanded_prompt_indices(
+            prompt_indices,
+            batch_size=batch_size,
+            num_prompts=prepared_conditioning.positive.shape[0],
+            device=self.device,
+        )
         result = {
             "embeds": prepared_conditioning.positive[indices],
             "pooled": prepared_conditioning.pooled[indices],

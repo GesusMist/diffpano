@@ -1,4 +1,4 @@
-"""Fixed per-camera Gaussian noise for clean-ERP consensus generation."""
+"""Fixed per-spatial-slot Gaussian noise for predicted-clean consensus."""
 
 import hashlib
 from typing import Any, Dict, List, Sequence
@@ -15,7 +15,11 @@ def _noise_identity(value: torch.Tensor) -> str:
 
 
 class FixedPatchNoiseBank:
-    """Own exactly one backend-native Gaussian realization per camera slot."""
+    """Own one backend-native Gaussian per camera or planar-patch slot.
+
+    ``num_cameras`` is retained as a backward-compatible constructor name; the
+    planar caller passes its stable patch count and retrieves by patch index.
+    """
 
     def __init__(
         self,

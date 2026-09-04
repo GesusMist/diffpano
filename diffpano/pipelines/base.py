@@ -41,6 +41,19 @@ class ViewDenoiser(ABC):
     ) -> Any:
         ...
 
+    def conditioning_for_prompt_indices(
+        self,
+        prepared_conditioning: Any,
+        prompt_indices: Sequence[int],
+        *,
+        batch_size: int,
+    ) -> Any:
+        """Select cached conditioning without constructing camera geometry."""
+
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support direct prompt-index conditioning"
+        )
+
     @abstractmethod
     def denoise_step(self, rgb_view: torch.Tensor, timestep: Any, conditioning: Any) -> torch.Tensor:
         """Return RGB at the next local scheduler state."""
@@ -82,6 +95,16 @@ class MockViewDenoiser(ViewDenoiser):
             [camera.yaw for camera in cameras for _ in range(batch_size)],
             device=self.device,
             dtype=torch.float32,
+        )
+
+    def conditioning_for_prompt_indices(
+        self, prepared_conditioning, prompt_indices, *, batch_size: int
+    ):
+        del prepared_conditioning
+        return torch.tensor(
+            [index for index in prompt_indices for _ in range(batch_size)],
+            device=self.device,
+            dtype=torch.long,
         )
 
     def denoise_step(self, rgb_view: torch.Tensor, timestep: Any, conditioning: Any) -> torch.Tensor:

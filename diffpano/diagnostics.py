@@ -167,6 +167,72 @@ class DiagnosticsWriter:
             encoding="utf-8",
         )
 
+    def on_planar_patch(
+        self,
+        step_index: int,
+        patch_index: int,
+        before: Any,
+        after: torch.Tensor,
+    ) -> None:
+        """Save direct planar crops without projection-shaped diagnostics."""
+
+        if not self.config.enabled:
+            return
+        if self.config.save_step_indices and step_index not in self.config.save_step_indices:
+            return
+        if self.config.save_view_indices and patch_index not in self.config.save_view_indices:
+            return
+        if not (
+            self.config.save_views_before_denoise
+            or self.config.save_views_after_denoise
+        ):
+            return
+        patch_dir = (
+            self.directory
+            / f"step_{step_index:04d}"
+            / f"patch_{patch_index:03d}"
+        )
+        patch_dir.mkdir(parents=True, exist_ok=True)
+        if before is not None and self.config.save_views_before_denoise:
+            tensor_to_pil(before[0]).save(patch_dir / "source_patch.png")
+        if self.config.save_views_after_denoise:
+            tensor_to_pil(after[0]).save(patch_dir / "predicted_patch.png")
+
+    def on_planar_step(
+        self,
+        step_index: int,
+        source: Any,
+        result: Any,
+        stats: Any,
+        *,
+        clean: bool,
+    ) -> None:
+        if not self.config.enabled:
+            return
+        if self.config.save_step_indices and step_index not in self.config.save_step_indices:
+            return
+        step_dir = self.directory / f"step_{step_index:04d}"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        if self.config.save_erp_each_step:
+            if source is not None:
+                tensor_to_pil(source[0]).save(step_dir / "planar_canvas_before.png")
+            name = "fused_clean_planar_canvas.png" if clean else "planar_canvas_after.png"
+            tensor_to_pil(result.canvas_rgb[0]).save(step_dir / name)
+        tensors: Dict[str, torch.Tensor] = {}
+        if self.config.save_masks:
+            tensors["coverage_mask"] = result.coverage_mask.detach().cpu()
+            tensors["contributor_count"] = result.contributor_count.detach().cpu()
+        if self.config.save_weights:
+            tensors["accumulated_weight"] = result.accumulated_weight.detach().cpu()
+        if tensors:
+            torch.save(tensors, step_dir / "planar_fusion_tensors.pt")
+        filename = "planar_clean_consensus_stats.txt" if clean else "planar_stats.txt"
+        (step_dir / filename).write_text(
+            "\n".join(f"{key}={value}" for key, value in asdict(stats).items())
+            + "\n",
+            encoding="utf-8",
+        )
+
 
 class TensorStatisticsAccumulator:
     """Streaming scalar moments for pixel-state diagnostics."""

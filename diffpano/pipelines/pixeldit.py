@@ -12,7 +12,11 @@ from typing import Any, Optional, Sequence, Tuple
 import torch
 
 from diffpano.camera import PerspectiveCamera
-from diffpano.conditioning import camera_prompt_indices, expand_directional_prompts
+from diffpano.conditioning import (
+    camera_prompt_indices,
+    expand_directional_prompts,
+    expanded_prompt_indices,
+)
 from diffpano.pipelines.base import ViewDenoiser
 from diffpano.pipelines.pixeldit_solver import PixelDiTFirstOrderSolver
 
@@ -284,6 +288,31 @@ class PixelDiTViewDenoiser(ViewDenoiser):
         negative = prepared_conditioning.negative.expand(positive.shape[0], -1, -1, -1)
         negative_mask = prepared_conditioning.negative_mask.expand(positive.shape[0], -1)
         return PixelDiTConditioning(positive, positive_mask, negative, negative_mask)
+
+    def conditioning_for_prompt_indices(
+        self,
+        prepared_conditioning: PixelDiTPromptBank,
+        prompt_indices: Sequence[int],
+        *,
+        batch_size: int,
+    ) -> PixelDiTConditioning:
+        indices = expanded_prompt_indices(
+            prompt_indices,
+            batch_size=batch_size,
+            num_prompts=prepared_conditioning.positive.shape[0],
+            device=self.device,
+        )
+        positive = prepared_conditioning.positive[indices]
+        positive_mask = prepared_conditioning.positive_mask[indices]
+        negative = prepared_conditioning.negative.expand(
+            positive.shape[0], -1, -1, -1
+        )
+        negative_mask = prepared_conditioning.negative_mask.expand(
+            positive.shape[0], -1
+        )
+        return PixelDiTConditioning(
+            positive, positive_mask, negative, negative_mask
+        )
 
     @staticmethod
     def image_metadata(

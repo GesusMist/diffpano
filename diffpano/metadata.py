@@ -19,12 +19,13 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
         model_source = config.model.path or config.model.id
 
     metadata = {
-        "schema_version": 6,
+        "schema_version": 7,
         "architecture": (
-            "persistent_erp_rgb"
+            f"persistent_{config.canvas.mode}_rgb"
             if config.global_pipeline.mode == "erp_rgb_state"
-            else "persistent_predicted_clean_erp_rgb"
+            else f"persistent_predicted_clean_{config.canvas.mode}_rgb"
         ),
+        "canvas_mode": config.canvas.mode,
         "global_pipeline_mode": config.global_pipeline.mode,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "output_file": str(Path(output_file).resolve()),

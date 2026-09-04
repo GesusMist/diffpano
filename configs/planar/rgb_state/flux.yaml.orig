@@ -1,0 +1,25 @@
+experiment: {name: planar-rgb-state-flux-ruins, seed: 0}
+model:
+  pipeline: flux
+  id: ModelsLab/flux.1-dev
+  variant: null
+  precision: bf16
+  vae_tiling: true
+  vae_slicing: true
+global_pipeline: {mode: erp_rgb_state}
+canvas: {mode: planar}
+planar:
+  height: 2048
+  width: 4096
+  patch_size: 1024
+  stride: 512
+  patch_strategy: fixed
+  dynamic_step_size: 64
+  prompt_assignment: legacy_directional
+prompt: {path: prompts/ruins.txt}
+generation: {num_inference_steps: 20, guidance_scale: 3.5, true_cfg_scale: 1.0, batch_size: 1}
+initialization: {mode: canvas_rgb_noise, distribution: gaussian, mean: 0.0, std: 1.0, clamp: false}
+warp: {mode: standard}
+fusion: {mode: average, weight_mode: uniform}
+performance: {view_batch_size: 1, vae_chunk_size: 1}
+output: {directory: outputs, group: planar-rgb-state}

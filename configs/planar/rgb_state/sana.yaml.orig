@@ -1,0 +1,23 @@
+experiment: {name: planar-rgb-state-sana-ruins, seed: 0}
+model:
+  pipeline: sana
+  id: Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers
+  variant: bf16
+  precision: bf16
+global_pipeline: {mode: erp_rgb_state}
+canvas: {mode: planar}
+planar:
+  height: 2048
+  width: 4096
+  patch_size: 1024
+  stride: 512
+  patch_strategy: fixed
+  dynamic_step_size: 64
+  prompt_assignment: legacy_directional
+prompt: {path: prompts/ruins.txt}
+generation: {num_inference_steps: 20, guidance_scale: 4.5, batch_size: 1}
+initialization: {mode: canvas_rgb_noise, distribution: gaussian, mean: 0.0, std: 1.0, clamp: false}
+warp: {mode: standard}
+fusion: {mode: average, weight_mode: uniform}
+performance: {view_batch_size: 1, vae_chunk_size: 1}
+output: {directory: outputs, group: planar-rgb-state}

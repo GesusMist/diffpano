@@ -1,0 +1,25 @@
+experiment: {name: planar-x0-consensus-pixeldit-ruins, seed: 0}
+model:
+  pipeline: pixeldit
+  id: null
+  variant: null
+  precision: bf16
+global_pipeline:
+  mode: erp_x0_consensus
+  clean_consensus: {bootstrap: native_noise, noise_storage: cpu, noise_binding: camera_index, noise_dtype: fp32}
+canvas: {mode: planar}
+planar:
+  height: 2048
+  width: 4096
+  patch_size: 1024
+  stride: 512
+  patch_strategy: fixed
+  dynamic_step_size: 64
+  prompt_assignment: legacy_directional
+prompt: {path: prompts/ruins.txt}
+generation: {num_inference_steps: 50, guidance_scale: 1.0, batch_size: 1}
+initialization: {mode: canvas_rgb_noise}
+warp: {mode: standard}
+fusion: {mode: average, weight_mode: uniform}
+performance: {view_batch_size: 1, vae_chunk_size: 1}
+output: {directory: outputs, group: planar-x0-consensus}

@@ -1,0 +1,83 @@
+experiment:
+  name: erp-rgb-flux-dynamic-sampling-ruins
+  seed: 0
+
+model:
+  pipeline: flux
+  id: ModelsLab/flux.1-dev
+  path: null
+  revision: null
+  variant: null
+  precision: bf16
+  cpu_offload: false
+  vae_tiling: true
+  vae_slicing: true
+  additional_pipeline_kwargs: {}
+
+prompt:
+  path: prompts/ruins.txt
+  negative_path: null
+
+generation:
+  num_inference_steps: 20
+  guidance_scale: 3.5
+  true_cfg_scale: 1.0
+  batch_size: 1
+
+erp: {height: 2048, width: 4096}
+view: {height: 160, width: 160, fov_x: 80.0, fov_y: 80.0}
+
+sampling:
+  strategy: spherediff_rotated
+  rotation:
+    enabled: true
+    max_yaw_deg: 6.0
+    max_pitch_deg: 3.0
+    max_roll_deg: 2.0
+
+initialization:
+  mode: erp_rgb_noise
+  distribution: gaussian
+  mean: 0.0
+  std: 1.0
+  clamp: false
+  clamp_min: -1.0
+  clamp_max: 1.0
+
+warp:
+  mode: standard
+  erp_to_perspective: {interpolation: nearest}
+  perspective_to_erp: {interpolation: bilinear}
+  lpw:
+    levels: 4
+    lod_mode: jacobian
+    lod_interpolation: nearest
+    vertical_padding_mode: reflect
+
+fusion:
+  mode: average
+  weight_mode: uniform
+  spherediff_temperature: 0.1
+  alpha: 1.0
+  power: 1.0
+  epsilon: 1.0e-6
+  uncovered_mode: keep_previous
+
+performance:
+  view_batch_size: 1
+  vae_chunk_size: 1
+  projection_cache_max_entries: 2
+  projection_cache_cpu_fallback: false
+
+output:
+  directory: outputs
+  group: native20-dynamic-sampling-2026-09-04
+  save_final: true
+  save_metadata: true
+  save_intermediate: false
+  run_id: null
+
+debug:
+  enabled: false
+  measure_performance: false
+
