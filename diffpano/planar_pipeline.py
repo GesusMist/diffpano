@@ -9,7 +9,8 @@ import torch
 from diffpano.config import ExperimentConfig, FusionConfig, PlanarConfig
 from diffpano.diagnostics import TensorStatisticsAccumulator, tensor_state_statistics
 from diffpano.initialization import load_directional_prompts
-from diffpano.noise import FixedPatchNoiseBank
+from diffpano.noise import FixedPatchNoiseBank, GlobalNativeNoiseBank
+from diffpano.overlap import OverlapDisagreement
 from diffpano.pipelines.base import ViewDenoiser
 from diffpano.pipelines.clean_prediction import CleanPredictionBackend
 from diffpano.planar import (
@@ -84,6 +85,7 @@ class PlanarRGBPipeline(_TimedPlanarPipeline):
         diagnostics_writer: Optional[Any] = None,
         measure_performance: bool = False,
         patch_order: Optional[Sequence[int]] = None,
+        overlap_disagreement: bool = False,
     ):
         if patch_batch_size < 1:
             raise ValueError("patch_batch_size must be positive")
@@ -94,6 +96,7 @@ class PlanarRGBPipeline(_TimedPlanarPipeline):
         self.diagnostics_writer = diagnostics_writer
         self.measure_performance = measure_performance
         self.patch_order = patch_order
+        self.overlap_disagreement = overlap_disagreement
 
     @torch.no_grad()
     def run(
@@ -120,6 +123,7 @@ class PlanarRGBPipeline(_TimedPlanarPipeline):
             )
             patches = self._ordered_patches(layout, self.patch_order)
             accumulator = PlanarFusionAccumulator(source, self.fusion_config)
+            overlap = OverlapDisagreement(layout) if self.overlap_disagreement else None
             collect = bool(
                 getattr(self.backend, "state_diagnostics_enabled", False)
                 or (
@@ -186,6 +190,8 @@ class PlanarRGBPipeline(_TimedPlanarPipeline):
                         proposals.split(batch_size, dim=0),
                     )
                 ):
+                    if overlap is not None:
+                        overlap.add(patch, proposal)
                     self._timed(
                         timings,
                         "exact_patch_accumulation",
@@ -219,6 +225,8 @@ class PlanarRGBPipeline(_TimedPlanarPipeline):
                     if source_std > 0
                     else 0.0
                 )
+            if overlap is not None:
+                statistics.update(overlap.values())
             record = _planar_step_record(
                 step_index, timestep, layout, fused, timings, statistics
             )
@@ -245,6 +253,7 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
         measure_performance: bool = False,
         seed: int = 0,
         patch_order: Optional[Sequence[int]] = None,
+        overlap_disagreement: bool = False,
     ):
         if patch_batch_size < 1:
             raise ValueError("patch_batch_size must be positive")
@@ -261,6 +270,7 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
         self.measure_performance = measure_performance
         self.seed = seed
         self.patch_order = patch_order
+        self.overlap_disagreement = overlap_disagreement
 
     @torch.no_grad()
     def _step(
@@ -289,6 +299,7 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
         )
         timings: Dict[str, float] = {}
         accumulator = PlanarFusionAccumulator(previous, self.fusion_config)
+        overlap = OverlapDisagreement(layout) if self.overlap_disagreement else None
         patches = self._ordered_patches(layout, self.patch_order)
         collect = bool(
             getattr(self.backend, "state_diagnostics_enabled", False)
@@ -335,6 +346,8 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
                 if collect:
                     clean_patch_stats.add(clean_patches)
             fixed_noise = noise_bank.get(indices, device=self.backend.device)
+            if clean_native is not None and clean_native.shape != fixed_noise.shape:
+                raise ValueError(f"Clean native shape {tuple(clean_native.shape)} must exactly match noise native shape {tuple(fixed_noise.shape)}; resizing is forbidden")
             if collect:
                 noise_stats.add(fixed_noise)
             if bootstrap:
@@ -401,6 +414,8 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
                 split_source,
                 predicted_clean_rgb.split(batch_size, dim=0),
             ):
+                if overlap is not None:
+                    overlap.add(patch, predicted)
                 self._timed(
                     timings,
                     "exact_clean_patch_accumulation",
@@ -435,6 +450,8 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
                     if source_std > 0
                     else 0.0
                 )
+        if overlap is not None:
+            statistics.update(overlap.values())
         record = _planar_step_record(
             step_index, timestep, layout, fused, timings, statistics
         )
@@ -452,15 +469,16 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
         if len(timesteps) < 1:
             raise ValueError("Clean consensus requires at least one timestep")
         layout = build_planar_patch_layout_for_step(self.planar_config, 0)
-        noise_bank = FixedPatchNoiseBank(
-            self.consensus_config,
-            backend=self.backend,
-            num_cameras=layout.num_patches,
-            batch_size=batch_size,
-            height=layout.patch_size,
-            width=layout.patch_size,
-            seed=self.seed,
-        )
+        if self.consensus_config.noise_binding == "global_native_canvas":
+            noise_bank = GlobalNativeNoiseBank(
+                self.consensus_config, backend=self.backend, layout=layout,
+                stride=self.planar_config.stride, batch_size=batch_size, seed=self.seed,
+            )
+        else:
+            noise_bank = FixedPatchNoiseBank(
+                self.consensus_config, backend=self.backend, num_cameras=layout.num_patches,
+                batch_size=batch_size, height=layout.patch_size, width=layout.patch_size, seed=self.seed,
+            )
         records: List[PlanarStepDiagnostics] = []
         clean_canvas: Optional[torch.Tensor] = None
         for step_index, timestep in enumerate(timesteps):
@@ -601,6 +619,7 @@ def generate_planar_rgb(
         patch_batch_size=config.performance.view_batch_size,
         diagnostics_writer=diagnostics_writer,
         measure_performance=config.debug.measure_performance,
+        overlap_disagreement=config.debug.overlap_disagreement,
     )
     return pipeline.run(initial, prepared)
 
@@ -622,5 +641,6 @@ def generate_planar_x0_consensus(
         diagnostics_writer=diagnostics_writer,
         measure_performance=config.debug.measure_performance,
         seed=config.experiment.seed,
+        overlap_disagreement=config.debug.overlap_disagreement,
     )
     return pipeline.run(prepared, batch_size=config.generation.batch_size)

@@ -11,6 +11,7 @@ from typing import Any, Optional, Sequence, Tuple
 
 import torch
 
+from diffpano.pipelines.native_state import NativeStateMixin
 from diffpano.camera import PerspectiveCamera
 from diffpano.conditioning import (
     camera_prompt_indices,
@@ -118,7 +119,7 @@ def _load_official_model(modules: Any, official_config: Any, backend_config: Any
     return model, str(Path(checkpoint_path).resolve())
 
 
-class PixelDiTViewDenoiser(ViewDenoiser):
+class PixelDiTViewDenoiser(NativeStateMixin, ViewDenoiser):
     """Advance a three-channel image state with one official PixelDiT flow evaluation."""
 
     def __init__(
@@ -369,6 +370,22 @@ class PixelDiTViewDenoiser(ViewDenoiser):
                 state, current, following, model_s=clean_prediction
             ),
         )
+
+    @property
+    def native_channels(self):
+        return int(3)
+
+    @property
+    def native_spatial_factor(self):
+        return 1
+
+    @property
+    def native_initial_noise_sigma(self):
+        return 1.0
+
+    def denoise_native_step(self, native_state, timestep, conditioning):
+        # RGB pixels already ARE the native state; use the same official update.
+        return self.denoise_step(native_state, timestep, conditioning)
 
     def sample_fixed_noise(
         self, *, batch_size: int, height: int, width: int, generator

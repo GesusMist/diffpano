@@ -6,6 +6,7 @@ from typing import Any, Optional, Sequence
 
 import torch
 
+from diffpano.pipelines.native_state import NativeStateMixin
 from diffpano.camera import PerspectiveCamera
 from diffpano.conditioning import (
     camera_prompt_indices,
@@ -19,6 +20,7 @@ from diffpano.pipelines.base import (
     reset_scheduler_step_state,
 )
 from diffpano.pipelines.clean_prediction import (
+    validate_sana_flow_scheduler,
     flow_add_noise,
     flow_predicted_clean,
 )
@@ -34,7 +36,7 @@ class SanaPromptBank:
     negative_mask: Optional[torch.Tensor]
 
 
-class SanaViewDenoiser(ViewDenoiser):
+class SanaViewDenoiser(NativeStateMixin, ViewDenoiser):
     """Local SANA latent diffusion; no global latent is retained between calls."""
 
     def __init__(
@@ -235,6 +237,29 @@ class SanaViewDenoiser(ViewDenoiser):
             ).float(),
         )
 
+    @property
+    def native_channels(self):
+        return int(self.pipeline.transformer.config.in_channels)
+
+    @property
+    def native_spatial_factor(self):
+        return int(self.pipeline.vae_scale_factor)
+
+    @property
+    def native_initial_noise_sigma(self):
+        return float(self.pipeline.scheduler.init_noise_sigma)
+
+    @torch.no_grad()
+    def denoise_native_step(self, native_state, timestep, conditioning):
+        self.last_timings = {}
+        reset_scheduler_step_state(self.pipeline.scheduler)
+        prediction = self._predict_flow(native_state, timestep, conditioning)
+        self.last_model_prediction = prediction.detach()
+        reset_scheduler_step_state(self.pipeline.scheduler)
+        return self.pipeline.scheduler.step(
+            prediction, timestep, native_state, return_dict=False
+        )[0].float()
+
     def sample_fixed_noise(
         self, *, batch_size: int, height: int, width: int, generator
     ) -> torch.Tensor:
@@ -266,6 +291,7 @@ class SanaViewDenoiser(ViewDenoiser):
     def add_fixed_noise(
         self, clean_state: torch.Tensor, fixed_noise: torch.Tensor, timestep: Any
     ) -> torch.Tensor:
+        validate_sana_flow_scheduler(self.pipeline.scheduler)
         return flow_add_noise(
             self.pipeline.scheduler, clean_state, fixed_noise, timestep
         )
@@ -274,6 +300,7 @@ class SanaViewDenoiser(ViewDenoiser):
         self, noisy_state: torch.Tensor, timestep: Any, conditioning: Any
     ) -> torch.Tensor:
         self.last_timings = {}
+        validate_sana_flow_scheduler(self.pipeline.scheduler)
         prediction = self._predict_flow(noisy_state, timestep, conditioning)
         self.last_model_prediction = prediction.detach()
         return flow_predicted_clean(

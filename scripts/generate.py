@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Generate with a persistent ERP or rectangular planar RGB canvas."""
+"""Generate with ERP RGB, planar RGB, or persistent planar native diffusion state."""
 
 import argparse
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from diffpano.diagnostics import DiagnosticsWriter, tensor_to_pil
 from diffpano.erp_pipeline import generate_erp_rgb
 from diffpano.erp_x0_pipeline import generate_erp_x0_consensus
 from diffpano.initialization import set_random_seed
+from diffpano.native_multidiffusion import generate_planar_native_multidiffusion
 from diffpano.metadata import save_run_metadata
 from diffpano.planar_pipeline import (
     generate_planar_rgb,
@@ -78,6 +80,8 @@ def _generate_with_selected_global_pipeline(config, denoiser, diagnostics):
                 config, denoiser, diagnostics_writer=diagnostics
             )
     elif config.canvas.mode == "planar":
+        if config.global_pipeline.mode == "native_multidiffusion":
+            return generate_planar_native_multidiffusion(config, denoiser, diagnostics_writer=diagnostics)
         if config.global_pipeline.mode == "erp_rgb_state":
             return generate_planar_rgb(
                 config, denoiser, diagnostics_writer=diagnostics
@@ -94,6 +98,7 @@ def _generate_with_selected_global_pipeline(config, denoiser, diagnostics):
 
 def run(config: ExperimentConfig) -> Path:
     config.validate()
+    started = time.perf_counter()
     set_random_seed(config.experiment.seed)
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
@@ -118,6 +123,7 @@ def run(config: ExperimentConfig) -> Path:
             "reserved_gib": torch.cuda.max_memory_reserved() / scale,
         }
     result.peak_gpu_memory_gib = peak_gpu_memory
+    result.runtime_seconds = time.perf_counter() - started
     result_path = run_dir / "result.png"
     result_rgb = (
         result.canvas_rgb if config.canvas.mode == "planar" else result.erp_rgb
@@ -141,6 +147,7 @@ def run(config: ExperimentConfig) -> Path:
                 f"timings={step.timings_seconds} "
                 f"state={step.state_statistics}\n"
             )
+        handle.write(f"runtime_seconds={result.runtime_seconds}\n")
         handle.write(f"peak_gpu_memory_gib={peak_gpu_memory}\n")
         handle.write(f"completed_at={datetime.now().isoformat()}\nresult={result_path}\n")
     print(f"Run saved to {run_dir}")
@@ -149,7 +156,7 @@ def run(config: ExperimentConfig) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate DiffPano with a persistent ERP or planar RGB canvas."
+        description="Generate DiffPano with ERP RGB, planar RGB, or planar native-state sampling."
     )
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()

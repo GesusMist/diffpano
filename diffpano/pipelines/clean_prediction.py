@@ -5,6 +5,15 @@ from typing import Any, Protocol, Sequence, runtime_checkable
 import torch
 
 from diffpano.camera import PerspectiveCamera
+from diffpano.pipelines.base import reset_scheduler_step_state
+
+
+def validate_sana_flow_scheduler(scheduler):
+    config = scheduler.config
+    if getattr(config, "prediction_type", None) != "flow_prediction":
+        raise ValueError("SANA clean prediction requires prediction_type=flow_prediction")
+    if not getattr(config, "use_flow_sigmas", False):
+        raise ValueError("SANA clean prediction requires use_flow_sigmas=True")
 
 
 @runtime_checkable
@@ -86,7 +95,12 @@ def flow_sigma(
     schedule = scheduler.timesteps.to(device=device)
     current = torch.as_tensor(timestep, device=device, dtype=schedule.dtype)
     distances = (schedule - current).abs()
-    index = int(distances.argmin().item())
+    if not bool((distances < 1e-3).any()):
+        raise ValueError(f"Unknown flow scheduler timestep {float(current)}")
+    if callable(getattr(scheduler, "index_for_timestep", None)):
+        index = int(scheduler.index_for_timestep(current, schedule))
+    else:
+        index = int(distances.argmin().item())
     tolerance = max(1.0e-6, float(current.abs()) * 1.0e-6)
     if float(distances[index]) > tolerance:
         raise ValueError(f"Unknown flow scheduler timestep {float(current)}")
@@ -105,15 +119,23 @@ def flow_add_noise(
         raise ValueError("Clean flow state and fixed noise must have identical shapes")
     timesteps = _timestep_batch(timestep, clean.shape[0], clean.device)
     native_noise = noise.to(clean)
+    # Clear native-trajectory/patch state before the explicit forward timestep.
+    reset_scheduler_step_state(scheduler)
+    if hasattr(scheduler, "_begin_index"):
+        scheduler._begin_index = None
+    sigma = flow_sigma(scheduler, timestep, device=clean.device, dtype=clean.dtype)
     if callable(getattr(scheduler, "scale_noise", None)):
         # FlowMatchEulerDiscreteScheduler (Flux).
-        return scheduler.scale_noise(clean, timesteps, native_noise)
-    if callable(getattr(scheduler, "add_noise", None)):
+        noisy = scheduler.scale_noise(clean, timesteps, native_noise)
+    elif callable(getattr(scheduler, "add_noise", None)):
         # DPMSolverMultistepScheduler with use_flow_sigmas=True (SANA).
-        return scheduler.add_noise(clean, native_noise, timesteps)
-    raise TypeError(
-        f"{type(scheduler).__name__} exposes neither scale_noise nor add_noise"
-    )
+        noisy = scheduler.add_noise(clean, native_noise, timesteps)
+    else:
+        raise TypeError(f"{type(scheduler).__name__} exposes neither scale_noise nor add_noise")
+    expected = (1 - sigma) * clean + sigma * native_noise
+    if not torch.allclose(noisy, expected, atol=2e-5, rtol=2e-5):
+        raise ValueError("Flow forward noise and clean recovery use incompatible sigma semantics")
+    return noisy
 
 
 def flow_predicted_clean(

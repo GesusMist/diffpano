@@ -1,0 +1,31 @@
+experiment: {name: pixeldit-planar_x0_consensus-global_native_canvas-average-uniform, seed: 0}
+model:
+  pipeline: pixeldit
+  id: null
+  variant: null
+  precision: bf16
+  vae_tiling: false
+canvas: {mode: planar}
+global_pipeline:
+  mode: erp_x0_consensus
+  clean_consensus: {noise_binding: global_native_canvas, noise_storage: cpu, noise_dtype: fp32}
+native_multidiffusion:
+  canvas_height: 1024
+  canvas_width: 2048
+  patch_size: 1024
+  stride: 512
+  prompt_assignment: global
+planar:
+  geometry_preset: custom
+  height: 1024
+  width: 2048
+  patch_size: 1024
+  stride: 512
+  patch_strategy: fixed
+  prompt_assignment: global
+prompt: {path: prompts/native_control.txt}
+generation: {num_inference_steps: 50, guidance_scale: 1.0, true_cfg_scale: 1.0, batch_size: 1}
+warp: {mode: standard}
+fusion: {mode: average, weight_mode: uniform}
+debug: {overlap_disagreement: true, measure_performance: true}
+output: {directory: outputs, group: planar-fusion-controls}

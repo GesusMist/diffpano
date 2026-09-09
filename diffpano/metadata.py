@@ -18,13 +18,29 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
     else:
         model_source = config.model.path or config.model.id
 
+    scheduler = getattr(getattr(denoiser, "pipeline", None), "scheduler", None)
+    scheduler_config = getattr(scheduler, "config", None)
     metadata = {
-        "schema_version": 7,
+        "schema_version": 9,
+        "node": platform.node(),
+        "scheduler_timesteps": denoiser.timesteps.detach().cpu().tolist(),
+        "pixeldit_flow_schedule": denoiser.solver.schedule.detach().cpu().tolist() if hasattr(denoiser, "solver") else None,
+        "scheduler_sigmas": scheduler.sigmas.detach().cpu().tolist() if scheduler is not None and hasattr(scheduler, "sigmas") else None,
         "architecture": (
-            f"persistent_{config.canvas.mode}_rgb"
+            "persistent_planar_native"
+            if config.global_pipeline.mode == "native_multidiffusion"
+            else f"persistent_{config.canvas.mode}_rgb"
             if config.global_pipeline.mode == "erp_rgb_state"
             else f"persistent_predicted_clean_{config.canvas.mode}_rgb"
         ),
+        "native_geometry": ({
+            "channels": denoiser.native_channels,
+            "spatial_factor": denoiser.native_spatial_factor,
+            "local_rgb_shape": denoiser.rgb_spatial_shape_for_native(
+                config.native_multidiffusion.patch_size, config.native_multidiffusion.patch_size),
+            "scheduler_shift_mu": getattr(denoiser, "scheduler_shift_mu", None),
+            "scheduler_image_seq_len": getattr(denoiser, "scheduler_image_seq_len", None),
+        } if config.global_pipeline.mode == "native_multidiffusion" else None),
         "canvas_mode": config.canvas.mode,
         "global_pipeline_mode": config.global_pipeline.mode,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -37,7 +53,17 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
             "flow_shift": getattr(getattr(denoiser, "solver", None), "flow_shift", None),
             "adapter": denoiser.__class__.__name__,
         },
+        "scheduler": ({
+            "class": type(scheduler).__name__,
+            "order": getattr(scheduler, "order", None),
+            "solver_order": getattr(scheduler_config, "solver_order", None),
+            "prediction_type": getattr(scheduler_config, "prediction_type", None),
+            "use_flow_sigmas": getattr(scheduler_config, "use_flow_sigmas", None),
+            "use_dynamic_shifting": getattr(scheduler_config, "use_dynamic_shifting", None),
+            "init_noise_sigma": float(getattr(scheduler, "init_noise_sigma", 1.0)),
+        } if scheduler is not None else {"class": "PixelDiT official first-order DPM"}),
         "config": config.to_dict(),
+        "runtime_seconds": getattr(result, "runtime_seconds", None),
         "peak_gpu_memory_gib": getattr(result, "peak_gpu_memory_gib", {}),
         "fixed_noise_identities": getattr(
             result, "fixed_noise_identities", {}

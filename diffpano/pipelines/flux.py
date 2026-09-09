@@ -8,6 +8,7 @@ from typing import Any, Optional, Sequence
 import numpy as np
 import torch
 
+from diffpano.pipelines.native_state import NativeStateMixin
 from diffpano.camera import PerspectiveCamera
 from diffpano.conditioning import (
     camera_prompt_indices,
@@ -49,7 +50,7 @@ class FluxPromptBank:
     negative_text_ids: Optional[torch.Tensor] = None
 
 
-class FluxViewDenoiser(ViewDenoiser):
+class FluxViewDenoiser(NativeStateMixin, ViewDenoiser):
     """Keep FLUX packing inside the adapter; the ERP loop only sees RGB."""
 
     def __init__(
@@ -124,7 +125,12 @@ class FluxViewDenoiser(ViewDenoiser):
         ensure_first_order_scheduler(self.pipeline.scheduler)
         self._view_size = (view_height, view_width)
         scale = int(self.pipeline.vae_scale_factor) * 2
+        if view_height % scale or view_width % scale:
+            raise ValueError(f"FLUX model resolution must be divisible by {scale}")
         image_seq_len = (view_height // scale) * (view_width // scale)
+        sigma = float(getattr(self.pipeline.scheduler, "init_noise_sigma", 1.0))
+        if sigma != 1.0:
+            raise ValueError("FLUX expects unscaled Gaussian initialization")
         cfg = self.pipeline.scheduler.config
         mu = calculate_shift(
             image_seq_len,
@@ -133,6 +139,8 @@ class FluxViewDenoiser(ViewDenoiser):
             cfg.get("base_shift", 0.5),
             cfg.get("max_shift", 1.15),
         )
+        self.scheduler_image_seq_len = image_seq_len
+        self.scheduler_shift_mu = mu
         sigmas = np.linspace(1.0, 1.0 / num_steps, num_steps)
         kwargs = {"sigmas": sigmas, "device": self.device}
         if "mu" in inspect.signature(self.pipeline.scheduler.set_timesteps).parameters:
@@ -234,10 +242,13 @@ class FluxViewDenoiser(ViewDenoiser):
             packed, height, width, self.pipeline.vae_scale_factor
         )
 
-    def _predict(self, packed: torch.Tensor, timestep: torch.Tensor, conditioning: Any) -> torch.Tensor:
+    def _predict(self, packed: torch.Tensor, timestep: torch.Tensor, conditioning: Any, *, native_shape=None) -> torch.Tensor:
         batch = packed.shape[0]
-        packed_h = self._view_size[0] // (int(self.pipeline.vae_scale_factor) * 2)
-        packed_w = self._view_size[1] // (int(self.pipeline.vae_scale_factor) * 2)
+        if native_shape is None:
+            native_shape = self.native_spatial_shape_for_rgb(*self._view_size)
+        packed_h, packed_w = self._validate_native_geometry(native_shape)
+        if packed.shape[1] != packed_h * packed_w:
+            raise ValueError("FLUX packed token count differs from native patch grid")
         image_ids = self.pipeline._prepare_latent_image_ids(
             batch, packed_h, packed_w, self.device, packed.dtype
         )
@@ -260,10 +271,10 @@ class FluxViewDenoiser(ViewDenoiser):
         )[0]
 
     def _guided_prediction(
-        self, packed: torch.Tensor, timestep: torch.Tensor, conditioning: Any
+        self, packed: torch.Tensor, timestep: torch.Tensor, conditioning: Any, *, native_shape=None
     ) -> torch.Tensor:
         prediction = self._timed(
-            "model_forward", lambda: self._predict(packed, timestep, conditioning)
+            "model_forward", lambda: self._predict(packed, timestep, conditioning, native_shape=native_shape)
         )
         if "negative" in conditioning:
             negative_conditioning = {
@@ -274,7 +285,7 @@ class FluxViewDenoiser(ViewDenoiser):
             negative_prediction = self._timed(
                 "model_forward",
                 lambda: self._predict(
-                    packed, timestep, negative_conditioning
+                    packed, timestep, negative_conditioning, native_shape=native_shape
                 ),
             )
             prediction = negative_prediction + self.true_cfg_scale * (
@@ -291,7 +302,7 @@ class FluxViewDenoiser(ViewDenoiser):
         )
         packed = self._pack(raw)
         timestep_tensor = torch.as_tensor(timestep, device=self.device, dtype=packed.dtype)
-        prediction = self._guided_prediction(packed, timestep_tensor, conditioning)
+        prediction = self._guided_prediction(packed, timestep_tensor, conditioning, native_shape=raw.shape[-2:])
         reset_scheduler_step_state(self.pipeline.scheduler)
         next_packed = self._timed(
             "scheduler_step",
@@ -306,6 +317,44 @@ class FluxViewDenoiser(ViewDenoiser):
                 self.pipeline.vae, next_raw.float(), chunk_size=self.vae_chunk_size
             ).float(),
         )
+
+    @property
+    def native_channels(self):
+        return int(self.pipeline.transformer.config.in_channels // 4)
+
+    @property
+    def native_spatial_factor(self):
+        return int(self.pipeline.vae_scale_factor)
+
+    @property
+    def native_initial_noise_sigma(self):
+        return 1.0
+
+    @torch.no_grad()
+    def denoise_native_step(self, native_state, timestep, conditioning):
+        self.last_timings = {}
+        height, width = self.rgb_spatial_shape_for_native(*native_state.shape[-2:])
+        self._validate_native_geometry(native_state.shape[-2:])
+        packed = self._pack(native_state)
+        timestep_tensor = torch.as_tensor(timestep, device=self.device, dtype=packed.dtype)
+        prediction = self._guided_prediction(
+            packed, timestep_tensor, conditioning, native_shape=native_state.shape[-2:]
+        )
+        self.last_model_prediction = prediction.detach()
+        reset_scheduler_step_state(self.pipeline.scheduler)
+        next_packed = self.pipeline.scheduler.step(
+            prediction, timestep_tensor, packed, return_dict=False
+        )[0]
+        return self._unpack(next_packed, height, width).float()
+
+    def _validate_native_geometry(self, native_shape):
+        height, width = native_shape
+        if height % 2 or width % 2:
+            raise ValueError("FLUX raw native patch dimensions must be even for 2x2 packing")
+        rgb_shape = self.rgb_spatial_shape_for_native(height, width)
+        if rgb_shape != self._view_size:
+            raise ValueError(f"FLUX patch resolution {rgb_shape} differs from prepared scheduler resolution {self._view_size}")
+        return height // 2, width // 2
 
     def sample_fixed_noise(
         self, *, batch_size: int, height: int, width: int, generator
@@ -351,14 +400,14 @@ class FluxViewDenoiser(ViewDenoiser):
             timestep, device=self.device, dtype=packed.dtype
         )
         prediction = self._guided_prediction(
-            packed, timestep_tensor, conditioning
+            packed, timestep_tensor, conditioning, native_shape=noisy_state.shape[-2:]
         )
         self.last_model_prediction = prediction.detach()
         predicted_clean_packed = flow_predicted_clean(
             self.pipeline.scheduler, packed, prediction, timestep
         )
         return self._unpack(
-            predicted_clean_packed, self._view_size[0], self._view_size[1]
+            predicted_clean_packed, *self.rgb_spatial_shape_for_native(*noisy_state.shape[-2:])
         )
 
     def decode_clean(self, clean_state: torch.Tensor) -> torch.Tensor:

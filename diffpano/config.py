@@ -1,4 +1,4 @@
-"""Typed configuration for DiffPano's ERP and planar RGB canvases."""
+"""Typed configuration for ERP, planar RGB, and native-state control experiments."""
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
@@ -102,6 +102,17 @@ class PlanarConfig:
     patch_strategy: str = "fixed"
     dynamic_step_size: int = 64
     prompt_assignment: str = "legacy_directional"
+    geometry_preset: str = "native20"
+
+
+@dataclass
+class NativeMultiDiffusionConfig:
+    # Raw latent cells for VAE models; pixels for PixelDiT.
+    canvas_height: int = 64
+    canvas_width: int = 128
+    patch_size: int = 64
+    stride: int = 32
+    prompt_assignment: str = "global"
 
 
 @dataclass
@@ -203,6 +214,7 @@ class DebugConfig:
     save_weights: bool = False
     save_lod_maps: bool = False
     measure_performance: bool = False
+    overlap_disagreement: bool = False
 
 
 @dataclass
@@ -216,6 +228,7 @@ class ExperimentConfig:
     canvas: CanvasConfig = field(default_factory=CanvasConfig)
     erp: ERPConfig = field(default_factory=ERPConfig)
     planar: PlanarConfig = field(default_factory=PlanarConfig)
+    native_multidiffusion: NativeMultiDiffusionConfig = field(default_factory=NativeMultiDiffusionConfig)
     view: ViewConfig = field(default_factory=ViewConfig)
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     initialization: InitializationConfig = field(default_factory=InitializationConfig)
@@ -228,19 +241,33 @@ class ExperimentConfig:
     def validate(self) -> None:
         if self.canvas.mode not in {"erp", "planar"}:
             raise ValueError("canvas.mode must be erp or planar")
-        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus"}:
+        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus", "native_multidiffusion"}:
             raise ValueError(
-                "global_pipeline.mode must be erp_rgb_state or erp_x0_consensus"
+                "global_pipeline.mode must be erp_rgb_state, erp_x0_consensus, or native_multidiffusion"
             )
+        if self.global_pipeline.mode == "native_multidiffusion":
+            if self.canvas.mode != "planar":
+                raise ValueError("native_multidiffusion requires canvas.mode=planar")
+            native = self.native_multidiffusion
+            if min(native.canvas_height, native.canvas_width, native.patch_size, native.stride) < 1:
+                raise ValueError("Native dimensions and stride must be positive")
+            if native.stride > native.patch_size or native.patch_size > min(native.canvas_height, native.canvas_width):
+                raise ValueError("Native patches must fit the canvas and stride cannot leave gaps")
+            if native.prompt_assignment != "global":
+                raise ValueError("Native baseline requires one global prompt")
+            if self.fusion.mode != "average" or self.fusion.weight_mode != "uniform":
+                raise ValueError("Native baseline requires average/uniform fusion")
         consensus = self.global_pipeline.clean_consensus
         if consensus.bootstrap != "native_noise":
             raise ValueError("clean_consensus.bootstrap currently must be native_noise")
         if consensus.noise_storage not in {"cpu", "gpu", "seed"}:
             raise ValueError("clean_consensus.noise_storage must be cpu, gpu, or seed")
-        if consensus.noise_binding != "camera_index":
-            raise ValueError(
-                "clean_consensus.noise_binding currently must be camera_index"
-            )
+        if consensus.noise_binding not in {"camera_index", "global_native_canvas"}:
+            raise ValueError("clean_consensus.noise_binding must be camera_index or global_native_canvas")
+        if consensus.noise_binding == "global_native_canvas" and (
+            self.canvas.mode != "planar" or self.global_pipeline.mode != "erp_x0_consensus"
+        ):
+            raise ValueError("global_native_canvas noise binding requires planar x0 consensus")
         if consensus.noise_dtype != "fp32":
             raise ValueError("clean_consensus.noise_dtype currently must be fp32")
         if self.model.pipeline not in {"sana", "flux", "sd2", "pixeldit"}:
@@ -340,7 +367,10 @@ class ExperimentConfig:
             raise ValueError(
                 "planar x0-consensus currently requires patch_strategy=fixed so fixed noise remains bound to stable patch slots"
             )
-        if self.canvas.mode == "planar":
+        if self.planar.geometry_preset not in {"native20", "custom"}:
+            raise ValueError("planar.geometry_preset must be native20 or custom")
+        if (self.canvas.mode == "planar" and self.global_pipeline.mode != "native_multidiffusion"
+                and self.planar.geometry_preset == "native20"):
             expected_patch_size, expected_stride = PLANAR_NATIVE20_GEOMETRY[
                 self.model.pipeline
             ]
@@ -425,6 +455,7 @@ def load_experiment_config(path: str) -> ExperimentConfig:
         canvas=_construct(CanvasConfig, data.get("canvas"), "canvas"),
         erp=_construct(ERPConfig, data.get("erp"), "erp"),
         planar=_construct(PlanarConfig, data.get("planar"), "planar"),
+        native_multidiffusion=_construct(NativeMultiDiffusionConfig, data.get("native_multidiffusion"), "native_multidiffusion"),
         view=_construct(ViewConfig, data.get("view"), "view"),
         sampling=_construct(
             SamplingConfig, data.get("sampling"), "sampling", nested={"rotation": RotationConfig}

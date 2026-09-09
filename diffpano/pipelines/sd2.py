@@ -6,6 +6,7 @@ from typing import Any, Optional, Sequence
 
 import torch
 
+from diffpano.pipelines.native_state import NativeStateMixin
 from diffpano.camera import PerspectiveCamera
 from diffpano.conditioning import (
     camera_prompt_indices,
@@ -29,7 +30,7 @@ class SD2PromptBank:
     negative: Optional[torch.Tensor]
 
 
-class SD2ViewDenoiser(ViewDenoiser):
+class SD2ViewDenoiser(NativeStateMixin, ViewDenoiser):
     """Keep SD2's CLIP, U-Net, DDIM scheduler, and VAE inside the RGB adapter."""
 
     def __init__(
@@ -208,6 +209,29 @@ class SD2ViewDenoiser(ViewDenoiser):
                 self.pipeline.vae, next_latents.float(), chunk_size=self.vae_chunk_size
             ).float(),
         )
+
+    @property
+    def native_channels(self):
+        return int(self.pipeline.unet.config.in_channels)
+
+    @property
+    def native_spatial_factor(self):
+        return int(self.pipeline.vae_scale_factor)
+
+    @property
+    def native_initial_noise_sigma(self):
+        return float(self.pipeline.scheduler.init_noise_sigma)
+
+    @torch.no_grad()
+    def denoise_native_step(self, native_state, timestep, conditioning):
+        self.last_timings = {}
+        reset_scheduler_step_state(self.pipeline.scheduler)
+        prediction = self._predict_noise(native_state, timestep, conditioning)
+        self.last_model_prediction = prediction.detach()
+        reset_scheduler_step_state(self.pipeline.scheduler)
+        return self.pipeline.scheduler.step(
+            prediction, timestep, native_state, return_dict=False
+        )[0].float()
 
     def sample_fixed_noise(
         self, *, batch_size: int, height: int, width: int, generator
