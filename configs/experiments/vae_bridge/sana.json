@@ -1,0 +1,7 @@
+{
+  "backend": "sana",
+  "base_config": "configs/experiments/implied_endpoint_consensus/sana.yaml",
+  "protocol": "configs/experiments/vae_bridge/protocol.json",
+  "output": "outputs/vae-bridge-controls/20260910-learned-v1/sana",
+  "previous_pair": "outputs/rgb-endpoint-controls/sana-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153144-19719937"
+}

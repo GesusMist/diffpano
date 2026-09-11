@@ -35,6 +35,10 @@ def build_view_denoiser(config: Any) -> ViewDenoiser:
         "vae_chunk_size": config.performance.vae_chunk_size,
         "measure_performance": config.debug.measure_performance,
     }
+    if config.model.pipeline == "sd35":
+        from diffpano.pipelines.sd35 import SD35ViewDenoiser
+
+        return SD35ViewDenoiser.from_pretrained(source, **common, **kwargs)
     if config.model.pipeline == "sana":
         from diffpano.pipelines.sana import SanaViewDenoiser
 

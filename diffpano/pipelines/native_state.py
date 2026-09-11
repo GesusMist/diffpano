@@ -51,3 +51,14 @@ class NativeStateMixin:
 
     def decode_native_canvas(self, native_state):
         return self.decode_clean(native_state)
+
+    def record_guided_prediction(self):
+        self.guided_prediction_count = getattr(self, "guided_prediction_count", 0) + 1
+
+    def native_step_with_endpoints(self, state, timestep, conditioning):
+        next_state = self.denoise_native_step(state, timestep, conditioning)
+        return next_state, self._endpoints_from_last_prediction(state, timestep)
+
+    def predict_clean_and_endpoint(self, state, timestep, conditioning):
+        clean = self.predict_clean_native(state, timestep, conditioning)
+        return self._endpoints_from_last_prediction(state, timestep, clean=clean)

@@ -27,7 +27,9 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
         "pixeldit_flow_schedule": denoiser.solver.schedule.detach().cpu().tolist() if hasattr(denoiser, "solver") else None,
         "scheduler_sigmas": scheduler.sigmas.detach().cpu().tolist() if scheduler is not None and hasattr(scheduler, "sigmas") else None,
         "architecture": (
-            "persistent_planar_native"
+            "local_native_states_global_clean_rgb"
+            if config.global_pipeline.mode == "implied_endpoint_consensus"
+            else "persistent_planar_native"
             if config.global_pipeline.mode == "native_multidiffusion"
             else f"persistent_{config.canvas.mode}_rgb"
             if config.global_pipeline.mode == "erp_rgb_state"
@@ -40,7 +42,7 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
                 config.native_multidiffusion.patch_size, config.native_multidiffusion.patch_size),
             "scheduler_shift_mu": getattr(denoiser, "scheduler_shift_mu", None),
             "scheduler_image_seq_len": getattr(denoiser, "scheduler_image_seq_len", None),
-        } if config.global_pipeline.mode == "native_multidiffusion" else None),
+        } if config.global_pipeline.mode in {"native_multidiffusion", "implied_endpoint_consensus"} else None),
         "canvas_mode": config.canvas.mode,
         "global_pipeline_mode": config.global_pipeline.mode,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -62,9 +64,11 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
             "use_dynamic_shifting": getattr(scheduler_config, "use_dynamic_shifting", None),
             "init_noise_sigma": float(getattr(scheduler, "init_noise_sigma", 1.0)),
         } if scheduler is not None else {"class": "PixelDiT official first-order DPM"}),
+        "backend_details": denoiser.backend_metadata() if callable(getattr(denoiser, "backend_metadata", None)) else None,
         "config": config.to_dict(),
         "runtime_seconds": getattr(result, "runtime_seconds", None),
         "peak_gpu_memory_gib": getattr(result, "peak_gpu_memory_gib", {}),
+        "consensus_audit": getattr(result, "audit", None),
         "fixed_noise_identities": getattr(
             result, "fixed_noise_identities", {}
         ),

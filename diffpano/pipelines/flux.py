@@ -273,6 +273,7 @@ class FluxViewDenoiser(NativeStateMixin, ViewDenoiser):
     def _guided_prediction(
         self, packed: torch.Tensor, timestep: torch.Tensor, conditioning: Any, *, native_shape=None
     ) -> torch.Tensor:
+        self.record_guided_prediction()
         prediction = self._timed(
             "model_forward", lambda: self._predict(packed, timestep, conditioning, native_shape=native_shape)
         )
@@ -409,6 +410,13 @@ class FluxViewDenoiser(NativeStateMixin, ViewDenoiser):
         return self._unpack(
             predicted_clean_packed, *self.rgb_spatial_shape_for_native(*noisy_state.shape[-2:])
         )
+
+    def _endpoints_from_last_prediction(self, state, timestep, clean=None):
+        from diffpano.pipelines.endpoints import flow_bounds, flow_endpoints
+        velocity = self._unpack(self.last_model_prediction,
+                               *self.rgb_spatial_shape_for_native(*state.shape[-2:]))
+        return flow_endpoints(state, velocity,
+                              *flow_bounds(self.pipeline.scheduler, timestep, state), clean=clean)
 
     def decode_clean(self, clean_state: torch.Tensor) -> torch.Tensor:
         return decode_view_latents(

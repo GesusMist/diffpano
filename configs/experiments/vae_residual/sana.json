@@ -1,0 +1,7 @@
+{
+  "backend": "sana",
+  "base_config": "configs/experiments/implied_endpoint_consensus/sana.yaml",
+  "output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sana",
+  "previous_pair": "outputs/rgb-endpoint-controls/sana-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153144-19719937",
+  "method": "LookingGlass Section 4.1 Eq. 7/8; exact planar uniform averaging; training-free"
+}

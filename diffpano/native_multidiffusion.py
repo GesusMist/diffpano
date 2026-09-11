@@ -54,10 +54,11 @@ def prepare_native_backend(config, backend):
 
 
 class NativeMultiDiffusionPipeline:
-    def __init__(self, *, native_config, backend, overlap_disagreement=False, patch_order=None):
+    def __init__(self, *, native_config, backend, overlap_disagreement=False, patch_order=None, clean_rgb_overlap_disagreement=False):
         self.config = native_config
         self.backend = backend
         self.overlap_disagreement = overlap_disagreement
+        self.clean_rgb_overlap_disagreement = clean_rgb_overlap_disagreement
         self.layout = build_planar_patch_layout(native_config.canvas_height, native_config.canvas_width,
                                                 native_config.patch_size, native_config.stride)
         order = list(range(self.layout.num_patches)) if patch_order is None else list(patch_order)
@@ -80,10 +81,23 @@ class NativeMultiDiffusionPipeline:
             started = time.perf_counter()
             accumulator = NativePlanarFusionAccumulator(state)
             overlap = OverlapDisagreement(self.layout) if self.overlap_disagreement else None
+            rgb_overlap = None
+            if self.clean_rgb_overlap_disagreement:
+                factor = self.backend.native_spatial_factor
+                rgb_layout = build_planar_patch_layout(self.layout.canvas_height*factor,
+                    self.layout.canvas_width*factor, self.layout.patch_size*factor, self.config.stride*factor)
+                rgb_overlap = OverlapDisagreement(rgb_layout)
             for patch in self.patches:
                 # Clone protects the persistent Jacobi source from in-place backends.
                 local = extract_planar_patch(state, patch).clone()
-                proposal = self.backend.denoise_native_step(local, timestep, conditioning)
+                if rgb_overlap is None:
+                    proposal = self.backend.denoise_native_step(local, timestep, conditioning)
+                else:
+                    # Reuse this ordinary native step's prediction; decoding is diagnostic only.
+                    proposal, endpoints = self.backend.native_step_with_endpoints(local, timestep, conditioning)
+                    rgb_overlap.add(rgb_layout.patches[patch.index], self.backend.decode_clean(endpoints.clean))
+                    del endpoints
+
                 if overlap is not None:
                     overlap.add(patch, proposal)
                 accumulator.accumulate(proposal, patch)
@@ -96,7 +110,8 @@ class NativeMultiDiffusionPipeline:
                 float((weights > 1).float().mean() * 100),
                 float(weights.min()), float(weights.max()), float(weights.mean()),
                 {"native_step": time.perf_counter() - started},
-                overlap.values() if overlap is not None else {},
+                {**(overlap.values() if overlap is not None else {}),
+                 **({'pre_fusion_rgb_'+k: v for k, v in rgb_overlap.values().items()} if rgb_overlap is not None else {})},
             ))
         # Exactly one global decode, after every native timestep has completed.
         rgb = self.backend.decode_native_canvas(state)

@@ -16,6 +16,7 @@ from diffpano.erp_pipeline import generate_erp_rgb
 from diffpano.erp_x0_pipeline import generate_erp_x0_consensus
 from diffpano.initialization import set_random_seed
 from diffpano.native_multidiffusion import generate_planar_native_multidiffusion
+from diffpano.implied_endpoint_consensus import generate_planar_implied_endpoint_consensus
 from diffpano.metadata import save_run_metadata
 from diffpano.planar_pipeline import (
     generate_planar_rgb,
@@ -80,6 +81,8 @@ def _generate_with_selected_global_pipeline(config, denoiser, diagnostics):
                 config, denoiser, diagnostics_writer=diagnostics
             )
     elif config.canvas.mode == "planar":
+        if config.global_pipeline.mode == "implied_endpoint_consensus":
+            return generate_planar_implied_endpoint_consensus(config, denoiser, diagnostics_writer=diagnostics)
         if config.global_pipeline.mode == "native_multidiffusion":
             return generate_planar_native_multidiffusion(config, denoiser, diagnostics_writer=diagnostics)
         if config.global_pipeline.mode == "erp_rgb_state":

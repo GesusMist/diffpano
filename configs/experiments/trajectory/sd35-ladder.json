@@ -1,0 +1,27 @@
+{
+  "backend": "sd35",
+  "configs": {
+    "A": "configs/experiments/trajectory/sd35.yaml",
+    "B": "configs/experiments/trajectory/sd35-implied.yaml",
+    "C": "configs/experiments/vae_residual/sd35-c.yaml",
+    "D": "configs/experiments/vae_residual/sd35-d.yaml",
+    "E": "configs/experiments/native_multidiffusion/sd35.yaml",
+    "F": "configs/experiments/implied_endpoint_consensus/sd35.yaml",
+    "G": "configs/experiments/vae_residual/sd35-g.yaml"
+  },
+  "folders": {
+    "A": "outputs/native-controls/sd35-trajectory-global_native_canvas-average-uniform/20260910-sd35-v1",
+    "B": "outputs/endpoint-controls/sd35-trajectory-global_native_canvas-average-uniform/20260910-sd35-v1",
+    "C": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/CD",
+    "D": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/CD",
+    "E": "outputs/rgb-endpoint-controls/sd35-implied_endpoint_consensus-global_native_canvas-average-uniform/20260910-sd35-v1/native_multidiffusion",
+    "F": "outputs/rgb-endpoint-controls/sd35-implied_endpoint_consensus-global_native_canvas-average-uniform/20260910-sd35-v1/implied_endpoint_consensus",
+    "G": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/G/generation"
+  },
+  "pair_folder": "outputs/rgb-endpoint-controls/sd35-implied_endpoint_consensus-global_native_canvas-average-uniform/20260910-sd35-v1",
+  "residual_folder": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd35",
+  "report": "outputs/native-controls/report/sd35",
+  "official_sanity": "outputs/native-controls/sd35-official-sanity/19722965",
+  "gpu": "NVIDIA A40",
+  "correction": "unchanged training-free LookingGlass residual; no learned parameters"
+}

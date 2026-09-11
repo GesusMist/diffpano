@@ -241,11 +241,11 @@ class ExperimentConfig:
     def validate(self) -> None:
         if self.canvas.mode not in {"erp", "planar"}:
             raise ValueError("canvas.mode must be erp or planar")
-        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus", "native_multidiffusion"}:
+        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus", "native_multidiffusion", "implied_endpoint_consensus"}:
             raise ValueError(
-                "global_pipeline.mode must be erp_rgb_state, erp_x0_consensus, or native_multidiffusion"
+                "global_pipeline.mode must be erp_rgb_state, erp_x0_consensus, native_multidiffusion, or implied_endpoint_consensus"
             )
-        if self.global_pipeline.mode == "native_multidiffusion":
+        if self.global_pipeline.mode in {"native_multidiffusion", "implied_endpoint_consensus"}:
             if self.canvas.mode != "planar":
                 raise ValueError("native_multidiffusion requires canvas.mode=planar")
             native = self.native_multidiffusion
@@ -255,8 +255,14 @@ class ExperimentConfig:
                 raise ValueError("Native patches must fit the canvas and stride cannot leave gaps")
             if native.prompt_assignment != "global":
                 raise ValueError("Native baseline requires one global prompt")
-            if self.fusion.mode != "average" or self.fusion.weight_mode != "uniform":
-                raise ValueError("Native baseline requires average/uniform fusion")
+            allowed_fusion = {"average", "detail_preserving_average"} if self.global_pipeline.mode == "implied_endpoint_consensus" else {"average"}
+            if self.fusion.mode not in allowed_fusion or self.fusion.weight_mode != "uniform":
+                raise ValueError("Native baseline requires average/uniform fusion; implied endpoint consensus also supports detail_preserving_average/uniform")
+        if self.global_pipeline.mode == "implied_endpoint_consensus":
+            if self.performance.view_batch_size != 1:
+                raise ValueError("Implied endpoint consensus currently evaluates patches individually")
+            if self.planar.patch_strategy != "fixed":
+                raise ValueError("Implied endpoint consensus requires fixed patches")
         consensus = self.global_pipeline.clean_consensus
         if consensus.bootstrap != "native_noise":
             raise ValueError("clean_consensus.bootstrap currently must be native_noise")
@@ -270,8 +276,8 @@ class ExperimentConfig:
             raise ValueError("global_native_canvas noise binding requires planar x0 consensus")
         if consensus.noise_dtype != "fp32":
             raise ValueError("clean_consensus.noise_dtype currently must be fp32")
-        if self.model.pipeline not in {"sana", "flux", "sd2", "pixeldit"}:
-            raise ValueError("model.pipeline must be 'sana', 'flux', 'sd2', or 'pixeldit'")
+        if self.model.pipeline not in {"sana", "flux", "sd2", "pixeldit", "sd35"}:
+            raise ValueError("model.pipeline must be 'sana', 'flux', 'sd2', 'pixeldit', or 'sd35'")
         if self.model.pipeline != "pixeldit" and not self.model.path and not self.model.id:
             raise ValueError("model.path or model.id must be configured")
         if self.model.precision not in {"fp16", "bf16", "fp32"}:
@@ -369,8 +375,10 @@ class ExperimentConfig:
             )
         if self.planar.geometry_preset not in {"native20", "custom"}:
             raise ValueError("planar.geometry_preset must be native20 or custom")
-        if (self.canvas.mode == "planar" and self.global_pipeline.mode != "native_multidiffusion"
+        if (self.canvas.mode == "planar" and self.global_pipeline.mode not in {"native_multidiffusion", "implied_endpoint_consensus"}
                 and self.planar.geometry_preset == "native20"):
+            if self.model.pipeline not in PLANAR_NATIVE20_GEOMETRY:
+                raise ValueError("This backend requires planar.geometry_preset=custom for planar RGB/x0 modes")
             expected_patch_size, expected_stride = PLANAR_NATIVE20_GEOMETRY[
                 self.model.pipeline
             ]

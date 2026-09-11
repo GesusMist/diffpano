@@ -1,0 +1,7 @@
+{
+  "backend": "flux",
+  "base_config": "configs/experiments/implied_endpoint_consensus/flux.yaml",
+  "protocol": "configs/experiments/vae_bridge/protocol.json",
+  "output": "outputs/vae-bridge-controls/20260910-learned-v1/flux",
+  "previous_pair": "outputs/rgb-endpoint-controls/flux-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153144-19719938"
+}

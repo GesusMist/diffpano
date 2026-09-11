@@ -196,3 +196,203 @@ panels for each native representation. The trajectory script validates the
 recorded fairness controls and step counts before saving PNG/PDF pairs and CSV.
 Experiment artifacts remain in the existing ignored `outputs/` tree; the report
 links to them in this checkout.
+
+## Three-way model-implied endpoint control
+
+The additive experiment compares unchanged native sampling, unchanged
+fixed-initial-noise reconstruction, and model-implied endpoint reconstruction.
+Run the full regression suite first. Then, in Grace, submit each backend
+independently with the same prepared trajectory config, for example:
+
+```bash
+sbatch --time=00:20:00 slurm/endpoint_trajectory_a100.slurm configs/experiments/trajectory/sd2.yaml
+```
+
+The new entrypoint is `python -m scripts.three_way_trajectory --config CONFIG`
+inside a GPU allocation. It saves separate trajectory images, shared epsilon,
+per-step CSV/JSON, fairness checks and actual N/N/N guided-prediction counts in
+`outputs/endpoint-controls/`. The native one-step diagnostic reuses A's prediction
+and adds no model evaluations. All three loops remain in native coordinates;
+latent backends decode only the three final endpoints.
+
+`scripts/plot_endpoint_controls.py --output REPORT_DIR TRAJECTORY_JSON ...`
+creates default-matplotlib triptychs, per-step error plots and summary tables.
+September 9 results restored quality for all four models by preserving the
+implied endpoint; see the appended experiment in
+[NATIVE_CONTROLS_REPORT.md](NATIVE_CONTROLS_REPORT.md) for numerical errors,
+FLUX's bfloat16 rounding qualification, failed-job history and limitations.
+No new panorama method or same-timestep Time Travel is implemented.
+
+## Planar RGB implied-endpoint consensus
+
+`global_pipeline.mode: implied_endpoint_consensus` selects the additive planar
+experiment. It uses `native_multidiffusion` geometry mapped exactly to RGB by the
+loaded backend factor, one global prompt, fixed patches and average/uniform
+fusion. It preserves local noisy states; only predicted-clean RGB is shared.
+Current local model-implied endpoints are retained during each step, never fused
+or reused across steps. Latent clean predictions undergo deterministic VAE
+roundtrips. Patch batching is currently restricted to 1.
+
+```bash
+sbatch slurm/rgb_endpoint_a100.slurm configs/experiments/implied_endpoint_consensus/sd2.yaml
+```
+
+This paired launcher runs native MultiDiffusion and RGB endpoint consensus from
+one shared global initialization and adds both one-patch latent roundtrip controls.
+Use `python -m scripts.generate --config CONFIG` for the new method alone.
+All four paired presets match the successful native controls exactly except mode,
+experiment name and output group. Results go to `outputs/rgb-endpoint-controls/`.
+Generate comparisons with `python -m scripts.plot_rgb_endpoint_controls --output
+outputs/rgb-endpoint-controls/report` followed by the four `comparison.json` paths.
+`result.png` renders terminal local states; `final_fused_clean.png` also retains
+the final clean consensus before terminal output decoding. Full diagnostics and
+scientific interpretation are appended to `NATIVE_CONTROLS_REPORT.md`.
+
+## Training-free LookingGlass residual controls
+
+The updated correction uses no trained bridge or learned parameters. Run from
+`~/diffpano` on Grace. Specs in `configs/experiments/vae_residual/` point to the
+exact saved A40 F/B initial tensors and settings; a different GPU model,
+configuration, conditioning hash or schedule is rejected. Output directories
+must be new, so reruns need a new `output` path in a copied spec.
+
+After the full CPU regression suite passes, run phase CD for each latent backend:
+
+```bash
+sbatch --job-name=residual-cd-sd2 slurm/vae_residual.slurm CD configs/experiments/vae_residual/sd2.json
+sbatch --job-name=residual-cd-sana slurm/vae_residual.slurm CD configs/experiments/vae_residual/sana.json
+sbatch --job-name=residual-cd-flux slurm/vae_residual.slurm CD configs/experiments/vae_residual/flux.json
+```
+
+Each job checks real-VAE identity recovery before image trajectories. B is a
+matched no-roundtrip oracle; C explicitly decodes/reencodes each clean prediction;
+D adds `z0 - E(D(z0))` to that roundtrip. C/D have no patch fusion.
+
+Inspect those results and pass the full regression suite before phase G:
+
+```bash
+sbatch --job-name=residual-g-sd2 slurm/vae_residual.slurm G configs/experiments/vae_residual/sd2.json
+sbatch --job-name=residual-g-sana slurm/vae_residual.slurm G configs/experiments/vae_residual/sana.json
+sbatch --job-name=residual-g-flux slurm/vae_residual.slurm G configs/experiments/vae_residual/flux.json
+```
+
+G uniformly averages the VAE residuals on a temporary native-coordinate canvas,
+then adds exact residual crops to the encoded fused RGB crops. All proposals use
+frozen source states. Model-implied endpoints are neither averaged nor changed.
+`PlanarImpliedEndpointConsensusPipeline(..., residual_correction=True)` enables G;
+the default remains the existing F behavior. Pixel-native and learned-bridge
+combinations are rejected.
+
+Render saved results with the matplotlib environment:
+
+```bash
+python scripts/plot_vae_residual_controls.py --output outputs/vae-residual-controls/report configs/experiments/vae_residual/{sd2,sana,flux}.json
+```
+
+Use `--single-only` before G has completed. See the appended September 10 section
+in `NATIVE_CONTROLS_REPORT.md` for the numerical and image evidence.
+
+Validate the saved experiment manifests without loading models:
+
+```bash
+python scripts/audit_vae_residual_controls.py --output outputs/vae-residual-controls/report/audit.json configs/experiments/vae_residual/{sd2,sana,flux}.json
+```
+
+## Stable Diffusion 3.5 A–G ladder
+
+`model.pipeline: sd35` selects `SD35ViewDenoiser`, using the official SD3 pipeline
+components and the pinned SD3.5 Medium checkpoint. The seven YAML configs live
+in the existing `trajectory`, `native_multidiffusion`, `implied_endpoint_consensus`
+and `vae_residual` categories. The protocol
+`configs/experiments/trajectory/sd35-ladder.json` maps each scientific label to
+its config and corresponding output directory.
+
+Use the controlled runner for these scientific labels; in particular, D/G's
+correction is selected by the runner's phase, not inferred from an experiment
+name by the ordinary `generate` CLI. After official sanity and full regression
+validation, run and inspect each prerequisite before submitting its successor:
+
+```bash
+sbatch --job-name=sd35-A slurm/controlled_ladder.slurm A
+# Inspect A before B.
+sbatch --job-name=sd35-B slurm/controlled_ladder.slurm B
+# Inspect A/B equivalence before C/D.
+sbatch --job-name=sd35-CD slurm/controlled_ladder.slurm C D
+# Inspect identity recovery before E.
+sbatch --job-name=sd35-E slurm/controlled_ladder.slurm E
+# Inspect native MultiDiffusion before F, and F before G.
+sbatch --job-name=sd35-F slurm/controlled_ladder.slurm F
+sbatch --job-name=sd35-G slurm/controlled_ladder.slurm G
+```
+
+Completed outputs are never overwritten. For a fresh repetition, copy the
+protocol and choose new output paths, then pass it with `--protocol` to
+`python -m scripts.controlled_ladder --phase LABEL` in an allocation.
+
+The checkpoint's static shift is 3.0; raw state is 16-channel BCHW at RGB factor
+8. Local patches are 1024²; E/F/G use 1024×2048 with three patches and 50% overlap.
+Network/VAE weights are bf16; guided predictions and native arithmetic are fp32,
+matching the existing SD2/SANA arithmetic convention. All A–G share 40 steps,
+CFG 4.5, sequence length 256, seed 0 and the existing native-control prompt.
+
+After G finishes, generate the requested contact sheet and curves:
+
+```bash
+python scripts/plot_controlled_ladder.py --protocol configs/experiments/trajectory/sd35-ladder.json
+```
+
+Results and the cross-model interpretation are appended under **Stable Diffusion
+3.5 A–G Validation** in `NATIVE_CONTROLS_REPORT.md`. No ERP or extra-method
+experiments are part of this ladder.
+
+## Experiment H: G with detail-preserving RGB average (all five backends)
+
+H reuses each saved G control (PixelDiT uses F, its pixel-native G equivalent)
+with exactly one config-field change: `fusion.mode=detail_preserving_average`.
+The manifest is `configs/experiments/vae_residual/h-all-models.json`; each backend
+has a corresponding `configs/experiments/vae_residual/<backend>-h.yaml`.
+Experiment names retain the baseline setting to keep the complete config
+comparison exact; `comparison.json` identifies the scientific label H and the
+actual fusion mode is recorded in both the config and consensus audit.
+
+The pipeline reuses `PlanarFusionAccumulator`, with uniform spatial weights,
+alpha 1, power 1, and epsilon 1e-6. For each signed, unclamped clean RGB channel,
+DPA computes `sum(rgb * (abs(rgb)+epsilon)) / sum(abs(rgb)+epsilon)`.
+This is the existing magnitude-based operator, not a learned detail filter.
+It applies at every clean-RGB synchronization and to the final decoded local
+outputs. Native VAE residuals continue to use G's uniform arithmetic average in
+exact raw-native coordinates. The original local implied endpoint is retained.
+PixelDiT has no encode, decode, or VAE residual correction.
+
+The runner requires the exact saved global initial tensor and conditioning hash,
+matching actual scheduler timesteps/sigmas (or PixelDiT's official schedule),
+model metadata, geometry, Python/Torch/CUDA versions, and NVIDIA A40 GPU type.
+It checks the complete loaded backend details for SD3.5. No A–G reruns or training
+are involved. It refuses to overwrite an H output directory.
+
+After running the CPU regression suite, launch each backend separately:
+
+```bash
+sbatch slurm/detail_preserving.slurm sd2
+sbatch slurm/detail_preserving.slurm sana
+sbatch slurm/detail_preserving.slurm flux
+sbatch slurm/detail_preserving.slurm sd35
+sbatch slurm/detail_preserving.slurm pixeldit
+```
+
+Outputs are stored alongside G at
+`outputs/vae-residual-controls/20260910-lookingglass-v1/<backend>/H/`.
+Each contains the manifest entry, the saved initialization, a pre-generation
+runtime check, a real-VAE identity preflight for latent backends, paired-control
+metadata and counts, and `generation/{result.png,final_fused_clean.png,metadata.json,steps.csv}`.
+
+Once all five complete, render and audit without loading models:
+
+```bash
+module purge
+module load GCC/13.2.0 matplotlib/3.8.2
+python scripts/report_detail_preserving.py
+```
+
+The report goes to `outputs/vae-residual-controls/report/H/`, with paired full
+images, central overlap crops, curves, metrics, and `audit.json`.

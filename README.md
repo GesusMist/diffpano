@@ -178,3 +178,8 @@ python -m unittest discover -s tests -v
 ```
 
 The CPU suite requires no model download. It covers geometry/fusion behavior, synchronous camera-order invariance, direct PixelDiT Gaussian initialization, official flow-schedule and order-1 primitive equivalence, directional conditioning, actual view metadata, and projection-only state statistics.
+
+Stable Diffusion 3.5 is also available as `model.pipeline: sd35`. Its controlled
+native/endpoint/RGB-residual A–G configs and Grace workflow are documented in
+[docs/NATIVE_CONTROLS.md](docs/NATIVE_CONTROLS.md#stable-diffusion-35-ag-ladder),
+with measured results appended to [the native-controls report](docs/NATIVE_CONTROLS_REPORT.md).

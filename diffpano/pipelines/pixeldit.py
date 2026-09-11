@@ -362,6 +362,8 @@ class PixelDiTViewDenoiser(NativeStateMixin, ViewDenoiser):
             "model_forward",
             lambda: reference.model_fn(state, current),
         )
+        self.record_guided_prediction()
+        self.last_clean_prediction = clean_prediction.detach()
         current_value = current.to(device=state.device, dtype=state.dtype)
         self.last_model_prediction = ((state - clean_prediction) / current_value).detach()
         return self._timed(
@@ -433,8 +435,14 @@ class PixelDiTViewDenoiser(NativeStateMixin, ViewDenoiser):
             "model_forward",
             lambda: reference.model_fn(noisy_state.float(), current),
         )
+        self.record_guided_prediction()
         self.last_model_prediction = predicted_clean.detach()
         return predicted_clean.float()
+
+    def _endpoints_from_last_prediction(self, state, timestep, clean=None):
+        from diffpano.pipelines.endpoints import pixel_endpoints
+        clean = self.last_clean_prediction if clean is None else clean
+        return pixel_endpoints(state, clean, *self.solver.bounds_for(timestep))
 
     def decode_clean(self, clean_state: torch.Tensor) -> torch.Tensor:
         return clean_state.to(device=self.device, dtype=torch.float32)

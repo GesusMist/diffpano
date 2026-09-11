@@ -1,0 +1,38 @@
+{
+  "train_prompts": [
+    "A photograph of a quiet coastal village with white houses, fishing boats and blue sea in afternoon sunlight.",
+    "A photograph of a modern city street after rain, storefronts, bicycles and reflections on the pavement.",
+    "A photograph of a red barn surrounded by golden wheat fields under a cloudy sky.",
+    "A photograph of a warm library interior with wooden shelves, reading tables and large windows.",
+    "A photograph of a desert canyon with layered sandstone cliffs and a winding river.",
+    "A photograph of a snow-covered forest, a small wooden cabin and distant hills at sunrise."
+  ],
+  "validation_prompts": [
+    "A photograph of a botanical garden with a glass greenhouse, colorful flowers and stone paths.",
+    "A photograph of an old stone lighthouse on a rocky coast with waves and clouds."
+  ],
+  "train_seeds": [
+    101,
+    102
+  ],
+  "validation_seeds": [
+    201,
+    202
+  ],
+  "evaluation_seed": 0,
+  "architecture": {
+    "width": 48,
+    "blocks": 2,
+    "time_scale": 1000.0
+  },
+  "training": {
+    "steps": 2000,
+    "batch_size": 8,
+    "crop_size": 32,
+    "learning_rate": 0.001,
+    "validate_every": 100,
+    "seed": 777,
+    "l1_weight": 1.0,
+    "mse_weight": 1.0
+  }
+}

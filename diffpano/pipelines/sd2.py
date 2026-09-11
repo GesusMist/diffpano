@@ -160,6 +160,7 @@ class SD2ViewDenoiser(NativeStateMixin, ViewDenoiser):
     def _predict_noise(
         self, native_state: torch.Tensor, timestep: Any, conditioning: Any
     ) -> torch.Tensor:
+        self.record_guided_prediction()
         do_cfg = self.guidance_scale > 1.0
         model_input = (
             torch.cat([native_state, native_state], dim=0)
@@ -281,6 +282,10 @@ class SD2ViewDenoiser(NativeStateMixin, ViewDenoiser):
         return ddim_predicted_clean(
             self.pipeline.scheduler, noisy_state, prediction, timestep
         )
+
+    def _endpoints_from_last_prediction(self, state, timestep, clean=None):
+        from diffpano.pipelines.endpoints import ddim_endpoints
+        return ddim_endpoints(self.pipeline.scheduler, state, self.last_model_prediction, timestep, clean)
 
     def decode_clean(self, clean_state: torch.Tensor) -> torch.Tensor:
         return decode_view_latents(

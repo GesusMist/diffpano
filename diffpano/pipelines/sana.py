@@ -183,6 +183,7 @@ class SanaViewDenoiser(NativeStateMixin, ViewDenoiser):
     def _predict_flow(
         self, native_state: torch.Tensor, timestep: Any, conditioning: Any
     ) -> torch.Tensor:
+        self.record_guided_prediction()
         do_cfg = self.guidance_scale > 1.0
         model_input = (
             torch.cat([native_state, native_state], dim=0)
@@ -306,6 +307,15 @@ class SanaViewDenoiser(NativeStateMixin, ViewDenoiser):
         return flow_predicted_clean(
             self.pipeline.scheduler, noisy_state, prediction, timestep
         )
+
+    def _endpoints_from_last_prediction(self, state, timestep, clean=None):
+        from diffpano.pipelines.endpoints import flow_bounds, flow_endpoints
+        validate_sana_flow_scheduler(self.pipeline.scheduler)
+        cfg = self.pipeline.scheduler.config
+        if cfg.solver_order != 1 or cfg.algorithm_type != "dpmsolver++" or cfg.thresholding:
+            raise ValueError("SANA endpoint control requires deterministic first-order unthresholded DPM++")
+        return flow_endpoints(state, self.last_model_prediction,
+                              *flow_bounds(self.pipeline.scheduler, timestep, state), clean=clean)
 
     def decode_clean(self, clean_state: torch.Tensor) -> torch.Tensor:
         return decode_view_latents(
