@@ -27,7 +27,9 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
         "pixeldit_flow_schedule": denoiser.solver.schedule.detach().cpu().tolist() if hasattr(denoiser, "solver") else None,
         "scheduler_sigmas": scheduler.sigmas.detach().cpu().tolist() if scheduler is not None and hasattr(scheduler, "sigmas") else None,
         "architecture": (
-            "local_native_states_global_clean_rgb"
+            "local_native_states_transient_erp_clean_rgb"
+            if config.global_pipeline.mode == "erp_local_current_consensus"
+            else "local_native_states_global_clean_rgb"
             if config.global_pipeline.mode == "implied_endpoint_consensus"
             else "persistent_planar_native"
             if config.global_pipeline.mode == "native_multidiffusion"
@@ -42,7 +44,7 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
                 config.native_multidiffusion.patch_size, config.native_multidiffusion.patch_size),
             "scheduler_shift_mu": getattr(denoiser, "scheduler_shift_mu", None),
             "scheduler_image_seq_len": getattr(denoiser, "scheduler_image_seq_len", None),
-        } if config.global_pipeline.mode in {"native_multidiffusion", "implied_endpoint_consensus"} else None),
+        } if config.global_pipeline.mode in {"native_multidiffusion", "implied_endpoint_consensus", "erp_local_current_consensus"} else None),
         "canvas_mode": config.canvas.mode,
         "global_pipeline_mode": config.global_pipeline.mode,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),

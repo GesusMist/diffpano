@@ -218,6 +218,12 @@ class DebugConfig:
 
 
 @dataclass
+class ConsensusTransitionConfig:
+    mode: str = "preserve_prefusion_endpoint"
+    vae_residual_correction: Optional[bool] = None
+
+
+@dataclass
 class ExperimentConfig:
     experiment: ExperimentSection = field(default_factory=ExperimentSection)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -237,11 +243,24 @@ class ExperimentConfig:
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
+    consensus_transition: ConsensusTransitionConfig = field(default_factory=ConsensusTransitionConfig)
 
     def validate(self) -> None:
+        if self.consensus_transition.mode not in {"preserve_prefusion_endpoint", "preserve_current_state"}:
+            raise ValueError("Unknown consensus transition mode")
+        if self.consensus_transition.mode == "preserve_current_state":
+            if self.global_pipeline.mode not in {"implied_endpoint_consensus", "erp_local_current_consensus"} or self.fusion.mode != "average" or self.fusion.weight_mode != "uniform":
+                raise ValueError("Experiment I requires implied endpoint consensus and average/uniform fusion")
+        if self.global_pipeline.mode == "erp_local_current_consensus":
+            if self.canvas.mode != "erp" or self.warp.mode != "standard" or self.sampling.strategy != "cube6_fixed":
+                raise ValueError("K requires ERP, standard warp, and cube6_fixed cameras")
+            if self.consensus_transition.mode != "preserve_current_state" or self.consensus_transition.vae_residual_correction is not False:
+                raise ValueError("K requires current-state interpolation and explicitly no VAE residual")
+            if self.performance.view_batch_size != 1 or self.sampling.rotation.enabled:
+                raise ValueError("K requires individual fixed camera slots without rotation")
         if self.canvas.mode not in {"erp", "planar"}:
             raise ValueError("canvas.mode must be erp or planar")
-        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus", "native_multidiffusion", "implied_endpoint_consensus"}:
+        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus", "native_multidiffusion", "implied_endpoint_consensus", "erp_local_current_consensus"}:
             raise ValueError(
                 "global_pipeline.mode must be erp_rgb_state, erp_x0_consensus, native_multidiffusion, or implied_endpoint_consensus"
             )
@@ -282,7 +301,7 @@ class ExperimentConfig:
             raise ValueError("model.path or model.id must be configured")
         if self.model.precision not in {"fp16", "bf16", "fp32"}:
             raise ValueError("model.precision must be fp16, bf16, or fp32")
-        if self.sampling.strategy not in {"spherediff_fixed", "spherediff_rotated"}:
+        if self.sampling.strategy not in {"spherediff_fixed", "spherediff_rotated", "cube6_fixed"}:
             raise ValueError("sampling.strategy must be spherediff_fixed or spherediff_rotated")
         if self.initialization.mode not in {
             "erp_rgb_noise", "canvas_rgb_noise", "latent_native_bootstrap", "pixel_gaussian"
@@ -414,7 +433,14 @@ class ExperimentConfig:
             raise ValueError("performance.projection_cache_max_entries must be nonnegative or null")
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        # Keep historical G/H snapshots exactly reproducible. The absent field
+        # has always meant preserve_prefusion_endpoint; I is explicit.
+        if self.consensus_transition.vae_residual_correction is None:
+            del data["consensus_transition"]["vae_residual_correction"]
+        if self.consensus_transition.mode == "preserve_prefusion_endpoint" and self.consensus_transition.vae_residual_correction is None:
+            del data["consensus_transition"]
+        return data
 
 
 def _mapping(value: Any, name: str) -> Dict[str, Any]:
@@ -485,6 +511,7 @@ def load_experiment_config(path: str) -> ExperimentConfig:
         performance=_construct(PerformanceConfig, data.get("performance"), "performance"),
         output=_construct(OutputConfig, data.get("output"), "output"),
         debug=_construct(DebugConfig, data.get("debug"), "debug"),
+        consensus_transition=_construct(ConsensusTransitionConfig, data.get("consensus_transition"), "consensus_transition"),
     )
     config.validate()
     return config

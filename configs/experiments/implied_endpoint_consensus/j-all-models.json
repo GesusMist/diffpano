@@ -1,0 +1,46 @@
+{
+  "sd35": {
+    "backend": "sd35",
+    "base_config": "configs/experiments/implied_endpoint_consensus/sd35.yaml",
+    "config": "configs/experiments/implied_endpoint_consensus/sd35-j.yaml",
+    "reference": "outputs/rgb-endpoint-controls/sd35-implied_endpoint_consensus-global_native_canvas-average-uniform/20260910-sd35-v1/implied_endpoint_consensus/F_control.json",
+    "reference_generation": "outputs/rgb-endpoint-controls/sd35-implied_endpoint_consensus-global_native_canvas-average-uniform/20260910-sd35-v1/implied_endpoint_consensus",
+    "initial_native": "outputs/rgb-endpoint-controls/sd35-implied_endpoint_consensus-global_native_canvas-average-uniform/20260910-sd35-v1/initial_native.pt",
+    "output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/J",
+    "baseline_label": "F",
+    "gpu": "NVIDIA A40"
+  },
+  "flux": {
+    "backend": "flux",
+    "base_config": "configs/experiments/implied_endpoint_consensus/flux.yaml",
+    "config": "configs/experiments/implied_endpoint_consensus/flux-j.yaml",
+    "reference": "outputs/rgb-endpoint-controls/flux-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153144-19719938/comparison.json",
+    "reference_generation": "outputs/rgb-endpoint-controls/flux-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153144-19719938/implied_endpoint_consensus",
+    "initial_native": "outputs/rgb-endpoint-controls/flux-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153144-19719938/initial_native.pt",
+    "output": "outputs/vae-residual-controls/20260910-lookingglass-v1/flux/J",
+    "baseline_label": "F",
+    "gpu": "NVIDIA A40"
+  },
+  "sana": {
+    "backend": "sana",
+    "base_config": "configs/experiments/implied_endpoint_consensus/sana.yaml",
+    "config": "configs/experiments/implied_endpoint_consensus/sana-j.yaml",
+    "reference": "outputs/rgb-endpoint-controls/sana-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153144-19719937/comparison.json",
+    "reference_generation": "outputs/rgb-endpoint-controls/sana-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153144-19719937/implied_endpoint_consensus",
+    "initial_native": "outputs/rgb-endpoint-controls/sana-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153144-19719937/initial_native.pt",
+    "output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sana/J",
+    "baseline_label": "F",
+    "gpu": "NVIDIA A40"
+  },
+  "sd2": {
+    "backend": "sd2",
+    "base_config": "configs/experiments/implied_endpoint_consensus/sd2.yaml",
+    "config": "configs/experiments/implied_endpoint_consensus/sd2-j.yaml",
+    "reference": "outputs/rgb-endpoint-controls/sd2-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153133-19719936/comparison.json",
+    "reference_generation": "outputs/rgb-endpoint-controls/sd2-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153133-19719936/implied_endpoint_consensus",
+    "initial_native": "outputs/rgb-endpoint-controls/sd2-implied_endpoint_consensus-global_native_canvas-average-uniform/20260909-153133-19719936/initial_native.pt",
+    "output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/J",
+    "baseline_label": "F",
+    "gpu": "NVIDIA A40"
+  }
+}

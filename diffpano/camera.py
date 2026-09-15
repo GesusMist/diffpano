@@ -118,6 +118,8 @@ class SphereDiffRotatedCameraSampler(CameraSampler):
 
 
 def build_camera_sampler(config: SamplingConfig, view: ViewConfig, seed: int) -> CameraSampler:
+    if config.strategy == "cube6_fixed":
+        return CubeFixedCameraSampler(view)
     if config.strategy == "spherediff_fixed":
         return SphereDiffFixedCameraSampler(view)
     if config.strategy == "spherediff_rotated":
@@ -141,3 +143,14 @@ def camera_for_direction(
         math.radians(yaw_degrees), math.radians(pitch_degrees), math.radians(roll_degrees),
         fov_x, fov_y, height, width,
     )
+
+
+class CubeFixedCameraSampler(CameraSampler):
+    """Six immutable cardinal cameras; FOV >90 degrees gives overlap."""
+    def __init__(self, view):
+        self._cameras=tuple(camera_for_direction(yaw,pitch,height=view.height,width=view.width,
+            fov_x=view.fov_x,fov_y=view.fov_y) for yaw,pitch in
+            ((0,0),(90,0),(180,0),(-90,0),(0,90),(0,-90)))
+
+    def sample(self, step_index, num_steps):
+        return list(self._cameras)

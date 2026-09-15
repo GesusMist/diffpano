@@ -71,6 +71,9 @@ def _configure_denoiser(config: ExperimentConfig, denoiser) -> None:
 
 
 def _generate_with_selected_global_pipeline(config, denoiser, diagnostics):
+    if config.global_pipeline.mode == "erp_local_current_consensus":
+        from diffpano.erp_local_consensus import generate_erp_local_current_state
+        return generate_erp_local_current_state(config, denoiser)
     if config.canvas.mode == "erp":
         if config.global_pipeline.mode == "erp_rgb_state":
             return generate_erp_rgb(

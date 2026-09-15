@@ -6,6 +6,7 @@ from copy import deepcopy
 import torch
 
 from diffpano.config import FusionConfig
+from diffpano.current_state_transition import interpolate_from_current_state, transition_diagnostics
 from diffpano.native_multidiffusion import NativePlanarFusionAccumulator, prepare_native_backend
 from diffpano.overlap import OverlapDisagreement
 from diffpano.pipelines.base import reset_scheduler_step_state
@@ -21,6 +22,7 @@ class ImpliedConsensusResult(PlanarGenerationResult):
     local_states: list = field(default_factory=list)
     fused_clean_rgb: torch.Tensor = None
     audit: dict = field(default_factory=dict)
+    transition_diagnostics: list = field(default_factory=list)
 
 
 class PlanarImpliedEndpointConsensusPipeline:
@@ -31,16 +33,23 @@ class PlanarImpliedEndpointConsensusPipeline:
     the selected RGB fusion of decoded terminal local states, after the complete
     final reconstruction (including DDIM's actual terminal alpha).
     """
-    def __init__(self, *, native_config, backend, patch_order=None, pixel_native=False, bridge=None, residual_correction=False, fusion_config=None):
+    def __init__(self, *, native_config, backend, patch_order=None, pixel_native=False, bridge=None, residual_correction=False, fusion_config=None, transition_mode="preserve_prefusion_endpoint", flow_transition=True, roundtrip_diagnostics=True):
         if not isinstance(backend, EndpointBackend):
             raise TypeError('Backend must implement validated endpoint prediction')
         self.backend = backend
+        if transition_mode not in {'preserve_prefusion_endpoint', 'preserve_current_state'}:
+            raise ValueError('Unknown consensus transition')
+        self.transition_mode = transition_mode
+        self.flow_transition = flow_transition
+        self.roundtrip_diagnostics = roundtrip_diagnostics
         self.pixel_native = pixel_native
         self.bridge = bridge
         self.residual_correction = residual_correction
         self.fusion_config = deepcopy(fusion_config) if fusion_config is not None else FusionConfig(mode='average', weight_mode='uniform')
         if self.fusion_config.mode not in {'average', 'detail_preserving_average'} or self.fusion_config.weight_mode != 'uniform':
             raise ValueError('Implied endpoint consensus requires average or detail_preserving_average with uniform spatial weights')
+        if transition_mode == 'preserve_current_state' and (self.fusion_config.mode != 'average' or bridge is not None):
+            raise ValueError('Experiment I requires ordinary averaging and no learned bridge')
         if residual_correction and (pixel_native or bridge is not None):
             raise ValueError("Training-free residual correction requires a latent backend and no learned bridge")
         if pixel_native and bridge is not None:
@@ -98,6 +107,7 @@ class PlanarImpliedEndpointConsensusPipeline:
         condition_hash = conditioning_digest(conditioning)
         timesteps = backend.timesteps.clone()
         records, evaluations = [], 0
+        transition_records = []
         scheduler = getattr(getattr(backend, 'pipeline', None), 'scheduler', None)
         for index, timestep in enumerate(timesteps):
             started = time.perf_counter()
@@ -126,11 +136,12 @@ class PlanarImpliedEndpointConsensusPipeline:
             fused, weights = self.fuse_rgb(clean_rgb)
             corrections, roundtrips, next_states, bridge_corrections = [], [], [], []
             residual_corrections = []
+            step_transition = []
             for i, patch in enumerate(self.rgb_layout.patches):
                 crop = extract_planar_patch(fused, patch)
                 corrections.append(float((crop-clean_rgb[i]).abs().mean()))
                 clean = crop if self.pixel_native else backend.encode_clean(crop)
-                if not self.pixel_native:
+                if not self.pixel_native and (self.residual_correction or self.roundtrip_diagnostics):
                     # Diagnostic-only extra VAE encode; never an extra denoiser call.
                     if residuals is None:
                         own_roundtrip = backend.encode_clean(clean_rgb[i])
@@ -145,13 +156,34 @@ class PlanarImpliedEndpointConsensusPipeline:
                     corrected = self.bridge(clean.clone(), timestep)
                     bridge_corrections.append(float((corrected-clean).abs().mean()))
                     clean = corrected
-                next_states.append(endpoints[i].reconstruct_next(clean=clean))
+                if self.transition_mode == 'preserve_current_state':
+                    pair = endpoints[i]
+                    next_i = interpolate_from_current_state(states[i], clean, pair.alpha, pair.sigma,
+                        pair.next_alpha, pair.next_sigma, flow=self.flow_transition)
+                    diagnostic = transition_diagnostics(states[i], clean, pair, next_i)
+                    if not self.residual_correction and not self.roundtrip_diagnostics:
+                        diagnostic.update(rgb_consensus_delta_mae=corrections[-1],
+                            latent_consensus_delta_mae=diagnostic['clean_consensus_delta_mae'],
+                            old_transition_current_state_mismatch=diagnostic['g_current_state_mismatch'],
+                            current_state_interpolation_reconstruction_error=diagnostic['i_current_state_mismatch'],
+                            F_style_next_vs_J_next_mae=diagnostic['next_state_G_vs_I_mae'])
+                    step_transition.append(diagnostic)
+                    transition_records.append(dict(step=index, timestep=float(timestep), patch=i, **diagnostic))
+                    next_states.append(next_i)
+                    del pair
+                else:
+                    next_states.append(endpoints[i].reconstruct_next(clean=clean))
             if not all(bool(torch.isfinite(s).all()) for s in next_states) or not bool(torch.isfinite(fused).all()):
                 raise ValueError('Non-finite consensus state at step {}'.format(index))
             stats = endpoints[0].schedule_stats()
             stats.update({'pre_fusion_rgb_'+k: v for k, v in overlap.values().items()})
             stats['consensus_correction_mae_mean'] = sum(corrections)/count
             stats['guided_predictions'] = count
+            if step_transition:
+                for key in step_transition[0]:
+                    values = [row[key] for row in step_transition]
+                    stats[key+'_mean'] = sum(values)/count
+                    stats[key+'_max'] = max(values)
             if residual_corrections:
                 stats.update(local_vae_residual_mae_mean=sum(roundtrips)/count,
                              local_vae_residual_mae_max=max(roundtrips),
@@ -176,7 +208,7 @@ class PlanarImpliedEndpointConsensusPipeline:
         final_rgb, _ = self.fuse_rgb([s if self.pixel_native else backend.decode_native_canvas(s) for s in states])
         if not bool(torch.isfinite(final_rgb).all()):
             raise ValueError('Non-finite decoded terminal image')
-        return ImpliedConsensusResult(canvas_rgb=final_rgb, steps=records, local_states=states, fused_clean_rgb=fused,
+        return ImpliedConsensusResult(canvas_rgb=final_rgb, steps=records, local_states=states, fused_clean_rgb=fused, transition_diagnostics=transition_records,
             audit=dict(guided_predictions=evaluations, expected_guided_predictions=count*len(timesteps),
                        diagnostic_extra_denoiser_evaluations=0, synchronous=True, endpoint_lifetime='one timestep',
                        global_native_state_persisted=False, conditioning_sha256=condition_hash, bridge_enabled=self.bridge is not None,
@@ -194,7 +226,11 @@ def generate_planar_implied_endpoint_consensus(config, backend, *, diagnostics_w
         native_height=n.canvas_height, native_width=n.canvas_width,
         generator=torch.Generator(device=backend.device).manual_seed(config.experiment.seed))
     pipeline = PlanarImpliedEndpointConsensusPipeline(native_config=n, backend=backend,
-        pixel_native=config.model.pipeline == 'pixeldit', fusion_config=config.fusion)
+        pixel_native=config.model.pipeline == 'pixeldit', fusion_config=config.fusion,
+        transition_mode=config.consensus_transition.mode, flow_transition=config.model.pipeline != 'sd2',
+        residual_correction=(config.consensus_transition.mode == 'preserve_current_state' and config.model.pipeline != 'pixeldit'
+            if config.consensus_transition.vae_residual_correction is None else config.consensus_transition.vae_residual_correction),
+        roundtrip_diagnostics=config.consensus_transition.vae_residual_correction is not False)
     local_states = pipeline.initialize_local_states(initial)
     del initial
     result = pipeline.run(local_states, prepared)

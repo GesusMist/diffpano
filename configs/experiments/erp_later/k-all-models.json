@@ -1,0 +1,34 @@
+{
+  "sd35": {
+    "backend": "sd35",
+    "config": "configs/experiments/erp_later/sd35-k.yaml",
+    "j_config": "configs/experiments/implied_endpoint_consensus/sd35-j.yaml",
+    "j_output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/J",
+    "output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/K",
+    "gpu": "NVIDIA A40"
+  },
+  "flux": {
+    "backend": "flux",
+    "config": "configs/experiments/erp_later/flux-k.yaml",
+    "j_config": "configs/experiments/implied_endpoint_consensus/flux-j.yaml",
+    "j_output": "outputs/vae-residual-controls/20260910-lookingglass-v1/flux/J",
+    "output": "outputs/vae-residual-controls/20260910-lookingglass-v1/flux/K",
+    "gpu": "NVIDIA A40"
+  },
+  "sana": {
+    "backend": "sana",
+    "config": "configs/experiments/erp_later/sana-k.yaml",
+    "j_config": "configs/experiments/implied_endpoint_consensus/sana-j.yaml",
+    "j_output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sana/J",
+    "output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sana/K",
+    "gpu": "NVIDIA A40"
+  },
+  "sd2": {
+    "backend": "sd2",
+    "config": "configs/experiments/erp_later/sd2-k.yaml",
+    "j_config": "configs/experiments/implied_endpoint_consensus/sd2-j.yaml",
+    "j_output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/J",
+    "output": "outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/K",
+    "gpu": "NVIDIA A40"
+  }
+}

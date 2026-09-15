@@ -1700,3 +1700,442 @@ the residual formula and synchronization operator are unchanged.
 
 The manifest, five H YAML configs, guarded runner, launch commands, and exact
 output layout are documented in [NATIVE_CONTROLS.md](NATIVE_CONTROLS.md#experiment-h-g-with-detail-preserving-rgb-average-all-five-backends).
+
+## Experiment I — Current-State-Consistent Transition
+
+Experiment I is paired with G, not H. It changes only the post-consensus
+transition: G preserves the step-local **pre-fusion endpoint**, whereas I
+preserves the **frozen current noisy state**. The G endpoint is not from a
+previous timestep. Ordinary uniform RGB averaging, synchronized native VAE
+residual correction, final output fusion, model settings, initialization, and
+Jacobi semantics are retained. G/H implementations, configs, and saved results
+remain unchanged in behavior; no default transition has been switched.
+
+### Equations and measured identities
+
+Let `x` be a frozen current state, `c` its original predicted clean, `c*` the
+corrected fused clean, and `e` the pre-fusion endpoint. The validated
+parameterization is `x = alpha*c + sigma*e`. G reconstructs
+`next_G = alpha_next*c* + sigma_next*e`.
+
+For straight flow (FLUX, SANA, SD3.5), I uses the actual prepared scheduler's
+current and next sigmas:
+
+```text
+e*     = [x - (1-sigma)*c*] / sigma
+next_I = c* + (sigma_next/sigma)*(x-c*)
+```
+
+For SD2's deterministic DDIM, I uses the endpoint helper's exact square-root
+alpha/sigma coefficients, including `final_alpha_cumprod`:
+
+```text
+epsilon* = (x-alpha*c*) / sigma
+next_I   = alpha_next*c* + (sigma_next/sigma)*(x-alpha*c*)
+```
+
+No sigma is inferred from a loop index or shifted again. At the flow terminal
+transition, sigma_next=0 gives next_I=c*. Current sigma=0 is not divided by:
+only an already-consistent clean terminal state with next_sigma=0 is accepted;
+other cases raise explicitly. The real runs' prepared coefficients are saved.
+
+Writing `delta = c*-c` and substituting the original decomposition gives:
+
+```text
+G current-state mismatch tensor = alpha*delta
+next_I - next_G                 = -(sigma_next/sigma)*alpha*delta
+```
+
+For flow, alpha=1-sigma, giving the requested negative sign:
+`-(sigma_next/sigma)*(1-sigma)*(c*-c)`. For DDIM the same general expression
+uses its square-root alpha. These identities hold up to floating-point error
+in the original decomposition. When delta=0, G and I agree to that tolerance.
+
+I saves actual tensor measurements for every patch/timestep: clean-change MAE,
+G-style current-state mismatch, I current-state mismatch and maximum absolute
+error, G/I next-state MAE, analytical magnitudes, and signed-identity errors.
+It also saves std(x), std(original_clean), and each main MAE normalized by both
+standard deviations (denominator floor 1e-12). Per-step CSV/metadata aggregate
+patch means and maxima; per-patch JSON/CSV retain every observation.
+
+**Diagnostic scope:** the G-style mismatch and G/I next-state difference are
+counterfactual measurements on the **same I source state, model prediction,
+and corrected clean**. They isolate the transition rule; they are not
+measurements from the independently evolved historical G trajectory. The
+final images and seam comparisons use the actual saved G and new I runs.
+Counterfactual G tensors never enter I's state updates and require no extra
+model evaluations. Runtime assertions verify I's current-state reconstruction
+and the signed analytical next-state identity for every patch and timestep.
+
+### Validation and paired run protocol
+
+The final code snapshot passed **177 regression tests**, job **19728583**
+(exit 0; compilation passed). The earlier snapshot also passed all 177 tests
+(job 19728581). Focused tests cover flow/DDIM current-state consistency,
+interpolation equivalence, unchanged-clean equivalence with prepared real
+scheduler schedules, old-endpoint independence, zero-correction G/I trajectory
+equivalence, patch-order invariance, an independent full Jacobi oracle, exact
+denoiser counts, sigma=0 handling, and unchanged saved G/H config snapshots.
+
+The checkout started clean at `ff42ea4003e91208d33f007453ec715f2cb265b3` on
+`no_sphere`. The I runner verifies complete G config equality except the new
+`consensus_transition.mode=preserve_current_state` field, exact initial tensor
+and conditioning hashes, geometry, prepared timestep/sigma arrays, runtime
+model metadata, Python/Torch/CUDA versions, and A40 GPU type. The SD3.5 full
+backend configuration is checked as well. The inherited default remains
+`preserve_prefusion_endpoint`, omitted from legacy serialized snapshots for
+backward compatibility. Four real-VAE identity preflights precede generation.
+
+Run order is enforced with Slurm afterok dependencies: SD3.5 **19728585**,
+FLUX **19728586**, SANA **19728587**, SD2 **19728588**, followed by report/audit
+**19728589**. No PixelDiT GPU run, parameter tuning, A–H rerun, learned bridge,
+LPW, time travel, extra model prediction, or new VAE is part of I.
+
+### Completed results (2026-09-11)
+
+All four GPU jobs and the report/audit job completed with exit code 0. The
+four paired artifact audits passed: **330 guided predictions total**, with
+**zero additional denoiser calls**. All per-patch numerical assertions passed.
+
+**I preserves the current noisy state numerically as designed.** Across all
+patches and timesteps, the largest absolute current-state reconstruction error
+was **4.76837158203125e-7**. The largest absolute error in the signed analytical
+G/I next-state identity was **1.430511474609375e-6**, consistent with float32
+arithmetic. These are measured tensor errors, not values substituted from the
+analytical formulas.
+
+| Backend | Clean consensus delta MAE | G-style current mismatch | I current mismatch | G/I next-state MAE |
+|---|---:|---:|---:|---:|
+| sd2 | 0.08949807 | 0.03652336 | 3.986e-09 | 0.03383794 |
+| sana | 0.13767992 | 0.02362913 | 4.067e-09 | 0.02026267 |
+| flux | 0.09660864 | 0.01842107 | 4.425e-09 | 0.01506745 |
+| sd35 | 0.06179203 | 0.01064827 | 4.460e-09 | 0.00971745 |
+
+Entries above average all patches and timesteps and are in each model’s raw
+native latent units, not display RGB units. G-style and G/I entries are the
+same-source-state counterfactual diagnostics described above, not independent
+G-trajectory measurements. Per-step patch means/maxima and per-patch values
+are retained in the run artifacts. Absolute latent MAEs are not directly
+comparable across models with different latent scales.
+
+| Backend | Max patch clean MAE | Max patch G mismatch | Max patch I mismatch | Max patch next-state MAE | Max pixel I reconstruction error | Max pixel signed-identity error |
+|---|---:|---:|---:|---:|---:|---:|
+| sd2 | 0.250298 | 0.0759195 | 7.54315e-09 | 0.0722448 | 4.76837e-07 | 1.43051e-06 |
+| sana | 0.608846 | 0.0573387 | 7.88148e-09 | 0.0522172 | 2.38419e-07 | 1.26008e-06 |
+| flux | 0.321685 | 0.0430465 | 8.5001e-09 | 0.0360271 | 4.76837e-07 | 7.73929e-07 |
+| sd35 | 0.32654 | 0.0241532 | 8.9135e-09 | 0.0233796 | 4.76837e-07 | 1.02178e-06 |
+
+The patch maxima above are maxima of each patch’s MAE over all timesteps;
+pixel maxima are the maximum absolute individual native tensor-element error.
+
+| Backend | Mean clean delta / std(original clean) | Mean G mismatch / std(current state) | Mean I mismatch / std(current state) | Mean next-state gap / std(current state) |
+|---|---:|---:|---:|---:|
+| sd2 | 0.149907 | 0.0390484 | 4.16691e-09 | 0.0360082 |
+| sana | 0.162324 | 0.0319831 | 5.22824e-09 | 0.0272297 |
+| flux | 0.106163 | 0.0240072 | 5.54488e-09 | 0.0196106 |
+| sd35 | 0.0594986 | 0.0131829 | 5.49474e-09 | 0.0121135 |
+
+The SD2 final transition retained its actual DDIM coefficients:
+alpha=0.9991476535797119, sigma=0.04127926379442215,
+next_alpha=0.9995748996734619, next_sigma=0.029155133292078972.
+It was not replaced with a flow-style zero-sigma terminal transition.
+
+### Visual quality and seam comparison
+
+Visual inspection of each actual G/I pair gives:
+
+| Backend | Content quality versus G | Remaining seam quality |
+|---|---|---|
+| SD2 | Substantial recovery: the neon/geometric central failure is replaced by recognizable ruins, grass, and terrain. | Patch-boundary lighting/texture transitions remain; the ratio improvement is small despite the clear content recovery. |
+| SANA | Substantial recovery: detailed temple structures and vegetation replace the abstract/banded central overlaps. | A center lighting/structure discontinuity remains; boundary metrics improve strongly. |
+| FLUX | Remains detailed and naturally colored; there is no quality collapse from switching the transition. | The center lighting seam remains visible, but both measured boundary metrics decrease. |
+| SD3.5 Medium | Substantial recovery: recognizable architecture and landscape replace the blurred/posterized central regions. | Vertical lighting transitions remain; boundary metrics improve strongly. |
+
+| Model | G seam ratio | I seam ratio | G boundary excess | I boundary excess | I overlap MAE | I seconds | I peak allocated GiB | Job |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| sd35 | 4.211111 | 2.347562 | 0.085859 | 0.024440 | 0.097698 | 98.521 | 7.374 | 19728585 |
+| flux | 4.819027 | 2.145042 | 0.059204 | 0.028474 | 0.097220 | 91.477 | 24.881 | 19728586 |
+| sana | 4.952902 | 2.640130 | 0.213694 | 0.039949 | 0.188969 | 38.598 | 5.555 | 19728587 |
+| sd2 | 2.450853 | 2.359293 | 0.042584 | 0.030489 | 0.089229 | 14.546 | 2.416 | 19728588 |
+
+As in G/H, seam diagnostics operate on saved PNG RGB in [0,1], at exact
+internal patch start/end lines versus nearby lines at offsets +/-1..8 excluding
+all exact boundaries. Both ratio and excess decrease for all four models.
+They are boundary-gradient diagnostics, not a perceptual quality score;
+changed scene edges and contrast also affect them. The final images still
+show visible seams, so the transition does not solve all panorama consistency.
+
+Generation time above includes the additional tensor diagnostics but no extra
+model calls; model loading and identity preflights are excluded. All four I
+jobs used NVIDIA A40 on g113. Their Slurm elapsed times were 9:59 (SD3.5),
+9:24 (FLUX), 6:33 (SANA), and 5:01 (SD2); startup dominated these elapsed times.
+Allocated/reserved memory and complete runtime metadata are in each comparison
+JSON. The saved G controls use the same GPU type, in different jobs.
+
+### Interpretation and default-transition recommendation
+
+**This matches Case C for the tested prompt/seed:** FLUX remains good, while
+SD3.5, SANA, and SD2 recover substantially. Only the post-fusion transition
+changed. The result therefore supports preserving the pre-fusion endpoint
+after changing the clean prediction as a major cause of G’s central-overlap
+degradation in these controlled runs. It also explains much of the apparent
+backend difference without changing the VAE, residual correction, or fusion.
+The tensor measurements confirm the intended mechanism: G-style current-state
+mismatch is substantial, I’s is at floating-point error, and the measured
+next-state change obeys the signed clean-consensus identity.
+
+**The evidence supports adopting `preserve_current_state` for future
+post-RGB-consensus transitions**, subject to confirming the result across more
+prompts and seeds. This experiment uses one existing prompt and seed per
+backend; it is not a population-level benchmark or proof that this is the
+only difference from the complete LookingGlass method. Residual seams remain
+and need separate investigation. Per the task, the actual default remains
+`preserve_prefusion_endpoint`: G/H were not changed and no further technique
+or parameter tuning was added.
+
+### Experiment I artifacts
+
+- [Four-model G/I contact sheet](../outputs/vae-residual-controls/report/I/G-I-all-models.png) · [PDF](../outputs/vae-residual-controls/report/I/G-I-all-models.pdf).
+- [Current-state and next-state diagnostic curves](../outputs/vae-residual-controls/report/I/I-transition-diagnostics.png) · [PDF](../outputs/vae-residual-controls/report/I/I-transition-diagnostics.pdf).
+- [G/I RGB-overlap and residual curves](../outputs/vae-residual-controls/report/I/G-I-diagnostics.png).
+- [Complete numerical summary](../outputs/vae-residual-controls/report/I/summary.json) · [Artifact audit](../outputs/vae-residual-controls/report/I/audit.json).
+
+| Backend | I image | Paired G/I | Central overlap crops | Run metadata | Per-patch transition diagnostics |
+|---|---|---|---|---|---|
+| sd2 | [I](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/I/generation/result.png) | [G/I](../outputs/vae-residual-controls/report/I/sd2-G-I.png) | [Crops](../outputs/vae-residual-controls/report/I/sd2-overlap-crops.png) | [Comparison](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/I/comparison.json) | [CSV](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/I/transition_patches.csv) |
+| sana | [I](../outputs/vae-residual-controls/20260910-lookingglass-v1/sana/I/generation/result.png) | [G/I](../outputs/vae-residual-controls/report/I/sana-G-I.png) | [Crops](../outputs/vae-residual-controls/report/I/sana-overlap-crops.png) | [Comparison](../outputs/vae-residual-controls/20260910-lookingglass-v1/sana/I/comparison.json) | [CSV](../outputs/vae-residual-controls/20260910-lookingglass-v1/sana/I/transition_patches.csv) |
+| flux | [I](../outputs/vae-residual-controls/20260910-lookingglass-v1/flux/I/generation/result.png) | [G/I](../outputs/vae-residual-controls/report/I/flux-G-I.png) | [Crops](../outputs/vae-residual-controls/report/I/flux-overlap-crops.png) | [Comparison](../outputs/vae-residual-controls/20260910-lookingglass-v1/flux/I/comparison.json) | [CSV](../outputs/vae-residual-controls/20260910-lookingglass-v1/flux/I/transition_patches.csv) |
+| sd35 | [I](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/I/generation/result.png) | [G/I](../outputs/vae-residual-controls/report/I/sd35-G-I.png) | [Crops](../outputs/vae-residual-controls/report/I/sd35-overlap-crops.png) | [Comparison](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/I/comparison.json) | [CSV](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/I/transition_patches.csv) |
+
+The scientific label `experiment=I` is explicit in each comparison JSON.
+The inherited config experiment name is deliberately unchanged so the config
+difference remains exactly the transition-mode addition. Each run retains
+the config/prompt, exact initialization, hashes, actual schedule, seed, job,
+preflights, image, per-step statistics, and per-patch diagnostics. Reproduction
+commands and the manifest are documented in
+[NATIVE_CONTROLS.md](NATIVE_CONTROLS.md#experiment-i-current-state-consistent-transition).
+
+## Experiment J — Planar RGB Consensus Without VAE Residual, Current-State Interpolation
+
+J completes the 2x2: F/J have no VAE residual correction and G/I have residual
+correction; F/G preserve the pre-fusion endpoint and J/I preserve current x_t.
+J still uses the model's original VAE for clean decode and fused-RGB encode.
+It does not compute or add `z0-E(D(z0))`. F's diagnostic-only own-RGB encode is
+also disabled, leaving one fused-RGB encode per patch/timestep.
+
+J's replacement clean is exactly `c = E(exact_crop(average(decoded_clean)))`.
+The validated current-state helper is unchanged: flow uses
+`c+(sigma_next/sigma)*(x_t-c)` and SD2 uses
+`alpha_next*c+(sigma_next/sigma)*(x_t-alpha*c)` with its actual DDIM coefficients.
+The saved F global native initialization and conditioning hashes, complete
+model settings, geometry, prepared schedule, guidance, and A40 GPU type are
+checked before generation. Predictions are one per patch/timestep; RGB fusion
+and local-state commitment retain strict Jacobi behavior.
+
+All **179 regression tests passed** (job **19731955**), including the prior
+flow/DDIM identities and new tests that make VAE-residual calls fail, require
+only one encode per patch, verify exact saved-F config pairing, and check order
+invariance. I's pre-existing uncommitted work and historical serialized settings
+were preserved. The task started on `no_sphere` at HEAD
+`ff42ea4003e91208d33f007453ec715f2cb265b3`; each new run stores its commit and dirty
+status in `repository.json`. The explicit no-residual flag is bookkeeping for
+F's existing method, not a second scientific change.
+
+J jobs run in order: SD3.5 **19731976**, FLUX **19731978**, SANA **19731979**,
+SD2 **19731980**; the F/J/G/I report/audit job is **19731981**. No K implementation
+begins until the J correctness gate and SD3.5 J image inspection pass.
+
+### J results and the F/J/G/I factorial conclusion
+
+All four J jobs and artifact audit **19731981** completed successfully: **330**
+guided predictions total, exactly matching F (120 SD3.5, 60 FLUX, 60 SANA,
+90 SD2). Maximum current-state reconstruction error was **4.7684e-7 for every
+backend**. Mean counterfactual old-transition current-state mismatch on the J
+trajectory was 0.02772 / 0.03731 / 0.04103 / 0.05677 respectively. These are
+counterfactual transitions evaluated on J's frozen states, not a subtraction
+of independently evolved F and J trajectories.
+
+| Backend | J runtime seconds | Peak allocated / reserved GiB | F / J / G / I boundary-to-nearby gradient ratio | Visual factorial conclusion |
+|---|---:|---:|---|---|
+| SD3.5 | 103.47 | 7.37 / 9.73 | 1.250 / 1.904 / 4.211 / 2.348 | F's central loss of content recovers in J; G's hard central degradation also recovers in I. Current-state transition is the major recovery factor. J retains grid-like texture and exposure changes; I looks cleaner. Residual correction still affects texture. |
+| FLUX | 93.54 | 24.88 / 27.29 | 8.005 / 2.527 / 4.819 / 2.145 | Detail survives all four. F→J greatly reduces boundary contrast; G→I improves it further within the residual pair. J retains hazy lighting; I has stronger color/contrast. Both factors affect appearance, with interpolation useful even without residual. |
+| SANA | 31.06 | 5.54 / 8.50 | 2.423 / 2.928 / 4.953 / 2.640 | F's oversaturated, fragmented center becomes detailed, connected ruins in J; G→I similarly recovers its degraded overlap. J still has strong vertical exposure boundaries. Interpolation drives the structural recovery; residual is not required for it. |
+| SD2 | 15.03 | 2.41 / 2.87 | 2.169 / 2.044 / 2.451 / 2.359 | F's colorful fragmented output becomes coherent ruins/grass in J. G has less extreme corruption but a degraded center; I recovers it. Residual can mitigate the old transition's damage, but current-state interpolation recovers structure without it. |
+
+These timings cover the generation loop and output-state decoding, not model
+loading; diagnostic overhead is included. J skips F's diagnostic-only
+own-RGB encode, so this is not a pure performance benchmark of the transition.
+Boundary metrics use full displayed PNG RGB [0,1], exact planar patch-edge
+lines, and eight nearby lines on each side. A low ratio on a corrupt or flat
+image does not imply quality: SD3.5 F and SANA F illustrate why the images and
+absolute gradients must be considered. J boundary/nearby gradients are
+0.04162/0.02186, 0.03988/0.01578, 0.07070/0.02415, and 0.05836/0.02855 in the
+same backend order.
+
+**For this fixed prompt/seed, current-state interpolation is sufficient for
+major planar content recovery without residual correction. It is not
+sufficient for a seamless, artifact-free panorama.** The two factorial
+transition comparisons (F→J and G→I) agree on the principal structural result;
+residual correction has a backend-dependent interaction with detail, color,
+and the older inconsistent transition. This is one paired seed per model,
+not evidence that either factor has the same effect across all prompts.
+
+- [Full F/J/G/I contact sheet](../outputs/vae-residual-controls/report/J/F-J-G-I-all-models.png), with uncropped images and the per-model F|J / G|I layout in [SD3.5](../outputs/vae-residual-controls/report/J/sd35-F-J-G-I.png), [FLUX](../outputs/vae-residual-controls/report/J/flux-F-J-G-I.png), [SANA](../outputs/vae-residual-controls/report/J/sana-F-J-G-I.png), [SD2](../outputs/vae-residual-controls/report/J/sd2-F-J-G-I.png).
+- [Summary with all per-patch diagnostic aggregates](../outputs/vae-residual-controls/report/J/summary.json), [audit](../outputs/vae-residual-controls/report/J/audit.json), [J gate allowing K](../outputs/vae-residual-controls/report/J/k_gate.json).
+- J output folders: `outputs/vae-residual-controls/20260910-lookingglass-v1/{sd35,flux,sana,sd2}/J/`; image `generation/result.png`, per-patch `transition_patches.csv/json`, per-step metadata, comparison, provenance, and exact F initialization copies are retained.
+
+## Experiment K — ERP Standard-Warp RGB Consensus Without VAE Residual, Current-State Interpolation
+
+K was implemented only after J's 179-test gate, numerical checks, and visual
+inspection of the meaningful SD3.5 J image. It reuses the unchanged current-state
+helper introduced by I and the existing `StandardWarpOperator`; no new projector
+or model was added. Its sequence is:
+
+`perspective clean predictions → standard warp to ERP → validity-aware RGB average → standard warp back to perspective → VAE encode → current-x_t transition`.
+
+**ERP is a transient RGB consensus representation only. There is NO spherical
+latent representation or ERP latent tensor.** Six persistent local noisy native
+tensors belong to six immutable perspective camera slots. Each timestep freezes
+all six states, predicts/decodes all six clean views, fuses all RGB contributions,
+projects/encodes all six synchronized views, computes all six next states, then
+commits them together. There is no residual computation/correction, fixed-noise
+bank or renoising, LPW, DPA, dynamic camera motion, learned bridge, time travel,
+or extra denoiser prediction. Standard ERP→perspective uses the existing nearest
+sampling default; perspective→ERP uses the existing bilinear default, with
+existing wrap/pole handling and validity masks. Average/uniform fusion uses
+valid contributors only.
+
+### Fixed K geometry, initialization and validation
+
+The first-pass geometry was fixed before seeing any K model output: six camera
+slots in order `(yaw,pitch)` degrees `(0,0), (90,0), (180,0), (-90,0), (0,90),
+(0,-90)`, all roll 0 and horizontal/vertical FOV **100°**. The four equatorial
+and two polar views form an overlapping cube cover. This smaller symmetric
+cover provides full-sphere coverage without the cost of the historical 89-view
+sampler; no camera count/FOV was tuned by backend quality.
+
+| Models | Perspective RGB | ERP RGB | Coverage | Multiple contributors | Min / max contributors |
+|---|---|---|---:|---:|---:|
+| SD3.5, FLUX, SANA | 1024×1024 | 1024×2048 | 100% | 14.8460% | 1 / 3 |
+| SD2 | 512×512 | 512×1024 | 100% | 14.8376% | 1 / 3 |
+
+The actual-resolution **CPU preflight preceded GPU model runs**; it required
+100% coverage and exact preservation of a constant RGB signal within 1e-6.
+The GPU preflight must match its camera hashes and coverage statistics.
+Saved ordered camera hashes are `2d2fc24456a397c20483aaf2a7e15e29daa76f8e641281750b72d8368162b198`
+for the 1024 views; SD2's size-specific hash is in its geometry JSON. All steps
+assert the camera definitions are unchanged. Contributor maps and camera
+records are under `outputs/vae-residual-controls/report/K/geometry/`.
+
+One CPU `torch.Generator` seeded with the unchanged experiment seed 0 samples
+independent native Gaussians in camera order; backend initialization applies
+its normal initial-noise scale. The saved initial tensors/checksums are local
+only. J and K cannot share bit-identical initialization: J crops one planar
+Gaussian, while K samples independent perspective-native tensors. No latent
+noise is projected to make them artificially match. The retained
+`native_multidiffusion.patch_size` setting prepares the backend at J's native
+local resolution; K never allocates that configuration's global native canvas.
+
+The full suite passed **184 tests** in CPU job **19732210**, followed by the
+full-resolution coverage preflight. New tests cover fixed camera identity,
+deterministic native initialization, real standard projection of a smooth
+synthetic wrap-crossing feature, constant-signal coverage and gap rejection,
+Jacobi order invariance, exactly one prediction/encode per slot/step, RGB-only
+projection inputs, and forbidden residual/fixed-noise calls. Existing flow/DDIM
+current-state identity tests remain in the suite. Runtime diagnostics additionally
+assert actual-backend current-state reconstruction and the signed counterfactual
+next-state identity. The synthetic wrap test is an interpolation-tolerance test,
+not evidence that independent generated views will agree semantically.
+
+K model job **19732229** runs SD3.5→FLUX→SANA→SD2 sequentially on one A40;
+report/audit job **19732232** follows. Within each backend, the J checkpoint,
+conditioning hash, prompt, negative prompt, seed, local resolution, dtype,
+schedule, steps, CFG/guidance and software metadata are checked unchanged.
+The J/K comparison changes geometry, camera context, view count and the necessary
+initialization policy; it is an algorithm-transfer comparison, not the
+single-variable bit-identical F/J causal ablation.
+
+### K visual outcome and scientific interpretation
+
+All four models completed without a resource fallback or settings change.
+Their full terminal ERPs and local views were visually inspected. SD3.5 retains
+recognizable ruins but loses texture and shows broad camera-edge transitions.
+FLUX retains the clearest local temple detail, yet also has strong region
+boundaries and inconsistent polar content. SANA has recognizable temples but
+large exposure/color discontinuities and a heavily saturated central region.
+SD2 produces recognizable ruins with blurred/mismatched camera regions. In
+all four, polar views contain ordinary horizon-oriented landscape/architecture
+that does not fit a coherent full sphere. These are substantial defects, not
+merely the expected stretching of an otherwise coherent scene in an ERP display:
+SD3.5's saved perspective views themselves show hard rectangular transitions,
+and its polar perspective view contains a conventional landscape horizon.
+
+The mean pre-fusion neighboring RGB overlap MAE falls from first to last step:
+SD3.5 **0.69523→0.00411**, FLUX **0.65784→0.01163**, SANA **0.85371→0.02570**,
+SD2 **0.64790→0.01814**. These diagnostics use raw decoded RGB (normally [-1,1],
+without PNG clipping) and average the 12 valid camera-pair MAEs equally.
+Current-state reconstruction stays within **4.7684e-7** for the three flow
+models and **9.5367e-7** for SD2. Low final overlap disagreement is not proof of
+semantic coherence: repeated consensus makes pixels agree while the larger
+scene layout remains incompatible. Shared grass, mountain and sky colors and
+some local contours connect across regions, but architecture and horizons do
+not consistently continue as one scene across the camera boundaries.
+
+**Current-state interpolation transfers numerically to standard perspective ↔
+ERP synchronization, but this first K control does not deliver a visually
+coherent panorama.** The major visible limitation is cross-view semantic/layout
+and exposure consistency, particularly between equatorial and polar views,
+with resampling blur and hard validity-boundary transitions also present.
+There is no evidence here of a broken horizontal-wrap convention or missing
+coverage: the geometric tests pass and all pixels are covered. Conversely,
+a passing smooth-feature projection test does not rule out detail loss under
+repeated resampling. The ERP angular sampling is coarser than the native views,
+and ordinary hard-mask averaging can imprint transitions at contributor changes.
+These observations do not quantitatively separate resampling, VAE round-trip,
+independent-noise initialization, limited overlap, and camera-context effects.
+
+J→K therefore does **not** establish that “ERP is bad.” It establishes that
+this current-state/RGB-consensus implementation operates with local native
+states and standard ERP geometry, while exposing a scene-consistency problem
+under the fixed six-camera recipe. Each camera receives the same global temple
+prompt and an independent initial Gaussian, so coherent sky/ground orientation
+at the poles is not supplied by viewpoint-specific conditioning. That is an
+interpretive limitation of this controlled run, not a setting silently changed
+after viewing results. Only about 14.85% of ERP pixels have multiple contributors.
+
+The next candidate under the requested decision rule is **time travel / repeated
+same-timestep consistency**, because the failure is major semantic disagreement,
+not a coherent panorama with slight blur. True LPW could later address detail
+and resampling, but this result does not support expecting LPW alone to repair
+incompatible scene layouts. Neither candidate, stronger/partial consensus,
+a new camera recipe, nor any other future method was implemented. K supports
+the feasibility of the no-spherical-latent architecture and its transition math;
+it does not yet validate its final panorama quality. Further evidence requires
+new controlled experiments and more prompts/seeds.
+
+### K measurements and artifacts
+
+K model job **19732229** and report/audit job **19732232** both completed with exit 0. The artifact audit passed all **660** guided predictions, with no extra predictions. No model was skipped.
+
+| Backend | Predictions | Runtime s | Peak allocated / reserved GiB | Horizontal wrap gradient / nearby | Wrap ratio | Terminal pairwise overlap MAE mean / max |
+|---|---:|---:|---:|---:|---:|---:|
+| sd35 | 240 | 193.80 | 7.63 / 9.79 | 0.002475 / 0.002840 | 0.872 | 0.003823 / 0.005349 |
+| flux | 120 | 177.63 | 25.14 / 27.53 | 0.002724 / 0.002768 | 0.984 | 0.003177 / 0.004924 |
+| sana | 120 | 74.11 | 5.82 / 7.82 | 0.007897 / 0.007251 | 1.089 | 0.011292 / 0.017834 |
+| sd2 | 180 | 29.03 | 2.48 / 3.01 | 0.006906 / 0.006749 | 1.023 | 0.017534 / 0.022495 |
+
+K runtime covers generation, final terminal decoding/fusion, and diagnostics, excluding model loading. Per-stage model/decode/encode/projection totals and curves are in the summary and diagnostic figures. Horizontal seam measurements use displayed PNG RGB [0,1]: the last-to-first-column absolute difference versus the mean of the eight neighboring differences on each side, ratio denominator floored at 1e-12. They measure the wrap edge only, not all internal camera boundaries. Terminal overlap values use raw decoded RGB and are distinct from the pre-fusion clean-prediction trajectory metrics above.
+
+The wrap ratio is near or below 1 for every backend despite visibly poor panorama consistency. This is direct evidence that wrap smoothness is insufficient as a panorama-quality score. Full source images are retained at native output size; comparison sheets uniformly scale full images without cropping or shifting a seam out of view.
+
+- [Full J/K contact sheet](../outputs/vae-residual-controls/report/K/J-K-all-models.png) · [PDF](../outputs/vae-residual-controls/report/K/J-K-all-models.pdf).
+- [K numerical summary](../outputs/vae-residual-controls/report/K/summary.json) · [artifact audit](../outputs/vae-residual-controls/report/K/audit.json) · [job record](../outputs/vae-residual-controls/report/K/jobs.json).
+
+| Backend | Terminal ERP | J/K comparison | Final camera views | Diagnostic curves | Complete run record |
+|---|---|---|---|---|---|
+| sd35 | [ERP](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/K/final_erp.png) | [J/K](../outputs/vae-residual-controls/report/K/sd35-J-K.png) | [Six views](../outputs/vae-residual-controls/report/K/sd35-final-views.png) | [Curves](../outputs/vae-residual-controls/report/K/sd35-diagnostics.png) | [Comparison](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd35/K/comparison.json) |
+| flux | [ERP](../outputs/vae-residual-controls/20260910-lookingglass-v1/flux/K/final_erp.png) | [J/K](../outputs/vae-residual-controls/report/K/flux-J-K.png) | [Six views](../outputs/vae-residual-controls/report/K/flux-final-views.png) | [Curves](../outputs/vae-residual-controls/report/K/flux-diagnostics.png) | [Comparison](../outputs/vae-residual-controls/20260910-lookingglass-v1/flux/K/comparison.json) |
+| sana | [ERP](../outputs/vae-residual-controls/20260910-lookingglass-v1/sana/K/final_erp.png) | [J/K](../outputs/vae-residual-controls/report/K/sana-J-K.png) | [Six views](../outputs/vae-residual-controls/report/K/sana-final-views.png) | [Curves](../outputs/vae-residual-controls/report/K/sana-diagnostics.png) | [Comparison](../outputs/vae-residual-controls/20260910-lookingglass-v1/sana/K/comparison.json) |
+| sd2 | [ERP](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/K/final_erp.png) | [J/K](../outputs/vae-residual-controls/report/K/sd2-J-K.png) | [Six views](../outputs/vae-residual-controls/report/K/sd2-final-views.png) | [Curves](../outputs/vae-residual-controls/report/K/sd2-diagnostics.png) | [Comparison](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/K/comparison.json) |
+
+Each K folder also contains `metadata.json`, `runtime_preflight.json`, `repository.json`, `spec.json`, `initialization.json`, `initial_local_states.pt`, `contributors.pt/png`, `steps.csv`, `transition_patches.csv/json`, `final_consensus_erp.png`, six final views and five snapshots. Provenance records HEAD, branch and dirty status at run start. The source tree remains on `no_sphere` at `ff42ea4003e91208d33f007453ec715f2cb265b3`, with prior uncommitted I work preserved and additive J/K changes uncommitted. No historical A–I output or configuration was overwritten.

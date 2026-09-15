@@ -396,3 +396,144 @@ python scripts/report_detail_preserving.py
 
 The report goes to `outputs/vae-residual-controls/report/H/`, with paired full
 images, central overlap crops, curves, metrics, and `audit.json`.
+
+## Experiment I: current-state-consistent transition
+
+I derives directly from G, with ordinary uniform RGB fusion and the same
+training-free synchronized native VAE residual. Its sole config addition is
+`consensus_transition: {mode: preserve_current_state}`. The implicit historical
+default remains `preserve_prefusion_endpoint`; `to_dict()` omits that default
+field to preserve exact saved A–H config snapshots. G/H files are unchanged.
+
+The four configs are `configs/experiments/vae_residual/<backend>-i.yaml` and the
+manifest is `configs/experiments/vae_residual/i-all-models.json`. Use the guarded
+runner, which loads G's saved global initialization and checks the complete
+config, conditioning, geometry, actual schedule, runtime model details, and
+software versions before generation. After the full regression suite passes,
+run in this order, with each succeeding only after the preceding job completes:
+
+```bash
+sbatch slurm/current_state.slurm sd35
+sbatch slurm/current_state.slurm flux
+sbatch slurm/current_state.slurm sana
+sbatch slurm/current_state.slurm sd2
+```
+
+The order can also be enforced with Slurm `--dependency=afterok:<preceding_job>`.
+PixelDiT is not part of the Experiment I GPU runs. Results sit beside G/H in
+`outputs/vae-residual-controls/20260910-lookingglass-v1/<backend>/I/`.
+`comparison.json` identifies I, its transition mode, config, source G, hashes,
+job, GPU, runtime, memory, and actual denoiser count. Generation metadata contains
+prompt/config and the prepared schedule. `transition_patches.{json,csv}` stores
+all per-patch diagnostics; `generation/steps.csv` contains patch mean/max values
+at each timestep.
+
+`diffpano/current_state_transition.py` is separate from the unchanged
+`EndpointPrediction.reconstruct_next()`. It consumes frozen source states,
+corrected clean proposals, and the existing endpoint helper's actual prepared
+scheduler coefficients. Flow uses `c + (sigma_next/sigma)*(x-c)`; DDIM uses
+`alpha_next*c + (sigma_next/sigma)*(x-alpha*c)`. There is no second prediction.
+At current sigma=0, only an already-consistent clean terminal state with
+next_sigma=0 is accepted; any other case raises explicitly. No sigma is clamped.
+
+The diagnostic G transition is a counterfactual on I's same source state and
+corrected clean, not a sample from the independently evolved historical G run.
+Both actual tensor differences and the signed analytical identity are checked:
+`next_I-next_G = -(sigma_next/sigma)*alpha*(corrected_clean-original_clean)`.
+For flow, alpha=1-sigma. Diagnostics include current-state and original-clean
+standard deviations, normalized MAEs (denominator floor 1e-12), and absolute
+identity errors. Counterfactual tensors never enter I's trajectory.
+
+Once all four runs complete:
+
+```bash
+module purge
+module load GCC/13.2.0 matplotlib/3.8.2
+python scripts/report_current_state.py
+```
+
+This audits the four paired runs and writes images, overlap crops, diagnostic
+curves, numerical summary, and audit JSON in
+`outputs/vae-residual-controls/report/I/`.
+
+## Experiment J: planar current-state consensus without residual correction
+
+J uses the existing current-state helper with `E(fused_RGB)` as its replacement
+clean, and no VAE residual computation or addition. The four configs are
+`configs/experiments/implied_endpoint_consensus/<backend>-j.yaml`, with manifest
+`j-all-models.json` in that directory. The explicit transition setting is
+`{mode: preserve_current_state, vae_residual_correction: false}`. Absent residual
+flags retain historical I behavior and serialization; all A–I settings remain
+reproducible. J disables the historical diagnostic-only own-RGB encode so it
+never computes `z0-E(D(z0))`; each patch has just the fused-RGB encode.
+
+After the full suite passes, run SD3.5, FLUX, SANA, SD2 in that order:
+
+```bash
+sbatch slurm/no_residual_planar.slurm sd35
+sbatch slurm/no_residual_planar.slurm flux
+sbatch slurm/no_residual_planar.slurm sana
+sbatch slurm/no_residual_planar.slurm sd2
+```
+
+Use Slurm afterok dependencies for strict sequencing. The runner checks the
+saved F config, initial tensor and conditioning hashes, actual scheduler and
+model metadata, software versions, and GPU type. Results are stored alongside
+G/H/I at `outputs/vae-residual-controls/20260910-lookingglass-v1/<backend>/J/`.
+The scientific label is J in the comparison JSON; the inherited experiment name
+is preserved to keep model-setting comparisons exact. `repository.json` records
+HEAD, branch, and dirty worktree status. Metadata includes the full resolved
+config, prompt path, seed, schedule, geometry, warp, job, and transition.
+
+Render the F/J/G/I 2x2 after all four complete using the matplotlib module env:
+
+```bash
+python -m scripts.report_no_residual_planar
+```
+
+The report and paired audit are in `outputs/vae-residual-controls/report/J/`.
+The same-current-state diagnostics compare counterfactual F-style and actual J
+transitions on J's trajectory; final image comparisons use the saved F/G/I runs.
+
+## Experiment K: fixed perspective-native trajectories with transient ERP RGB
+
+Use `configs/experiments/erp_later/k-all-models.json` and the four `*-k.yaml`
+configs. Global pipeline mode `erp_local_current_consensus` requires ERP canvas,
+`cube6_fixed` sampling with rotation disabled, standard warp, average/uniform
+fusion, and explicit current-state/no-residual transition. The defaults and all
+historical A–I configurations remain available unchanged.
+
+Before GPU submission, run the full regression suite and CPU geometry preflight:
+
+```bash
+python -m unittest discover -s tests -v
+python -m scripts.erp_standard_current_experiment --geometry-only
+sbatch slurm/erp_standard_current.slurm all
+```
+
+The runner also requires the passed J gate artifact and completed paired J
+metadata. `all` processes SD3.5, FLUX, SANA and SD2 in order, records any failure,
+and continues independent models before reporting an aggregate failure. Each
+model's output directory must not already exist. Do not overwrite earlier runs.
+For an individual backend pass its name instead of `all`.
+
+After successful runs:
+
+```bash
+python -m scripts.report_erp_standard_current
+```
+
+Results live alongside J at
+`outputs/vae-residual-controls/20260910-lookingglass-v1/BACKEND/K/`.
+`final_erp.png` is fused from the **decoded terminal native states**;
+`final_consensus_erp.png` separately saves the last transient clean consensus.
+Six `final_view_XX.png` images, five clean-ERP snapshots, contributor count
+map/tensor, initial local native tensors/checksums, camera hashes, complete
+resolved configuration/runtime/provenance, and per-step/per-view diagnostics
+are saved. Reports under `outputs/vae-residual-controls/report/K/` contain full
+uncropped J/K comparisons, six-view contacts, diagnostic plots, wrap metrics,
+and an audit. Full resolution source images remain available independently of
+the contact-sheet display scale.
+
+The ERP contains clean RGB only. No VAE residual, fixed-initial-noise renoising,
+ERP latent field, LPW, DPA, time travel, or extra denoiser calls occur in K.
