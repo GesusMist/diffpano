@@ -569,3 +569,18 @@ storage policy and saves one `K-L-M.png` contact sheet. Model outputs are
 `outputs/vae-residual-controls/20260915-dense-lm/{L,M}/{backend}/final_result.png`
 and `metadata.json`. Two shared geometry JSONs contain both production-resolution
 checks; no intermediate images or tensors are written.
+
+## Dense N/O spatial controls
+
+The N/O configs in `configs/experiments/erp_later/` derive directly from L.
+N enables existing DPA; O adds five-level LPW with per-level DPA, no Jacobian
+band-confidence heuristic, and periodic ERP reconstruction. All geometry and
+native model settings remain L's. Run `sbatch slurm/dense_no_validate.slurm`
+and wait for its full regression and actual-L-metadata pairing gate to pass.
+Then submit each `*-n.yaml`, followed by each `*-o.yaml`, using
+`sbatch slurm/dense_erp.slurm CONFIG`. The runner refuses existing run directories.
+Outputs are under `outputs/vae-residual-controls/20260916-dense-no/{N,O}/BACKEND`.
+Each has nine 10%-interval predicted-clean consensus snapshots, one terminal
+final image and one metadata JSON. After all ten runs, use
+`sbatch slurm/dense_no_report.slurm` for the artifact audit and single FLUX
+progression image. Existing L/M results are inputs, never overwritten.

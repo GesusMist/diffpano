@@ -258,17 +258,27 @@ class ExperimentConfig:
         if self.consensus_transition.mode not in {"preserve_prefusion_endpoint", "preserve_current_state"}:
             raise ValueError("Unknown consensus transition mode")
         if self.consensus_transition.mode == "preserve_current_state":
-            if self.global_pipeline.mode not in {"implied_endpoint_consensus", "erp_local_current_consensus", "erp_local_dense_consensus"} or self.fusion.mode != "average" or self.fusion.weight_mode != "uniform":
+            if self.global_pipeline.mode not in {"implied_endpoint_consensus", "erp_local_current_consensus", "erp_local_dense_consensus"} or (self.fusion.mode != "average" and not (self.global_pipeline.mode == "erp_local_dense_consensus" and self.dense_consensus is not None and self.dense_consensus.experiment in {"N", "O"} and self.fusion.mode == "detail_preserving_average")) or self.fusion.weight_mode != "uniform":
                 raise ValueError("Experiment I requires implied endpoint consensus and average/uniform fusion")
         if self.global_pipeline.mode == "erp_local_dense_consensus":
             dense = self.dense_consensus
-            if dense is None or dense.experiment not in {"L", "M"}:
-                raise ValueError("Dense ERP requires an explicit L/M configuration")
-            expected = "spherediff_directional" if dense.experiment == "L" else "original_k_global_slot_8"
+            if dense is None or dense.experiment not in {"L", "M", "N", "O"}:
+                raise ValueError("Dense ERP requires an explicit L/M/N/O configuration")
+            expected = "spherediff_directional" if dense.experiment != "M" else "original_k_global_slot_8"
             if dense.prompt_assignment != expected or not dense.geometry_file:
                 raise ValueError("Dense experiment prompt policy or geometry source is invalid")
-            if self.canvas.mode != "erp" or self.warp.mode != "standard" or self.sampling.strategy != "spherediff_fixed":
+            if self.canvas.mode != "erp" or self.warp.mode != ("lpw" if dense.experiment == "O" else "standard") or self.sampling.strategy != "spherediff_fixed":
                 raise ValueError("Dense ERP requires standard fixed-camera geometry")
+            expected_fusion = "detail_preserving_average" if dense.experiment in {"N", "O"} else "average"
+            if self.fusion.mode != expected_fusion or self.fusion.weight_mode != "uniform":
+                raise ValueError("Dense experiment has the wrong fusion mode")
+            if dense.experiment in {"N", "O"}:
+                if dense.geometry_file != "outputs/vae-residual-controls/20260915-dense-lm/geometry/experiment_l.json":
+                    raise ValueError("N/O must reuse the exact L geometry source")
+                if (self.fusion.alpha, self.fusion.power, self.fusion.epsilon) != (1.0, 1.0, 1e-6):
+                    raise ValueError("First N/O controls retain canonical DPA parameters")
+            if dense.experiment == "O" and (self.warp.lpw.levels != 5 or self.warp.lpw.lod_mode != "none"):
+                raise ValueError("O requires five pyramid levels without the project LOD heuristic")
             if self.consensus_transition.mode != "preserve_current_state" or self.consensus_transition.vae_residual_correction is not False:
                 raise ValueError("Dense ERP requires current-state interpolation without residual")
             if self.performance.view_batch_size != 1 or self.sampling.rotation.enabled:

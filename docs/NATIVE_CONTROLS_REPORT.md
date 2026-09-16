@@ -2388,3 +2388,310 @@ supports neither proposed source of the next quality gain: dense coverage at
 this setting is unsuccessful, and distinct directional conditioning remains
 untested. No time travel, repeated refinement, or other follow-up method was
 implemented.
+
+## Experiment N — SphereDiff Views + Detail-Preserving RGB Average (September 16)
+
+## Experiment O — SphereDiff Views + LookingGlass-Style Laplacian-Pyramid Warp/Blend + DPA
+
+These additive controls start from branch `no_sphere`, clean HEAD
+`c12873f3582377cd01aabd35669edee7aada3992`. Existing A–M results and all five L
+configs are preserved. Both descendants use L's geometry JSON, 89 fixed cameras
+at 80 degrees, camera order, directional prompt slots, local native initialization,
+checkpoint/precision/VAE settings, guidance, seed, resolutions and prepared
+scheduler. The five prompt lines remain identical, as in L; this task tests
+spatial consensus methods, not new directional text.
+
+### Controlled spatial differences
+
+| Setting | L | N | O |
+|---|---|---|---|
+| Warp | standard | standard | pyramid coefficients in both directions |
+| Fusion | ordinary average | existing DPA | existing DPA at every pyramid level |
+| Weight mode | uniform | uniform | uniform |
+| DPA alpha / power / epsilon | inactive | 1 / 1 / 1e-6 | 1 / 1 / 1e-6 |
+| Pyramid levels | inactive | inactive | 5 (four detail bands + coarse base) |
+| Project Jacobian band-confidence heuristic | inactive | inactive | disabled (`lod_mode=none`) |
+| Transition | current x_t | unchanged | unchanged |
+| Residual correction | none | none | none |
+
+The exact resolved L→N diff is `dense_consensus.experiment: L→N` and
+`fusion.mode: average→detail_preserving_average`. The N→O diff is experiment
+label, `warp.mode: standard→lpw`, `warp.lpw.levels: 4→5`, and
+`warp.lpw.lod_mode: jacobian→none` (the last two settings are inactive in N).
+O additionally enables periodic ERP pyramid reconstruction as part of its
+spatial operator. No denoising or conditioning setting changes. The runner
+compares each resolved L config with its actual saved metadata and rejects any
+other config difference, changed prompt-file bytes, camera digest, prepared
+schedule, effective conditioning, model source/revision or initial-state digest.
+Per-camera prompt-index arrays are checked against L's fixed cameras and anchors.
+Compact diffs are stored in the shared validation record and each run metadata.
+
+For raw RGB values (N) or signed pyramid coefficients (O), the existing
+`RGBFusionAccumulator` computes, per color channel,
+
+```
+u_i = valid_i * spatial_weight_i
+mean = sum(u_i * value_i) / max(sum(u_i), epsilon)
+d_i = u_i * (abs(value_i) + epsilon)**power
+detail = sum(d_i * value_i) / max(sum(d_i), epsilon)
+fused = mean + alpha * (detail - mean)
+```
+
+These are the existing tested parameters, chosen before seeing results. RGB
+magnitude weighting is not an explicit texture detector; signed coefficient
+magnitude in O has a different frequency interpretation. No per-model tuning
+or extra model pass is introduced.
+
+### LookingGlass reference verification and ERP adaptation
+
+Inspected the public third-party
+[LatentGenerativeAnamorphoses implementation at e5fbb217](https://github.com/Cedric-Perauer/LatentGenerativeAnamorphoses/tree/e5fbb217841c78a7c3e72d09166d28626356fcf6),
+not an author-released byte-identical LookingGlass implementation:
+[`lwp()`](https://github.com/Cedric-Perauer/LatentGenerativeAnamorphoses/blob/e5fbb217841c78a7c3e72d09166d28626356fcf6/diffusers/src/diffusers/pipelines/stable_diffusion_3/pipeline_stable_diffusion_3.py#L805)
+and [`lod_new.py`](https://github.com/Cedric-Perauer/LatentGenerativeAnamorphoses/blob/e5fbb217841c78a7c3e72d09166d28626356fcf6/diffusers/src/diffusers/pipelines/stable_diffusion_3/lod_new.py#L433).
+The public LWP entry uses five levels and combined arithmetic/magnitude-weighted
+pooling. Its Gaussian reduction is 2×2 block averaging; reconstruction is
+bilinear. Its optional mask branch bypasses pyramid pooling. Its simple forward
+warp reconstructs before resampling, while its inverse path uses autograd and
+3D LOD sampling. Those shortcuts are not the required O operation.
+
+O reuses the repo's binomial-filter Gaussian/Laplacian utilities, five-level
+streaming accumulator, explicit validity masks and normalized masked
+reconstruction. It projects coefficients at corresponding camera/ERP level
+resolutions and pools them before reconstructing; the return direction also
+warps pyramid coefficients. ERP expansion is periodic horizontally with pole
+padding, enabled only for O so historical defaults remain unchanged. This is an
+adaptation for many perspective views, not byte-for-byte reference equivalence.
+The reference inverse LOD is different from the repo's band-confidence heuristic;
+that optional heuristic is disabled rather than introduced as another variable.
+Reference alpha defaults (0.5 at `lwp`, 0.25 at `blend_pyramids`) are not adopted:
+N/O deliberately retain the same repo DPA alpha=1 for causal pairing.
+
+### Shared trajectory, streaming, diagnostics and snapshots
+
+There is one dense Jacobi trajectory. Only local native noisy states persist;
+ERP RGB is transient. Each view is predicted once, decoded, accumulated, then
+synchronized and encoded (identity for PixelDiT). The unchanged
+`interpolate_from_current_state` uses the frozen x_t and actual scheduler
+coefficients, never the old endpoint. All next states commit together.
+
+O retains running per-level numerators/denominators and one projected view at a
+time. Temporary local tensors live on CPU; the geometry cache has bounded device
+entries and CPU overflow. All fixed projection maps, including O's smaller
+levels, are prepared once. The diagnostic standard projection in O is only for
+comparable O(N) view-to-consensus error and never enters the spatial consensus.
+Timing records distinguish model, decode, view-pyramid construction,
+view→ERP, per-level fusion, ERP reconstruction, ERP→view and encode. ERP→view
+timing includes construction/reconstruction of its return pyramid.
+
+Both experiments save already-computed predicted-clean consensus at completed
+steps `ceil(percent * steps / 100)`, for 10% through 90%. Integer arithmetic
+avoids floating-point ceil errors; duplicate steps on short schedules are grouped.
+No persistent x_next decoding or extra model prediction is used for snapshots.
+The callback receives a detached copy. The final image instead decodes terminal
+local states and uses the experiment's same spatial fusion method.
+
+| Backend | Steps | Snapshot completed steps (10% through 90%) |
+|---|---:|---|
+| SD2 | 30 | 3, 6, 9, 12, 15, 18, 21, 24, 27 |
+| SANA | 20 | 2, 4, 6, 8, 10, 12, 14, 16, 18 |
+| FLUX.1-dev | 20 | 2, 4, 6, 8, 10, 12, 14, 16, 18 |
+| SD3.5 | 40 | 4, 8, 12, 16, 20, 24, 28, 32, 36 |
+| PixelDiT | 50 | 5, 10, 15, 20, 25, 30, 35, 40, 45 |
+
+Each run saves `consensus_010.png` through `consensus_090.png`,
+`final_result.png`, and one `metadata.json`. Snapshot percentages, completed
+steps, actual timesteps and current/next alpha/sigma are recorded in that JSON.
+No per-camera images, pyramid-level images, tensors, or per-step JSONs are saved.
+The only planned extra image is one FLUX N/O progression sheet at
+10/30/50/70/90% and final. L has no comparable snapshots and is not rerun.
+
+### N/O validation and submitted jobs
+
+CPU job **19762588** passed compileall, whitespace checks, all **8 focused N/O
+tests**, and the full **198-test regression suite**. Its final gate also verified
+the ten resolved configs against the actual completed L metadata and prompt-file
+hash. The focused tests cover camera/prompt pairing, identical initialization,
+strict settings guards, pyramid-level projections and DPA accumulators,
+periodic reconstruction and wrap, constant-image fusion, poisoned old endpoints,
+Jacobi order invariance, unchanged model/encode/decode counts, and bit-identical
+final tensors when snapshots are enabled. Existing regression tests cover masked
+reconstruction and the mathematical difference between per-level DPA and DPA
+after reconstruction.
+
+| Backend | N job | O job | Guided predictions per run |
+|---|---:|---:|---:|
+| SD3.5 | 19762606 | 19762611 | 3560 |
+| FLUX.1-dev | 19762607 | 19762612 | 1780 |
+| SANA | 19762608 | 19762613 | 1780 |
+| SD2 | 19762609 | 19762614 | 2670 |
+| PixelDiT | 19762610 | 19762615 | 4450 |
+
+N was submitted first in the requested model order, followed by O in that order.
+All use A100 resources, matching L's GPU class. The dependent final report/audit
+job is **19762616**. The shared validation record retains job IDs, config diffs,
+and hashes of all 22 L/M run and geometry artifacts; the final audit checks these
+hashes again. No duplicate jobs or existing output directories were present at
+submission. Run outputs are under
+`outputs/vae-residual-controls/20260916-dense-no/{N,O}/{backend}`.
+
+### Additional pyramid artifact checks
+
+Early O snapshots showed high-frequency ripples and curved outlines, motivating
+an additional CPU-only mask audit (job **19762637**, exit 0:0). It used the exact
+L-derived cameras at all five actual O level resolutions. Coverage was 100% at
+every level: minimum 7 contributors everywhere except the coarsest SD2 grid,
+which had minimum 8 (32×64 ERP). A partial-mask constant reconstruction crossing
+the ERP wrap had maximum error **0.0** with O's periodic reconstruction enabled.
+This rules out missing coverage and simple invalid-zero darkening in these
+checks; it does not rule out scale-dependent resampling or discontinuities in
+contributing coefficients. No parameters, model calls, or experiment outputs
+were changed in response to the images. The audit saved only Slurm text logs.
+
+### Completed L/N/O image comparison
+
+All ten N/O GPU jobs completed with Slurm exit **0:0**. These are matched
+single-prompt, seed-0 observations; the five directional prompt slots contain
+identical text. Neither spatial change rescues the dense pipeline. N mainly
+changes contrast and silhouettes. O preserves more local architectural edges,
+especially during denoising, but also preserves or introduces conspicuous
+frequency artifacts and does not produce a coherent, detailed final panorama.
+
+Each linked image below is the terminal-state output, not a milestone clean
+prediction. Coherence and continuity remain poor in every cell; more visible
+edges alone are not evidence of a better reconstructed scene.
+
+| Backend | L Avg | N DPA | O LPW+DPA |
+|---|---|---|---|
+| SD2 | [L](../outputs/vae-residual-controls/20260915-dense-lm/L/sd2/final_result.png): gray/olive blur with tiny isolated ruins; little fine detail or continuity. | [N](../outputs/vae-residual-controls/20260916-dense-no/N/sd2/final_result.png): brighter orange patches, but still heavy blur and disconnected fragments; early curved boundaries fade. | [O](../outputs/vae-residual-controls/20260916-dense-no/O/sd2/final_result.png): a few faint column edges, subdued bright blotches; washout and disconnected structure remain. |
+| SANA | [L](../outputs/vae-residual-controls/20260915-dense-lm/L/sana/final_result.png): dark green ghosted temples, curved outlines and weak columns; poor continuity. | [N](../outputs/vae-residual-controls/20260916-dense-no/N/sana/final_result.png): very dark blurred forms and vague temples; no convincing fine-detail gain. | [O](../outputs/vae-residual-controls/20260916-dense-no/O/sana/final_result.png): clearer local facades, columns and steps, but faint, ghosted and disconnected; curved outlines remain. |
+| FLUX.1-dev | [L](../outputs/vae-residual-controls/20260915-dense-lm/L/flux/final_result.png): nearly featureless gray/olive skyline, heavily smoothed. | [N](../outputs/vae-residual-controls/20260916-dense-no/N/flux/final_result.png): stronger temple silhouettes; surface detail still blurred and structures disconnected. | [O](../outputs/vae-residual-controls/20260916-dense-no/O/flux/final_result.png): faint roof/column fragments, but stepped horizontal banding and washout; much less structure than its own 70–90% clean snapshots. |
+| SD3.5 | [L](../outputs/vae-residual-controls/20260915-dense-lm/L/sd35/final_result.png): almost flat landscape-colored fields with very faint ruins. | [N](../outputs/vae-residual-controls/20260916-dense-no/N/sd35/final_result.png): modest contrast change, still almost featureless; no useful structural continuity. | [O](../outputs/vae-residual-controls/20260916-dense-no/O/sd35/final_result.png): faint columns, walls and steps survive, but with horizontal streaking, curved outlines and severe washout; intermediate architecture is much clearer. |
+| PixelDiT | [L](../outputs/vae-residual-controls/20260915-dense-lm/L/pixeldit/final_result.png): soft ruin-like masses and isolated temple silhouettes; little detail. | [N](../outputs/vae-residual-controls/20260916-dense-no/N/pixeldit/final_result.png): stronger silhouettes and contrast, but very soft edges and disconnected repeated masses. | [O](../outputs/vae-residual-controls/20260916-dense-no/O/pixeldit/final_result.png): faint column edges accompanied by severe horizontal streaking/blocky bands; no convincing overall gain over N. |
+
+### Runtime and device memory
+
+All L/N/O runs used NVIDIA A100-PCIE-40GB. Each cell is **pipeline seconds;
+peak allocated / reserved GiB**. Runtime excludes model loading and projection
+precomputation and includes diagnostics, final fusion, and N/O snapshot saving.
+Consequently L→N timing is not a pure fusion microbenchmark. Small differences
+are single-run measurements, not statistically established speedups.
+
+| Backend | L Avg | N DPA | O LPW+DPA |
+|---|---:|---:|---:|
+| SD2 | 279.6; 2.461 / 2.928 | 296.7; 2.471 / 2.934 | 303.9; 2.457 / 2.875 |
+| SANA | 616.6; 5.786 / 7.869 | 626.8; 5.836 / 7.916 | 650.5; 5.857 / 7.680 |
+| FLUX.1-dev | 1540.6; 25.005 / 27.084 | 1545.1; 25.055 / 27.127 | 1584.5; 25.010 / 26.896 |
+| SD3.5 | 1838.9; 7.483 / 9.402 | 1835.0; 7.535 / 9.473 | 1914.1; 7.484 / 9.215 |
+| PixelDiT | 769.9; 4.166 / 4.631 | 760.0; 4.217 / 4.678 | 843.9; 4.168 / 4.713 |
+
+O adds approximately 2.5–11.0% pipeline time over N in these runs. Streaming
+keeps peak device allocation close to N without reducing scientific resolution.
+Per-stage timings and aggregate consensus/update diagnostics are in each run's
+single metadata JSON.
+
+### Intermediate behavior and final-output distinction
+
+The single [FLUX progression sheet](../outputs/vae-residual-controls/20260916-dense-no/flux-progression.png)
+shows N/O at 10/30/50/70/90% and terminal final. L has no comparable snapshots.
+
+| Milestone | N, standard warp + RGB DPA | O, pyramid warp + per-level DPA |
+|---|---|---|
+| 10% | Large curved camera-footprint tiles and overlap boundaries already visible in FLUX and SD2; little coherent structure. | Broad tiles can be smoother, but strong ripples/grain and sharp curved outlines appear. |
+| 30% | Overlap boundaries persist while vague temple masses emerge. | FLUX begins to show towers, with strong radial/moire-like texture covering the panorama. |
+| 50% | Soft silhouettes dominate; SANA shows ghosted temples and broad arcs. | FLUX towers/columns and SANA steps become clearer; artifacts and overlapping incompatible fragments remain. |
+| 70% | FLUX has a soft skyline; SD3.5 is still almost flat. | FLUX and SD3.5 show substantially clearer architecture, but disconnected/duplicated structures and floating fragments remain. |
+| 90% | Broad soft forms remain without a strong recovery of surface texture. | FLUX retains visible columns and roof edges; most early ripples attenuate, but ghosting and gray/olive washout persist. |
+| Final | Contrast/silhouette changes survive, but heavy blur remains across the five backends. | Local edges remain in some backends; FLUX/SD3.5 lose much of their intermediate clarity, and horizontal bands/streaks are conspicuous in FLUX, SD3.5 and PixelDiT. |
+
+Seams are present **by the first saved 10% milestone**; these snapshots cannot
+locate their onset within the first 10%. The final image has different semantics:
+it decodes terminal local states and fuses them. The 90% image is an already
+computed predicted-clean consensus. Their difference includes the remaining
+steps and terminal encode/decode/fusion effects. There is no saved 100% clean
+consensus control, so it would be incorrect to attribute all late detail loss
+solely to the final fusion operation.
+
+### Scientific interpretation
+
+**L→N: DPA alone does not reliably preserve useful texture.** FLUX and PixelDiT
+gain more conspicuous silhouettes/contrast, while SANA and SD3.5 remain badly
+smoothed. SD2 gains bright patches rather than connected architecture. Since N
+weights RGB magnitude, stronger bright/dark observations can gain influence
+without recovering consistent texture. It does not solve seams; early overlap
+boundaries and ghosting remain. L has no milestone images, so these runs do not
+establish whether N worsens the early seams relative to L.
+
+**N→O: pyramid-domain DPA preserves some local edges, but not reliably better
+final panoramas.** SANA and SD3.5 retain more architectural fragments, and FLUX
+is visibly clearer mid-trajectory. This is evidence that the spatial mechanism
+affects detail retention. It is not evidence that projection artifacts are
+uniformly reduced: early ripples and late banding are prominent, structural
+continuity remains poor, and FLUX/PixelDiT have no convincing overall terminal
+quality improvement over N. A high-frequency statistic also counts these
+artifact edges, so it must not be read as a perceptual-quality score.
+
+The current-x_t invariant remains numerically stable: maximum observed error is
+**1.430511474609375e-6** for SD2 and **4.76837158203125e-7** for each other backend,
+for both N and O. Thus the sharper fragments are not accompanied by a detected
+failure of the current-state transition. Coverage is complete at every tested
+pyramid level, normalized partial-mask reconstruction preserves constants, and
+the project-specific LOD heuristic is disabled. These checks argue against
+coverage holes, simple invalid-zero darkening, or that heuristic as explanations
+for the observed O artifacts; they do not prove every frequency/resampling
+choice is optimal.
+
+The visible final failure is dominated by **over-smoothing and loss of coherent
+structure**, with cross-view semantic disagreement a plausible contributor and
+additional projection/pyramid artifacts visible in O. This controlled spatial
+ablation cannot causally rank semantic disagreement against repeated resampling
+or encoding losses. PixelDiT shows similar failures without a VAE, so a VAE is
+not a necessary cause. The results do not justify claiming that a VAE-only fix,
+DPA alone, or this particular LPW adaptation resolves the problem. No parameters
+were tuned and no extra denoising, residual correction, time travel or cleanup
+was introduced after viewing outputs. Conclusions remain limited to this one
+prompt and seed, and to the documented adaptation rather than full LookingGlass.
+
+### Final artifact audit and storage
+
+CPU report job **19762616** completed with exit **0:0** and all checks passed.
+The [shared validation record](../outputs/vae-residual-controls/20260916-dense-no/validation.json)
+records the successful audit, compact config diffs, job IDs, baseline hashes,
+mask audit and storage totals. The full numerical report is in
+[`dense-no-report.19762616.out`](../logs/dense-no-report.19762616.out).
+
+All ten actual runs match L's camera hash, fixed camera order/count (89), 80°
+FOV, geometry source, resolutions, prompt hash/assignment, effective conditioning,
+seed, initial-local-state digest, model source/revision, guidance and prepared
+scheduler. Resolved-config guards also hold precision and VAE options fixed.
+N/O per-camera prompt-index arrays match. Every run has exactly one guided
+prediction per camera per step: **28,480 total**, with **zero extra denoiser
+calls**. Strict Jacobi, fixed cameras and conditioning, current-state transition,
+and disabled residual/fixed-noise/spherical-latent/ERP-latent flags all pass.
+All 22 saved L/M run and geometry artifacts retain their pre-run SHA-256 hashes.
+
+| Output set | PNG images | Metadata JSONs | Files | Bytes | MiB |
+|---|---:|---:|---:|---:|---:|
+| N, five models | 50 | 5 | 55 | 65,394,262 | 62.365 |
+| O, five models | 50 | 5 | 55 | 103,498,452 | 98.704 |
+| Entire N/O root, including shared validation and one progression PNG | 101 | 11 JSONs total | 112 | 169,702,221 | 161.841 |
+
+Every model directory contains exactly nine milestone PNGs, one final PNG and
+one metadata JSON, at the expected native ERP resolution. Snapshot percentages,
+completed steps and scheduler timesteps pass the mapping audit. There are no
+per-view images, pyramid images, tensor dumps or per-step JSONs. Slurm text logs
+live outside these output sizes. No new temporary debugging images were needed.
+
+As a limited numerical check, terminal horizontal-wrap RGB differences are
+higher in O than N for all five backends (O range 0.000319–0.001510 versus N
+0.000140–0.000665 on a 0–1 scale). This is not a perceptual seam score: natural
+image gradients contribute, and curved internal camera boundaries are not
+measured by the left/right edge difference. The increase does not support a
+claim of uniformly improved wrap continuity. The report also records simple
+8-bit luminance high-frequency measurements; these increase with O but count
+banding and artifact texture as well as meaningful detail.
+
+Final repository state remains branch `no_sphere`, HEAD
+`c12873f3582377cd01aabd35669edee7aada3992`, with the additive N/O changes
+uncommitted. Earlier experiment data and existing work are preserved. Final
+whitespace checks pass; no additional GPU runs or parameter changes were made.

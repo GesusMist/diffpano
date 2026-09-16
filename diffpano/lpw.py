@@ -48,12 +48,26 @@ def build_gaussian_pyramid(
     return pyramid
 
 
+def pyramid_upsample(tensor, size, *, spherical_erp=False):
+    """Bilinear expansion with optional ERP wrap/pole boundaries (O only)."""
+    if not spherical_erp:
+        return F.interpolate(tensor,size=size,mode="bilinear",align_corners=False)
+    h,w = tensor.shape[-2:];th,tw = size
+    padded = spherical_pad_erp(tensor,1,1,"reflect")
+    y = 2*((torch.arange(th,device=tensor.device,dtype=tensor.dtype)+.5)*h/th+1)/(h+2)-1
+    x = 2*((torch.arange(tw,device=tensor.device,dtype=tensor.dtype)+.5)*w/tw+1)/(w+2)-1
+    yy,xx = torch.meshgrid(y,x,indexing="ij")
+    grid = torch.stack((xx,yy),-1)[None].expand(tensor.shape[0],-1,-1,-1)
+    return F.grid_sample(padded,grid,mode="bilinear",padding_mode="border",align_corners=False)
+
+
 def build_laplacian_pyramid(
     tensor: torch.Tensor,
     levels: int,
     *,
     vertical_padding_mode: str = "reflect",
     spherical_erp: bool = False,
+    periodic_upsampling: bool = False,
 ) -> List[torch.Tensor]:
     gaussian = build_gaussian_pyramid(
         tensor,
@@ -63,17 +77,17 @@ def build_laplacian_pyramid(
     )
     result = []
     for fine, coarse in zip(gaussian[:-1], gaussian[1:]):
-        result.append(fine - F.interpolate(coarse, size=fine.shape[-2:], mode="bilinear", align_corners=False))
+        result.append(fine - pyramid_upsample(coarse,fine.shape[-2:],spherical_erp=periodic_upsampling))
     result.append(gaussian[-1])
     return result
 
 
-def reconstruct_laplacian_pyramid(pyramid: Sequence[torch.Tensor]) -> torch.Tensor:
+def reconstruct_laplacian_pyramid(pyramid: Sequence[torch.Tensor], *, spherical_erp=False) -> torch.Tensor:
     if not pyramid:
         raise ValueError("pyramid must contain at least one level")
     current = pyramid[-1]
     for level in reversed(pyramid[:-1]):
-        current = F.interpolate(current, size=level.shape[-2:], mode="bilinear", align_corners=False) + level
+        current = pyramid_upsample(current,level.shape[-2:],spherical_erp=spherical_erp) + level
     return current
 
 
@@ -81,6 +95,7 @@ def reconstruct_masked_laplacian_pyramid(
     pyramid: Sequence[torch.Tensor],
     masks: Sequence[torch.Tensor],
     epsilon: float,
+    *, spherical_erp=False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Reconstruct coefficients without blending invalid zeros across boundaries.
 
@@ -100,18 +115,8 @@ def reconstruct_masked_laplacian_pyramid(
     current_mask = masks[-1].to(device=current.device, dtype=current.dtype)
     for level, level_mask in zip(reversed(pyramid[:-1]), reversed(masks[:-1])):
         level_mask = level_mask.to(device=level.device, dtype=level.dtype)
-        upsampled_mask = F.interpolate(
-            current_mask,
-            size=level.shape[-2:],
-            mode="bilinear",
-            align_corners=False,
-        )
-        upsampled_values = F.interpolate(
-            current * current_mask,
-            size=level.shape[-2:],
-            mode="bilinear",
-            align_corners=False,
-        )
+        upsampled_mask = pyramid_upsample(current_mask,level.shape[-2:],spherical_erp=spherical_erp)
+        upsampled_values = pyramid_upsample(current * current_mask,level.shape[-2:],spherical_erp=spherical_erp)
         normalized = upsampled_values / upsampled_mask.clamp_min(epsilon)
         current = level + normalized
         current_mask = torch.maximum(level_mask, upsampled_mask)

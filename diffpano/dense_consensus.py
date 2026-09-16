@@ -1,4 +1,4 @@
-"""Bounded-GPU-memory execution of K's algorithm, shared by L and M.
+"""Bounded-GPU-memory execution of K's algorithm, shared by L, M, N and O.
 
 Only local native noisy states persist. Clean views/proposals are temporarily
 hosted on CPU for diagnostics; no predictions or per-view artifacts are saved.
@@ -13,7 +13,9 @@ from diffpano.current_state_transition import interpolate_from_current_state
 from diffpano.erp_local_consensus import ERPLocalCurrentStatePipeline, camera_digest, native_digest
 from diffpano.fusion import RGBFusionAccumulator
 from diffpano.pipelines.base import reset_scheduler_step_state
-from diffpano.projection import erp_to_perspective_grid
+from diffpano.projection import erp_to_perspective_grid, perspective_to_erp_grid
+from diffpano.warp import StandardWarpOperator, LaplacianPyramidWarpOperator, _level_camera, _level_size
+from dataclasses import replace
 from diffpano.trajectory import conditioning_digest
 
 
@@ -61,8 +63,40 @@ class DenseConsensusResult:
     audit: dict
 
 
+def snapshot_schedule(num_steps):
+    """Integer ceil(percent * steps / 100), grouping duplicate milestones."""
+    if num_steps < 1:
+        raise ValueError('A snapshot schedule needs positive step count')
+    mapping = {}
+    for percentage in range(10, 100, 10):
+        completed = (percentage * num_steps + 99) // 100
+        mapping.setdefault(completed, []).append(percentage)
+    return mapping
+
+
 class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
     """The same two-pass Jacobi algorithm for either fixed-camera/prompt policy."""
+    def __init__(self, *, backend, cameras, erp_size, warp_operator, flow_transition=True, view_order=None):
+        # K's constructor and its strict guards remain unchanged. L/M still use it.
+        if warp_operator.fusion_config.mode == 'average':
+            super().__init__(backend=backend,cameras=cameras,erp_size=erp_size,
+                warp_operator=warp_operator,flow_transition=flow_transition,view_order=view_order)
+        else:
+            f = warp_operator.fusion_config
+            if f.mode != 'detail_preserving_average' or f.weight_mode != 'uniform':
+                raise ValueError('Dense DPA requires uniform weights')
+            expected = LaplacianPyramidWarpOperator if warp_operator.warp_config.mode == 'lpw' else StandardWarpOperator
+            if type(warp_operator) is not expected:
+                raise ValueError('Dense warp type does not match its config')
+            self.backend=backend;self.cameras=tuple(cameras);self.erp_size=tuple(erp_size)
+            if not self.cameras:raise ValueError('Dense consensus requires cameras')
+            self.camera_sha256=camera_digest(self.cameras)
+            self.operator=warp_operator;self.flow_transition=flow_transition
+            self.view_order=list(range(len(cameras))) if view_order is None else list(view_order)
+            if sorted(self.view_order)!=list(range(len(cameras))):raise ValueError('Invalid view order')
+        self.diagnostic_operator = StandardWarpOperator(
+            replace(warp_operator.warp_config,mode='standard'),warp_operator.fusion_config,warp_operator.cache)
+
     def initialize_local_states(self, seed, batch_size=1):
         generator = torch.Generator(device='cpu').manual_seed(seed)
         states = []
@@ -76,18 +110,36 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
     def precompute_geometry(self, minimum=1):
         count = torch.zeros(1,1,*self.erp_size,device=self.backend.device)
         for camera in self.cameras:
-            contribution = self.operator.perspective_to_erp(torch.ones(1,3,camera.height,camera.width,device=self.backend.device),camera,self.erp_size)
+            contribution = self.diagnostic_operator.perspective_to_erp(torch.ones(1,3,camera.height,camera.width,device=self.backend.device),camera,self.erp_size)
             count.add_((contribution.valid_mask > 0).float())
             erp_to_perspective_grid(camera,*self.erp_size,device=self.backend.device,cache=self.operator.cache)
+            if isinstance(self.operator,LaplacianPyramidWarpOperator):
+                for level in range(1,self.operator.warp_config.lpw.levels):
+                    c = _level_camera(camera,level)
+                    h,w = (_level_size(v,level) for v in self.erp_size)
+                    perspective_to_erp_grid(c,h,w,device=self.backend.device,cache=self.operator.cache)
+                    erp_to_perspective_grid(c,h,w,device=self.backend.device,cache=self.operator.cache)
         if int(count.min()) < minimum:
             raise AssertionError('Actual GPU projection masks fail the required coverage')
         return count
 
     def _accumulator(self, batch_size):
-        return RGBFusionAccumulator(torch.zeros(batch_size,3,*self.erp_size,device=self.backend.device), self.operator.fusion_config)
+        previous = torch.zeros(batch_size,3,*self.erp_size,device=self.backend.device)
+        dedicated = self.operator.create_fusion_accumulator(previous)
+        return dedicated if dedicated is not None else RGBFusionAccumulator(previous,self.operator.fusion_config)
+
+    def _accumulate(self, accumulator, rgb, camera, timings):
+        if isinstance(self.operator,LaplacianPyramidWarpOperator):
+            accumulator.accumulate(rgb,camera,timer=lambda key,fn:self._timed(timings,key,fn))
+        else:
+            contribution = self._timed(timings,'view_to_erp',lambda:self.operator.perspective_to_erp(rgb,camera,self.erp_size))
+            self._timed(timings,'rgb_fusion',lambda:accumulator.accumulate(contribution))
+
+    def _finalize(self, accumulator, timings):
+        return self._timed(timings,'erp_reconstruction' if isinstance(self.operator,LaplacianPyramidWarpOperator) else 'rgb_finalize',accumulator.finalize)
 
     @torch.no_grad()
-    def run_dense(self, local_states, conditionings, *, required_minimum=1, progress=None):
+    def run_dense(self, local_states, conditionings, *, required_minimum=1, progress=None, snapshot_callback=None, expected_initial_sha256=None):
         if camera_digest(self.cameras) != self.camera_sha256:
             raise AssertionError('Camera slots changed')
         count = len(self.cameras)
@@ -100,6 +152,9 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
             if tuple(s.shape) != expected:
                 raise ValueError('Persistent states must be local perspective-native tensors')
         initial_hash = hashlib.sha256(''.join(native_digest(s) for s in states).encode()).hexdigest()
+        if expected_initial_sha256 is not None and initial_hash != expected_initial_sha256:
+            raise AssertionError('Initial local states differ from L')
+        milestones = snapshot_schedule(len(self.backend.timesteps))
         condition_hashes = [conditioning_digest(c) for c in conditionings]
         timesteps = self.backend.timesteps.clone()
         scheduler = getattr(getattr(self.backend,'pipeline',None),'scheduler',None)
@@ -129,10 +184,9 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
                 if tuple(rgb.shape) != (batch,3,self.cameras[i].height,self.cameras[i].width):
                     raise ValueError('Wrong clean RGB view dimensions')
                 originals[i] = rgb.detach().cpu()
-                contribution = self._timed(timings,'view_to_erp',lambda:self.operator.perspective_to_erp(rgb,self.cameras[i],self.erp_size))
-                acc.accumulate(contribution)
-                del pair,rgb,contribution,x
-            fused = acc.finalize()
+                self._accumulate(acc,rgb,self.cameras[i],timings)
+                del pair,rgb,x
+            fused = self._finalize(acc,timings)
             if int(fused.contributor_count.min()) < required_minimum:
                 raise AssertionError('Per-step coverage below requirement')
             overlap_mask = fused.contributor_count > 1
@@ -145,7 +199,7 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
                 delta = (crop-original).abs()
                 statistics['rgb_consensus_delta'].add(delta.mean(),delta.max())
                 # O(N) view-to-fused-consensus reprojection diagnostic. No N^2 list.
-                contribution = self._timed(timings,'diagnostic_reprojection',lambda:self.operator.perspective_to_erp(original,self.cameras[i],self.erp_size))
+                contribution = self._timed(timings,'diagnostic_reprojection',lambda:self.diagnostic_operator.perspective_to_erp(original,self.cameras[i],self.erp_size))
                 valid = (contribution.valid_mask > 0) & overlap_mask
                 pixels = int(valid.sum())
                 if pixels:
@@ -173,6 +227,11 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
             for key,value in timings.items():
                 totals[key] = totals.get(key,0.)+value
             states = next_states  # Jacobi commit after all transitions.
+            if snapshot_callback is not None and step+1 in milestones:
+                # An isolated copy prevents a callback from modifying the trajectory.
+                snapshot_callback(dict(requested_percentages=milestones[step+1],completed_step=step+1,
+                    scheduler_timestep=float(timestep),alpha=float(coefficients[0]),sigma=float(coefficients[1]),
+                    next_alpha=float(coefficients[2]),next_sigma=float(coefficients[3])),fused.erp_rgb.detach().clone())
             del fused,acc,originals,native_cleans
             for name in ('last_model_prediction','last_clean_prediction'):
                 if hasattr(self.backend,name):setattr(self.backend,name,None)
@@ -181,9 +240,9 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
         acc = self._accumulator(batch)
         for i,camera in enumerate(self.cameras):
             rgb = self.backend.decode_native_canvas(states[i].to(self.backend.device))
-            acc.accumulate(self.operator.perspective_to_erp(rgb,camera,self.erp_size))
+            self._accumulate(acc,rgb,camera,{})
             del rgb
-        final = acc.finalize()
+        final = self._finalize(acc,{})
         if not bool(torch.isfinite(final.erp_rgb).all()):raise ValueError('Non-finite terminal ERP')
         if camera_digest(self.cameras) != self.camera_sha256 or not torch.equal(timesteps,self.backend.timesteps):
             raise AssertionError('Camera or schedule mutation')
@@ -198,5 +257,5 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
                  initial_local_sha256=initial_hash,initialization='one CPU Gaussian stream in fixed camera order',
                  synchronous=True,persistent_state='local native noisy',erp_state='transient clean RGB',
                  transition='preserve_current_state',vae_residual=False,fixed_noise_renoising=False,
-                 spherical_latent=False,erp_latent=False,warp='standard',fusion='average',
+                 spherical_latent=False,erp_latent=False,warp=self.operator.warp_config.mode,fusion=self.operator.fusion_config.mode,
                  diagnostics='O(N) view-to-fused-ERP overlap; raw RGB; mean across view means, max pixel error'))

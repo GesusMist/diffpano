@@ -110,7 +110,18 @@ def _level_camera(camera: PerspectiveCamera, level: int) -> PerspectiveCamera:
 
 
 class LaplacianPyramidWarpOperator(StandardWarpOperator):
-    """RGB LPW whose inverse direction is fused jointly per pyramid level."""
+    """RGB LPW whose inverse direction is fused jointly per pyramid level.
+
+    O adapts LatentGenerativeAnamorphoses e5fbb217's five-level combined
+    coefficient pooling to many perspective views and explicit ERP masks.
+    The existing binomial Gaussian filter is retained (reference: 2x2 means).
+    Its inverse autograd/3D-LOD method is NOT our per-level ray projection;
+    the project's optional band-confidence LOD is disabled in O.
+    """
+
+    def __init__(self, warp_config, fusion_config, cache=None, *, periodic_reconstruction=False):
+        super().__init__(warp_config,fusion_config,cache)
+        self.periodic_reconstruction = periodic_reconstruction
 
     def erp_to_perspective(self, erp_rgb: torch.Tensor, camera: PerspectiveCamera) -> torch.Tensor:
         pyramid = build_laplacian_pyramid(
@@ -118,6 +129,7 @@ class LaplacianPyramidWarpOperator(StandardWarpOperator):
             self.warp_config.lpw.levels,
             vertical_padding_mode=self.warp_config.lpw.vertical_padding_mode,
             spherical_erp=True,
+            periodic_upsampling=self.periodic_reconstruction,
         )
         view_levels = []
         for level, coefficients in enumerate(pyramid):
@@ -194,17 +206,19 @@ class LaplacianPyramidFusionAccumulator:
         self,
         rgb_view: torch.Tensor,
         camera: PerspectiveCamera,
+        *, timer=None,
     ) -> ERPContribution:
         """Project one view's coefficients and update every ERP level."""
 
         if rgb_view.shape[0] != self.previous.shape[0]:
             raise ValueError("LPW view batch size does not match the persistent ERP")
-        view_pyramid = build_laplacian_pyramid(
+        timed = timer or (lambda key,fn:fn())
+        view_pyramid = timed("pyramid_construction",lambda:build_laplacian_pyramid(
             rgb_view.to(device=self.previous.device, dtype=torch.float32),
             self.operator.warp_config.lpw.levels,
             vertical_padding_mode=self.operator.warp_config.lpw.vertical_padding_mode,
             spherical_erp=False,
-        )
+        ))
         if not self.level_accumulators:
             self._initialize_levels(len(view_pyramid))
         elif len(view_pyramid) != len(self.level_accumulators):
@@ -237,7 +251,7 @@ class LaplacianPyramidFusionAccumulator:
                 height=coefficients.shape[-2],
                 width=coefficients.shape[-1],
             )
-            contribution = perspective_to_erp(
+            contribution = timed("view_to_erp",lambda:perspective_to_erp(
                 coefficients,
                 level_camera,
                 level_erp[0],
@@ -245,7 +259,7 @@ class LaplacianPyramidFusionAccumulator:
                 interpolation=self.operator.warp_config.perspective_to_erp.interpolation,
                 weight_map=self.operator._weight_map(level_camera, self.previous.device),
                 cache=self.operator.cache,
-            )
+            ))
             if not use_lod:
                 # lod_mode=none retains every band; it does not mean LOD zero,
                 # which would incorrectly select only band zero.
@@ -263,7 +277,7 @@ class LaplacianPyramidFusionAccumulator:
                     len(view_pyramid),
                     self.operator.warp_config.lpw.lod_interpolation,
                 )
-            accumulator.accumulate(contribution, confidence=confidence)
+            timed("pyramid_level_fusion",lambda:accumulator.accumulate(contribution, confidence=confidence))
 
         # This standard RGB projection is diagnostic-only.  LPW fusion above
         # consumes pyramid coefficients, never this reconstructed/full RGB view.
@@ -289,6 +303,7 @@ class LaplacianPyramidFusionAccumulator:
             [level.erp_rgb for level in levels],
             [level.coverage_mask for level in levels],
             self.operator.fusion_config.epsilon,
+            spherical_erp=self.operator.periodic_reconstruction,
         )
         covered = reconstructed_mask > self.operator.fusion_config.epsilon
         fused = torch.where(covered, reconstructed, self.previous)
