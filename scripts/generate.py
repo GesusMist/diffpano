@@ -104,6 +104,9 @@ def _generate_with_selected_global_pipeline(config, denoiser, diagnostics):
 
 def run(config: ExperimentConfig) -> Path:
     config.validate()
+    if config.global_pipeline.mode == "erp_local_dense_consensus":
+        from scripts.dense_erp_experiment import run_config
+        return run_config(config)
     started = time.perf_counter()
     set_random_seed(config.experiment.seed)
     if torch.cuda.is_available():

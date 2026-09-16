@@ -537,3 +537,35 @@ the contact-sheet display scale.
 
 The ERP contains clean RGB only. No VAE residual, fixed-initial-noise renoising,
 ERP latent field, LPW, DPA, time travel, or extra denoiser calls occur in K.
+
+## Experiments L/M: compact dense fixed-view ERP controls
+
+Use `configs/experiments/erp_later/{backend}-{l,m}.yaml` for SD3.5, FLUX,
+SANA, SD2 or PixelDiT. Both use the shared dense streaming core; original K is
+unchanged. First run `python -m scripts.dense_geometry_preflight`, focused dense
+tests, the full unittest suite, compileall and `git diff --check`. The runner
+requires the shared passed `outputs/vae-residual-controls/20260915-dense-lm/validation.json`
+gate; it must record actual successful validation rather than bypassing checks.
+
+```bash
+python -m unittest discover -s tests -p test_dense_consensus.py -v
+python -m unittest discover -s tests -v
+python -m compileall -q diffpano scripts tests
+squeue -u "$USER"
+sbatch slurm/dense_erp.slurm configs/experiments/erp_later/sd35-l.yaml
+```
+
+The dense launcher uses A100 resources for all five backends. The initial
+A40 submissions were cancelled while pending because Grace estimated a 6–9 hour
+wait; original K used A40 for the four latent models, so runtime comparisons
+are not hardware-matched. Full resolution, native schedules/checkpoints and guidance are
+unchanged. Do not rerun an existing output directory. The generic generation
+entry point routes dense configs to the same compact runner so it does not
+produce extra artifacts.
+
+After all ten runs complete, run `python -m scripts.report_dense_erp`. It audits
+settings, actual schedules, hashes, counts and the exact two-file-per-run
+storage policy and saves one `K-L-M.png` contact sheet. Model outputs are
+`outputs/vae-residual-controls/20260915-dense-lm/{L,M}/{backend}/final_result.png`
+and `metadata.json`. Two shared geometry JSONs contain both production-resolution
+checks; no intermediate images or tensors are written.

@@ -42,11 +42,13 @@ class CameraSampler(ABC):
         """Return a complete overlapping camera cover for one global step."""
 
 
-def spherediff_camera_cover(view: ViewConfig) -> List[PerspectiveCamera]:
+def spherediff_camera_cover(view: ViewConfig, *, overlap_fraction: float = 0.6) -> List[PerspectiveCamera]:
     """Reproduce SphereDiff's dense-equator 89-view, 80-degree cover."""
 
-    overlap_x = view.fov_x * 0.6
-    overlap_y = view.fov_y * 0.6
+    if not 0 <= overlap_fraction < 1:
+        raise ValueError("Camera overlap fraction must be in [0,1)")
+    overlap_x = view.fov_x * overlap_fraction
+    overlap_y = view.fov_y * overlap_fraction
     num_latitudes = math.ceil((90 + view.fov_y / 2) / (view.fov_y - overlap_y))
     positive = torch.linspace(0, 90, num_latitudes, dtype=torch.float32).tolist()
     latitudes = positive + [-value for value in positive[1:]]

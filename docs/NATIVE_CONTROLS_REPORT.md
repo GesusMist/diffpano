@@ -2139,3 +2139,252 @@ The wrap ratio is near or below 1 for every backend despite visibly poor panoram
 | sd2 | [ERP](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/K/final_erp.png) | [J/K](../outputs/vae-residual-controls/report/K/sd2-J-K.png) | [Six views](../outputs/vae-residual-controls/report/K/sd2-final-views.png) | [Curves](../outputs/vae-residual-controls/report/K/sd2-diagnostics.png) | [Comparison](../outputs/vae-residual-controls/20260910-lookingglass-v1/sd2/K/comparison.json) |
 
 Each K folder also contains `metadata.json`, `runtime_preflight.json`, `repository.json`, `spec.json`, `initialization.json`, `initial_local_states.pt`, `contributors.pt/png`, `steps.csv`, `transition_patches.csv/json`, `final_consensus_erp.png`, six final views and five snapshots. Provenance records HEAD, branch and dirty status at run start. The source tree remains on `no_sphere` at `ff42ea4003e91208d33f007453ec715f2cb265b3`, with prior uncommitted I work preserved and additive J/K changes uncommitted. No historical A–I output or configuration was overwritten.
+
+## Experiment L — SphereDiff-Style View/Prompt Strategy
+
+The L/M task began on `no_sphere`, HEAD
+`7eb0fff246291701901165b71f8485b2c9d102dc`, with a clean working tree and no
+queued jobs. All historical A–K code and outputs are preserved. L/M are additive
+controls using one shared streaming implementation of K's local-native/current-x_t
+algorithm. They introduce no residual correction, fixed-noise renoising, LPW,
+DPA, time travel, partial fusion, changed VAE, or spherical/ERP latent field.
+
+### Official SphereDiff verification
+
+Verified official source at commit
+[`2c8c68ba088f2803b3dce4b52b7b0d68bc996139`](https://github.com/pmh9960/SphereDiff/tree/2c8c68ba088f2803b3dce4b52b7b0d68bc996139):
+[`spherical_functions.py`](https://github.com/pmh9960/SphereDiff/blob/2c8c68ba088f2803b3dce4b52b7b0d68bc996139/pipelines_ours/spherical_functions.py),
+[`pipeline_spherical_sana.py`](https://github.com/pmh9960/SphereDiff/blob/2c8c68ba088f2803b3dce4b52b7b0d68bc996139/pipelines_ours/pipeline_spherical_sana.py), and
+[`pipeline_spherical_flux.py`](https://github.com/pmh9960/SphereDiff/blob/2c8c68ba088f2803b3dce4b52b7b0d68bc996139/pipelines_ours/pipeline_spherical_flux.py).
+The static pipelines call the dense-equator cover with 80° FOV, 60% horizontal
+and vertical overlap, and three extra azimuth samples per ring. The existing
+`spherediff_camera_cover` matches this construction. Its default is unchanged;
+only an optional overlap parameter was added for M's geometry search.
+
+The resulting **89 cameras** occupy pitch rings −90, −67.5, −45, −22.5, 0,
+22.5, 45, 67.5, 90 degrees, with **4, 8, 11, 14, 15, 14, 11, 8, 4** cameras
+respectively. Yaws are uniformly spaced from −π, excluding the repeated +π
+endpoint. Slots are fixed throughout denoising, with no per-step rotation.
+
+Official prompting expands five lines at phi −90, −10, 0, 10, 90 over yaw
+anchors 0, 90, 180, 270 and selects maximum cosine similarity. SphereDiff's
+rendering uses the inverse camera rotation and a central negative-z ray; negative
+phi denotes an upward-looking camera. DiffPano's physical forward convention
+has positive pitch upward. The existing prompt helper already converts the
+semantic bands to +90, +10, 0, −10, −90. Tests verify top/upper/equator/lower/bottom,
+nonpolar yaw anchors, the cosine rule, and the official cover formula. Global
+yaw origin/renderer conventions are not claimed to reproduce identical pixels
+from the original spherical-latent renderer. L reproduces its view-cover and
+semantic prompt strategy in DiffPano's existing standard projector.
+
+The L slot histogram is `{0:14, 4:5, 5:6, 6:6, 7:6, 8:4, 9:4, 10:3, 11:4,
+12:5, 13:6, 14:6, 15:6, 16:14}`. Semantic-band totals are **14/23/15/23/14**.
+Equivalent pole anchors can tie; selecting a different yaw at a pole does not
+change its prompt text. Each backend caches conditioning once per selected slot.
+
+### Prompt and FOV fairness limits
+
+The user explicitly selected **80° FOV for both L and M**. Original K used
+100°, so K→M changes FOV as well as camera count/layout and initialization
+cardinality. It must not be described as a strictly single-variable redundancy
+ablation. Checkpoints, seed 0, model-native view resolution, ERP resolution,
+steps, scheduler, guidance, dtype, VAE options, standard warp and average fusion
+remain paired to K; PixelDiT inherits the existing F native control because it
+has no six-view K result.
+
+The original K prompt source `prompts/native_control.txt` has **five identical
+lines**. That exact file is preserved for L/M; no text was rewritten to favor L.
+L assigns directional slots correctly, while M uses K's global equatorial slot
+8, but all selected slots contain the same prompt text. Consequently this run
+can verify directional routing but **cannot estimate a semantic benefit from
+different directional prompt texts**. Because M selects the same geometry as L,
+L/M are effectively repeat controls with different slot routing, not a
+nontrivial directional-text ablation. This limitation was identified before
+GPU runs. The existing night-scene `prompts/ruins.txt` was not substituted.
+
+## Experiment M — Dense ≥5-Coverage ERP Consensus
+
+The geometry-only search uses the same parameterized latitude-ring construction
+at 80° FOV, with overlap candidates 0.00, 0.10, 0.20, 0.30, 0.40, 0.45, 0.50,
+0.55, 0.60, 0.65, 0.70, 0.75, 0.80 and a cap of 300 cameras. It evaluates
+candidates in increasing camera count using actual `StandardWarpOperator`
+projections of constant perspective RGB, first at ERP 128×256, then verifies
+any passing candidate at both production ERP resolutions before accepting it.
+The first accepted cover is the smallest **tested** cover, not a proof of a
+continuous/global camera-count optimum.
+
+| Overlap | Cameras tested | Coarse minimum contributors | Coarse coverage |
+|---:|---:|---:|---:|
+| 0.00 | 16 | 0 | 91.260% |
+| 0.10 | 16 | 0 | 91.260% |
+| 0.20 | 31 | 2 | 100% |
+| 0.30 | 34 | 2 | 100% |
+| 0.40 | 37 | 2 | 100% |
+| 0.45 | 38 | 2 | 100% |
+| 0.50 | 58 | 4 | 100% |
+| 0.55 | 63 | 4 | 100% |
+| **0.60** | **89** | **7** | **100%** |
+
+The selected M geometry is therefore **identical to L**. Higher-density
+candidates were unnecessary. Full-resolution geometry job **19754794** passed
+before any model submission:
+
+| ERP / view RGB resolution | Coverage | Min | P01 | P05 | Median | Mean | Max |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 512×1024 / 512×512 (SD2) | 100% | **7** | 8 | 9 | 12 | 12.907318 | 19 |
+| 1024×2048 / 1024×1024 (other four) | 100% | **7** | 8 | 9 | 12 | 12.905493 | 19 |
+
+All pixels satisfy the hard ≥5 requirement. Only two compact shared geometry
+JSONs are saved, each containing both resolution checks, camera hashes and
+construction information. No coverage maps or tensors are saved. M's prompt
+histogram is `{8:89}`.
+
+| Exp | Geometry | Fused quantity | VAE residual | Transition | Prompt policy |
+|---|---|---|---|---|---|
+| K | six fixed cameras, 100° | clean RGB | no | current x_t | global slot 8 |
+| L | SphereDiff 89 cameras, 80° | clean RGB | no | current x_t | directional slots |
+| M | 89 cameras, 80°, full-resolution min=7 | clean RGB | no | current x_t | global slot 8 |
+
+### Shared execution and storage
+
+`DenseERPLocalCurrentStatePipeline` extends K's infrastructure with one common
+L/M streaming loop. It retains local native noisy states on CPU, moves one view
+at a time to the backend, predicts/decodes once, and accumulates its standard ERP
+contribution. Temporary CPU clean-native/RGB copies permit exact consensus-delta
+diagnostics without keeping ~89 decoded GPU images. After fusion, it projects,
+encodes and interpolates each view from the frozen x_t, then commits all next
+states together. The shared `interpolate_from_current_state` is unchanged;
+pre-fusion endpoints do not enter the transition. PixelDiT retains its identity
+pixel-native encode/decode behavior.
+
+The existing bounded `ProjectionCache` retains four device entries per mapping
+and CPU overflow, precomputes all fixed maps once, and reuses them. Only one
+full-size projected RGB contribution is retained at a time. Overlap diagnostics
+use O(N) per-view disagreement with the fused ERP restricted to multiply-covered
+pixels; they are **not** the older K pairwise MAE. Means average per-view means;
+maxima are maximum absolute pixel/component errors. Compact overall/first/midpoint/
+last metrics are stored; no N² pair list or per-step file is written.
+
+Per-run output is exactly `final_result.png` (standard-fused decoded terminal
+local states) and `metadata.json` (settings, source/checkpoint/prompt hashes,
+schedule, geometry, job, git provenance, timing/memory, metrics and audit).
+No intermediate images, camera images, predictions, masks, or .pt files are
+saved. One K/L/M contact sheet is produced after all runs. Missing PixelDiT K
+is labeled unavailable rather than rerun.
+
+### L/M validation and jobs
+
+Focused tests (6) and the full **190-test regression suite** passed in job
+**19754806**, with compileall and whitespace checks passing. The first focused
+attempt rejected a test fixture that had omitted `warp.mode=standard`; correcting
+that fixture allowed the streaming-equivalence test to run and pass. No model
+jobs ran before validation. A refreshed geometry preflight **19754823** normalized
+FOV serialization (`80.0`) and explicitly verified all ten config camera hashes
+against the shared full-resolution records. Contributor counts were unchanged.
+
+The new tests cover official camera construction, semantic prompt-band/yaw
+selection, correct conditioning rows for all five adapters, deterministic search,
+forbidden settings, and a streaming trajectory matching original K within
+2e-6 on a small case. They also verify processing-order invariance, exact
+prediction/encode/decode counts, frozen source states, no residual/fixed-noise
+calls, and successful transitions with the old endpoint poisoned by NaNs.
+
+| Backend | L Slurm job | M Slurm job | Guided predictions per run |
+|---|---:|---:|---:|
+| SD3.5 | 19754844 | 19754848 | 3560 |
+| FLUX.1-dev | 19754845 | 19754849 | 1780 |
+| SANA | 19754846 | 19754850 | 1780 |
+| SD2 | 19754847 | 19754851 | 2670 |
+| PixelDiT | 19754834 | 19754839 | 4450 |
+
+Jobs were submitted L first, then M, in the requested backend order. Independent
+jobs may execute concurrently according to Grace availability. All ten runs use
+A100 resources. The eight initial A40 jobs and their pending report job were
+cancelled before execution after Grace estimated a 6–9 hour wait; no duplicate
+model runs occurred. No model settings changed. Original K used A40 for the four
+latent models, so observed runtime multipliers are **not hardware-matched**.
+The submission record, including cancelled pending job IDs, is in the single
+shared `validation.json`. The final report/audit job is **19755015**. The initial CPU report job
+19754852 stopped because Diffusers serialized its unordered `_use_default_values`
+provenance list in different orders. The audit now sorts only that list, retains
+exact comparisons for all scheduler values/timesteps/sigmas, and additionally
+checks effective conditioning hashes. No experiment output or model run changed.
+
+Exact checkpoints remain SD2 `sd2-community/stable-diffusion-2-base`, SANA
+`Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers`, FLUX
+`ModelsLab/flux.1-dev`, SD3.5 `stabilityai/stable-diffusion-3.5-medium` at revision
+`b940f670f0eda2d07fbb75229e779da1ad11eb80`, and PixelDiT `pixeldit_t2i_v1.pth`
+with official implementation commit `41f73006ae532b0b41fee72b181dc22891a5a01a`
+and its existing 1024px stage-3 configuration. No suggested alternative model ID
+was substituted. Steps remain 40/20/20/30/50 in the listed order; actual prepared
+schedules are saved, and the four latent schedules are checked against K before
+generation.
+
+
+### L/M completed results and interpretation
+
+All ten model jobs completed with Slurm exit code 0:0 on NVIDIA A100-PCIE-40GB.
+They performed **28,480 guided predictions** in total, exactly one per camera
+per timestep, with no additional denoiser evaluations. The maximum current-state
+reconstruction error was **1.430511474609375e-6** (SD2); every other backend was
+at most 4.76837158203125e-7. All L/M pairs have identical initial-state and
+effective-conditioning hashes and **byte-identical final PNGs**.
+
+Runtime below is the measured pipeline run (including its diagnostics and final
+fusion), excluding model loading/conditioning/geometry preparation. Memory is
+peak CUDA allocated / reserved GiB during that run. Original K used A40, while
+L/M use A100: these timings are descriptive, not a controlled speed benchmark.
+
+| Backend | K original | L SphereDiff-style | M dense >=5 |
+|---|---|---|---|
+| SD2 | Recognizable ruins but disconnected regions and camera seams; 29.0 s | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/L/sd2/final_result.png): Washed-out gray/olive field; faint ruin fragments; no connected architecture; hard seams muted by blur; 279.6 s; 2.46/2.93 GiB | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/M/sd2/final_result.png): Washed-out gray/olive field; faint ruin fragments; no connected architecture; hard seams muted by blur; 267.3 s; 2.46/2.92 GiB |
+| SANA | Detailed, colorful temples; exposure/camera seams and weak connectivity; 74.1 s | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/L/sana/final_result.png): Blurred green/gray landscape bands; faint temple silhouettes; poor connectivity; hard seams muted; 616.6 s; 5.79/7.87 GiB | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/M/sana/final_result.png): Blurred green/gray landscape bands; faint temple silhouettes; poor connectivity; hard seams muted; 609.4 s; 5.76/8.43 GiB |
+| FLUX.1-dev | Strong local temple detail; incompatible views and seams; 177.6 s | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/L/flux/final_result.png): Severely blurred gray/green landscape; vague temple silhouettes; local detail lost; hard seams muted; 1540.6 s; 25.00/27.08 GiB | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/M/flux/final_result.png): Severely blurred gray/green landscape; vague temple silhouettes; local detail lost; hard seams muted; 1528.2 s; 24.95/27.04 GiB |
+| SD3.5 | Recognizable ruins with blur and camera boundaries; 193.8 s | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/L/sd35/final_result.png): Near-flat gray/olive landscape bands; almost no recognizable architecture; hard seams muted by washout; 1838.9 s; 7.48/9.40 GiB | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/M/sd35/final_result.png): Near-flat gray/olive landscape bands; almost no recognizable architecture; hard seams muted by washout; 1840.4 s; 7.42/9.29 GiB |
+| PixelDiT | Unavailable; no K rerun | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/L/pixeldit/final_result.png): Heavily blurred olive landscape and vague ruins; poor connectivity; hard seams muted; 769.9 s; 4.17/4.63 GiB | [Success](../../outputs/vae-residual-controls/20260915-dense-lm/M/pixeldit/final_result.png): Heavily blurred olive landscape and vague ruins; poor connectivity; hard seams muted; 763.7 s; 4.14/4.62 GiB |
+
+K peak allocated/reserved memory was SD2 2.48/3.01, SANA 5.82/7.82,
+FLUX 25.14/27.53 and SD3.5 7.63/9.79 GiB. L/M memory remains bounded near
+these model-dependent levels despite 14.83 times as many camera predictions.
+Temporary host copies grow with view count; this is a GPU-memory bound, not a
+claim that host storage is independent of the number of cameras.
+
+The single [K | L | M contact sheet](../../outputs/vae-residual-controls/20260915-dense-lm/K-L-M.png)
+shows the full uncropped panoramas in the requested model order. PixelDiT's K
+cell is explicitly unavailable. Individual run links above point to each final
+image; its adjacent `metadata.json` contains the exact settings and metrics.
+
+**Dense coverage did not improve image quality under this recipe.** Relative to
+K's six-view results, the four comparable latent backends lose recognizable
+structure and local detail. Smoother camera boundaries mainly reflect blur and
+contrast collapse; they are not evidence of improved semantic connectivity.
+L/M ERP wrap-gradient ratios are SD2 1.069, SANA 0.912, FLUX 0.973, SD3.5 0.995
+and PixelDiT 0.993. These ratios measure the horizontal wrap only, and values
+near one do not establish a coherent panorama. Original K also often had wrap
+ratios near one while showing other camera seams.
+
+**The effect of meaningful directional prompts is not identifiable here.** L
+uses verified directional slot selection and M uses global slot 8, but the
+required original prompt file repeats exactly the same text on all five lines.
+M's minimum-five search also selected exactly L's camera geometry. The resulting
+identical conditioning and images are therefore expected; they do not establish
+that distinct SphereDiff directional text helps, fails, or matters less than
+redundancy. No prompt substitution was made after seeing these outputs.
+
+All full-resolution pixels have at least seven contributors, so uncovered or
+weakly covered pixels cannot explain these dense results. The common blur is
+consistent with strong repeated averaging/resampling of independent local
+predictions and insufficient cross-view semantic trajectory agreement. This is
+an interpretation, not a separate causal ablation of averaging versus semantic
+conflict. PixelDiT exhibits the same broad failure with identity encode/decode,
+so a VAE round trip is not a necessary cause and a VAE-only explanation is
+insufficient. The current-state reconstruction checks and matching native
+schedules argue against a transition bookkeeping error.
+
+K-to-L/M also changes FOV from 100 to 80 degrees, as explicitly requested, so
+this is not a pure view-count ablation. These two geometries do not establish a
+diminishing-returns curve or a globally optimal camera count. The present result
+supports neither proposed source of the next quality gain: dense coverage at
+this setting is unsuccessful, and distinct directional conditioning remains
+untested. No time travel, repeated refinement, or other follow-up method was
+implemented.

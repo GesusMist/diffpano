@@ -224,6 +224,13 @@ class ConsensusTransitionConfig:
 
 
 @dataclass
+class DenseConsensusConfig:
+    experiment: str = "L"
+    geometry_file: str = ""
+    prompt_assignment: str = "spherediff_directional"
+
+
+@dataclass
 class ExperimentConfig:
     experiment: ExperimentSection = field(default_factory=ExperimentSection)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -245,12 +252,29 @@ class ExperimentConfig:
     debug: DebugConfig = field(default_factory=DebugConfig)
     consensus_transition: ConsensusTransitionConfig = field(default_factory=ConsensusTransitionConfig)
 
+    dense_consensus: Optional[DenseConsensusConfig] = None
+
     def validate(self) -> None:
         if self.consensus_transition.mode not in {"preserve_prefusion_endpoint", "preserve_current_state"}:
             raise ValueError("Unknown consensus transition mode")
         if self.consensus_transition.mode == "preserve_current_state":
-            if self.global_pipeline.mode not in {"implied_endpoint_consensus", "erp_local_current_consensus"} or self.fusion.mode != "average" or self.fusion.weight_mode != "uniform":
+            if self.global_pipeline.mode not in {"implied_endpoint_consensus", "erp_local_current_consensus", "erp_local_dense_consensus"} or self.fusion.mode != "average" or self.fusion.weight_mode != "uniform":
                 raise ValueError("Experiment I requires implied endpoint consensus and average/uniform fusion")
+        if self.global_pipeline.mode == "erp_local_dense_consensus":
+            dense = self.dense_consensus
+            if dense is None or dense.experiment not in {"L", "M"}:
+                raise ValueError("Dense ERP requires an explicit L/M configuration")
+            expected = "spherediff_directional" if dense.experiment == "L" else "original_k_global_slot_8"
+            if dense.prompt_assignment != expected or not dense.geometry_file:
+                raise ValueError("Dense experiment prompt policy or geometry source is invalid")
+            if self.canvas.mode != "erp" or self.warp.mode != "standard" or self.sampling.strategy != "spherediff_fixed":
+                raise ValueError("Dense ERP requires standard fixed-camera geometry")
+            if self.consensus_transition.mode != "preserve_current_state" or self.consensus_transition.vae_residual_correction is not False:
+                raise ValueError("Dense ERP requires current-state interpolation without residual")
+            if self.performance.view_batch_size != 1 or self.sampling.rotation.enabled:
+                raise ValueError("Dense ERP requires fixed individual camera slots")
+            if self.view.fov_x != 80 or self.view.fov_y != 80:
+                raise ValueError("First L/M controls require 80 degree FOV")
         if self.global_pipeline.mode == "erp_local_current_consensus":
             if self.canvas.mode != "erp" or self.warp.mode != "standard" or self.sampling.strategy != "cube6_fixed":
                 raise ValueError("K requires ERP, standard warp, and cube6_fixed cameras")
@@ -260,7 +284,7 @@ class ExperimentConfig:
                 raise ValueError("K requires individual fixed camera slots without rotation")
         if self.canvas.mode not in {"erp", "planar"}:
             raise ValueError("canvas.mode must be erp or planar")
-        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus", "native_multidiffusion", "implied_endpoint_consensus", "erp_local_current_consensus"}:
+        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus", "native_multidiffusion", "implied_endpoint_consensus", "erp_local_current_consensus", "erp_local_dense_consensus"}:
             raise ValueError(
                 "global_pipeline.mode must be erp_rgb_state, erp_x0_consensus, native_multidiffusion, or implied_endpoint_consensus"
             )
@@ -434,6 +458,8 @@ class ExperimentConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
+        if self.dense_consensus is None:
+            del data["dense_consensus"]
         # Keep historical G/H snapshots exactly reproducible. The absent field
         # has always meant preserve_prefusion_endpoint; I is explicit.
         if self.consensus_transition.vae_residual_correction is None:
@@ -512,6 +538,7 @@ def load_experiment_config(path: str) -> ExperimentConfig:
         output=_construct(OutputConfig, data.get("output"), "output"),
         debug=_construct(DebugConfig, data.get("debug"), "debug"),
         consensus_transition=_construct(ConsensusTransitionConfig, data.get("consensus_transition"), "consensus_transition"),
+        dense_consensus=_construct(DenseConsensusConfig, data["dense_consensus"], "dense_consensus") if data.get("dense_consensus") else None,
     )
     config.validate()
     return config
