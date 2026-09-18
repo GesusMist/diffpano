@@ -584,3 +584,52 @@ Each has nine 10%-interval predicted-clean consensus snapshots, one terminal
 final image and one metadata JSON. After all ten runs, use
 `sbatch slurm/dense_no_report.slurm` for the artifact audit and single FLUX
 progression image. Existing L/M results are inputs, never overwritten.
+
+## P–T dense consensus diagnostics
+
+The additive controlled entrypoints preserve historical A–O outputs. All new
+artifacts live under `outputs/vae-residual-controls/20260916-diagnostics-pt/`.
+The resolved P/S/T configurations derive from actual L configs and are embedded
+in each metadata JSON; the launcher rejects any difference beyond the named
+intervention. Do not use the historical dense launcher for these labels.
+
+Run compilation, focused controls, and the existing full suite in a CPU compute
+allocation with `sbatch slurm/consensus_validate.slurm`. Once it passes:
+
+```bash
+sbatch --job-name=consensus-Q slurm/consensus_diagnostics.slurm scripts.consensus_spatial_controls
+```
+
+Q uses no diffusion/VAE weights. It retains actual L/N/O sampling, DPA and
+pyramid settings and saves one JSON plus two overview figures. The second
+reference is an existing generated SANA panorama; it is a sampled-image stress
+test with inherited stitching, not photographic geometric ground truth.
+Inspect Q and its normalization/coverage gate before starting model runs:
+
+```bash
+sbatch --job-name=consensus-P-flux slurm/consensus_diagnostics.slurm scripts.consensus_dense_controls P flux
+sbatch --job-name=consensus-P-pixeldit slurm/consensus_diagnostics.slurm scripts.consensus_dense_controls P pixeldit
+sbatch --job-name=consensus-R slurm/consensus_diagnostics.slurm scripts.consensus_planar_controls
+```
+
+R first finishes the paired native/shared trajectories. It writes the two
+images and provisional metrics, then waits for a documented evidence review
+(`r_independent_reviewed` in the shared execution manifest) before independent
+initialization. The strict same-input first-order oracle is distinct from the
+free-running trajectories' propagated numerical differences. Review P/Q/R
+before recording `proceed_st: true` with supporting evidence in `review.json`.
+Then run the two separate interventions:
+
+```bash
+sbatch --job-name=consensus-S-flux slurm/consensus_diagnostics.slurm scripts.consensus_dense_controls S flux
+sbatch --job-name=consensus-S-pixeldit slurm/consensus_diagnostics.slurm scripts.consensus_dense_controls S pixeldit
+sbatch --job-name=consensus-T-flux slurm/consensus_diagnostics.slurm scripts.consensus_dense_controls T flux
+sbatch --job-name=consensus-T-pixeldit slurm/consensus_diagnostics.slurm scripts.consensus_dense_controls T pixeldit
+```
+
+P saves only last-clean consensus, terminal result, stage montage, and metadata.
+S/T save final result and metadata. R saves its three finals, comparison, and
+metrics JSON. `python -m scripts.report_consensus_controls` produces the single
+shared P/S/T comparison and checks historical file hashes and artifact counts.
+All launchers reject existing result directories; use the durable execution
+manifest and Slurm accounting before considering any resubmission.

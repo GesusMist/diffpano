@@ -1,3 +1,4 @@
+from historical_configs import retained_reference
 import unittest
 from unittest.mock import patch
 import torch
@@ -35,8 +36,8 @@ class NoResidualPlanarTests(unittest.TestCase):
         specs=read('configs/experiments/implied_endpoint_consensus/j-all-models.json')
         self.assertEqual(list(specs),['sd35','flux','sana','sd2'])
         for spec in specs.values():
-            c,_=check_configs(spec)
+            c,_=check_configs(retained_reference(spec))
             self.assertFalse(c.consensus_transition.vae_residual_correction)
             self.assertEqual(c.fusion.mode,'average')
         from scripts.current_state_experiment import check_configs as check_i
-        for spec in read('configs/experiments/vae_residual/i-all-models.json').values():check_i(spec)
+        for spec in read('configs/experiments/vae_residual/i-all-models.json').values():check_i(retained_reference(spec))

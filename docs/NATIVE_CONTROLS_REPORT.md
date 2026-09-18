@@ -2695,3 +2695,789 @@ Final repository state remains branch `no_sphere`, HEAD
 `c12873f3582377cd01aabd35669edee7aada3992`, with the additive N/O changes
 uncommitted. Earlier experiment data and existing work are preserved. Final
 whitespace checks pass; no additional GPU runs or parameter changes were made.
+
+
+## Experiments P–T — dense consensus causal diagnostics (September 16 continuation)
+
+Work began on clean `no_sphere`, HEAD `8bf6d13257a32db5ee279ca973cde2dadc9beb25`,
+with an empty Slurm queue. Historical A–O outputs remain untouched. Durable
+execution state and historical L–O file hashes are in
+`outputs/vae-residual-controls/20260916-diagnostics-pt/execution.json`.
+
+P observes L at ceil-mapped 10/50/90/100% milestones in four physical camera
+directions and measures terminal reassembly separately. Q evaluates the frozen
+L/N/O spatial operators on continuous spherical functions and one sampled
+generated panorama, at both ERP resolutions. R compares exact planar native
+MultiDiffusion with clean/current-state updates from shared and independent
+pixel Gaussian initializations. S changes only L's fusion to normalized
+SphereDiff center weights at temperature 0.1. T independently doubles only
+ERP resolution to 2048×4096, retaining 1024² views.
+
+L/M metadata confirms equal camera, conditioning and initialization hashes;
+their final PNGs are identical. They do not provide independent evidence about
+directional text. K→L changes both count and FOV. Reconstruction identities
+remain algebraic checks, not evidence of image quality. O remains the historical
+ERP pyramid adaptation, not an exact LookingGlass reproduction.
+
+FLUX uses the actual L checkpoint `ModelsLab/flux.1-dev`; L stored no resolved
+revision. The present cached main resolves to
+`fa45a9eb6808ba8fdfc7cc2756f7f1a16e0921f4`; historical revision identity cannot
+be established solely from that current cache. PixelDiT uses the actual saved
+checkpoint blob `625fd174d6348af3ad1123b281ab817643efa5dc447c2344eeb222e88b4317db`
+and official code `41f73006ae532b0b41fee72b181dc22891a5a01a`.
+
+The existing pinned SphereDiff source at
+`/tmp/diffpano_spherediff_official/spherical_functions.py` has default temperature
+0.1 (line 134) and `exp(-norm(normalized_coordinate)/temperature)` (line 243).
+The project retains its own pixel-center/align-corners-false projector. Ordinary
+`average` explicitly ignores supplied weights; S uses existing `weighted_average`
+with positive-denominator normalization, preserving average/DPA semantics.
+
+Initial estimate per dense run: FLUX 1,780 guided predictions, ~26 min, 25 GiB
+allocated; PixelDiT 4,450, ~13 min, 4.2 GiB. P adds at most 16 diagnostic FLUX
+decodes and no denoiser calls. T uses a two-entry device geometry cache with
+host fallback: approximately 9–12 GiB host projection maps plus states and
+temporaries, under a 64 GiB host allocation; device geometry is bounded and
+local model tensor resolution is unchanged. R has three patches and 50 steps,
+450 guided predictions across all methods. Q has zero model/VAE calls.
+
+Initial status at implementation: no P–T model results had been claimed. Completed results and final status are recorded below.
+Validation 19769134 found a camera-selection test failure; selecting the nearest
+other equatorial camera fixes the intended adjacent pair. Validation 19769139
+includes the corrected test and new R mock oracle/configuration guards.
+
+Validation 19769139 stopped at compileall on an R launcher syntax error,
+corrected before execution. Validation 19769143 passed the focused controls and
+ran 205 full-suite tests; its only three errors were config tests reading G
+sidecars deleted by the prior user-requested cleanup. These tests now compare
+the same config fields against retained generation metadata; no assertion was
+skipped and no historical result was restored or modified. Validation 19769155
+is the replacement full gate. Model launchers also require source hashes to
+match that passed gate.
+
+### Q — completed coherent-input spatial controls
+
+Job **19769161** completed on a T4: 890.55 s measured execution, 17m25s Slurm wall time, 13.67 GiB maximum host RSS, zero denoiser/VAE calls. Full-resolution coverage is 100% for all six operator/resolution combinations.
+
+| Operator | ERP | Synthetic RMSE, cycles 1 / 5 / 20 | Band retention at cycle 20, k=8 / 32 / 96 | Sampled-image RMSE at cycle 20 |
+|---|---|---|---|---|
+| L | 1024x2048 | 0.000187 / 0.000882 / 0.003030 | 1.0000 / 0.9994 / 0.9942 | 0.018306 |
+| N | 1024x2048 | 0.000214 / 0.000922 / 0.003006 | 1.0000 / 0.9994 / 0.9946 | 0.018123 |
+| O | 1024x2048 | 0.046654 / 0.091543 / 0.108065 | 0.7958 / 0.1716 / 0.0598 | 0.178804 |
+| L | 2048x4096 | 0.002045 / 0.008674 / 0.026402 | 0.9988 / 0.9746 / 0.8032 | 0.040734 |
+| N | 2048x4096 | 0.002414 / 0.008936 / 0.023401 | 0.9992 / 0.9827 / 0.8530 | 0.040059 |
+| O | 2048x4096 | 0.014918 / 0.055023 / 0.103117 | 0.7968 / 0.2540 / 0.0991 | 0.162449 |
+
+Measurements use unclamped floating RGB and cosine-area-weighted global errors. Each grating is fitted jointly with its smooth, marker and DC nuisance components. The k=96 maximum phase increment is approximately 0.93 rad per baseline ERP pixel and 0.50 rad per perspective pixel, both below Nyquist (pi); the doubled ERP halves the former. Higher frequencies near the sampling limit remain untested. Markers report peak shifts within predefined wrap/north caps relative to the sampled analytic reference, with finite-pixel precision.
+
+Maximum constant error: 1.19e-07; maximum whole-observation-set duplication error: 3.58e-07. These invariants show no observed count-normalization failure.
+O nevertheless damages directly evaluated consistent views before repeated cycles: at baseline resolution, direct assembly RMSE is 0.052997 and k=32/96 retained amplitudes are 0.6143/0.5556. L direct assembly RMSE is 0.000695 with k=96 retention 0.9928. The immediate loss is already in pyramid assembly/scale transport, not solely incompatible diffusion predictions or a final VAE pass. Passing normalization does not prove every pyramid implementation detail correct; no historical O correction or retuning was made.
+
+Visual inspection of the synthetic overview finds O suppresses fine rings and creates uneven coarse shapes/ripples. L/N mostly preserve the tested coherent patterns. The larger ERP does not improve repeated L/N cycles at fixed perspective sampling; repeated cycles are a stress test, not a denoising trajectory. T remains an independent model test, not an assumed remedy.
+
+No suitable photographic ERP asset was found. The sampled-reference test uses the existing sharp SANA K panorama, with its visible stitching explicitly inherited; it is not geometric ground truth. Both resolutions use this one source image (the larger sampled reference is upsampled), whereas synthetic references are evaluated directly from directions at each resolution.
+
+Artifacts: `Q/metrics.json`, `Q/synthetic.png`, `Q/sampled.png` under the shared P–T output root. They include matched full/central single-camera roundtrips, equatorial/polar summaries, wrap errors, and marker shifts.
+
+The sampled-image overview was also visually inspected: O progressively blurs
+stone/vegetation texture and broadens stitch boundaries; L/N retain much more
+of the source detail. These are losses added to the same already-stitched
+reference, not an assessment of its geometric correctness.
+
+### P/R execution pairing update
+
+A100 scheduling estimates were long, so pending P jobs 19769172/19769173 were
+updated in place to available A40 resources. Both stopped at the exact
+effective-conditioning hash guard before **any denoiser calls**. No dense
+result was produced and the guard was not relaxed. Replacement P jobs
+19769228 (FLUX) and 19769229 (PixelDiT) request historical A100 hardware with
+offline cached checkpoints. R job 19769230 uses A40; its three methods share
+one loaded model and identical conditioning within the controlled comparison.
+The saved historical native config/checkpoint/schedule remain checked, but R
+is not claimed bit-identical to an older run on different hardware.
+
+### R — paired oracle review before independent initialization
+
+The deterministic mock oracle passed. Real native/shared trajectories (job
+19769230, A40) pass all 50 **same-input** first-order checks, maximum absolute
+error 1.6913e-6, under the predeclared `32 * float32 epsilon * max(1, |next|)`
+bound. Shared next-state overlaps agree bit-for-bit at every step. Initial
+model inputs and clean predictions are identical; differing FP32 evaluation
+orders first introduce a maximum 1.69e-6 next-state difference. Subsequent
+bf16 model evaluations amplify it (step 2 clean-prediction MAE 0.01881).
+
+The freely evolved final outputs are **not bit-identical**: raw RGB MAE
+0.0057924, RMS 0.0076167, maximum 0.21482. RMS corresponds to about 0.97
+8-bit display code value over the [-1,1] range, but localized differences can
+be much larger. Visual inspection shows the same detailed ruins/foliage and
+composition in both images. This supports practical image agreement and the
+mathematical oracle, not a claim that a strict pixelwise trajectory oracle
+passed. No tolerance was loosened. The per-step evidence and this qualification
+were recorded before enabling the independent branch.
+
+### R — completed three-way initialization control
+
+| Method | Raw RGB std | HF sigma=1 RMS / std | Guided predictions | Visual observation |
+|---|---:|---:|---:|---|
+| native | 0.528931 | 0.170153 | 150 | Detailed stonework and vegetation, recognizable temples |
+| shared | 0.528725 | 0.170168 | 150 | Same composition/detail as native; small numerical differences |
+| independent | 0.509346 | 0.125311 | 150 | Strong blur/ghosting in the overlapping central region; outer regions remain sharper |
+
+Independent source overlap differences shrink from a maximum 3.5760 after the first update to zero at terminal sigma=0, yet the final central region is visibly blurred. Zero terminal disagreement is therefore not a quality certificate. The final schedule coefficients are alpha_next=1 and sigma_next=0, verified from the actual solver.
+
+R-native and R-shared start from exactly the same global CUDA FP32 unit Gaussian; local shared states are exact crops. R-independent uses distinct sequential local draws from a reset CUDA generator with the same seed and unit marginal scale; a common seed does not imply identical realized tensors. No clipping, VAE, noise reinitialization, or warp was added.
+
+The matching detailed native/shared images, tiny same-input oracle errors, and substantially degraded independent overlap region implicate initialization correspondence **in this planar pixel-native setting**. The small propagated native/shared numerical difference, one seed, and different independently realized scenes are limitations; this is not proof of the complete ERP mechanism. High-frequency measurements support the visual observation but are not used alone as a quality score.
+
+Job 19769230 completed with exactly 450 guided predictions and 450 transformer forward invocations (CFG branches batched internally), zero VAE calls. Paired execution took 70.43 s for two trajectories; independent execution 34.08 s. Total process time 339.85 s includes loading and the explicit evidence-review wait. Peak allocated GPU memory was 4.243 GiB; process maximum host RSS 10.263 GiB. No algorithmic speedup is inferred from these diagnostic timings.
+
+Exactly five R artifacts: `native.png`, `shared.png`, `independent.png`, `comparison.png`, `metrics.json`.
+
+### P — PixelDiT stage audit completed
+
+Job **19769229** reproduced historical L's terminal PNG byte-for-byte and matched its exact conditioning, camera, initial-state and schedule hashes. The observation-only path used 4,450 guided predictions / 4,450 transformer forwards, no extra denoiser or VAE calls. Runtime 774.71 s includes 3.97 s measured diagnostics; peak allocated/reserved GPU memory 4.108/4.545 GiB, process host maximum 12.374 GiB.
+
+The selected fixed slots are 7 and 8 (equatorial yaw -12/+12 degrees), 59 (pitch +45 degrees, yaw about -16.3636 degrees), and 85 (north pole, yaw about -180 degrees). Exact FP32-derived poses are embedded in metadata. PixelDiT milestones are completed steps 5/25/45/50.
+
+| Step | Local HF1 RMS | Returned HF1 RMS | Returned/local HF1 | Central-crop returned/local HF1 | Returned-vs-local MAE |
+|---:|---:|---:|---:|---:|---:|
+| 5 | 0.018315 | 0.004169 | 0.228 | 0.245 | 0.172298 |
+| 25 | 0.014253 | 0.002213 | 0.155 | 0.166 | 0.026639 |
+| 45 | 0.007854 | 0.001325 | 0.169 | 0.175 | 0.009130 |
+| 50 | 0.005709 | 0.001059 | 0.186 | 0.193 | 0.005755 |
+
+Numbers average the four selected cameras; they are not an exhaustive all-camera image-quality score. Raw mean/std, range fractions, HF at sigma 1/2/4 and contrast-normalized HF are all retained in metadata. Early local predictions contain more contrast and differing scene fragments, but also noise. By the middle and late stages the local predictions are themselves already degraded; faint columns/edges are nevertheless further suppressed by returned consensus. Thus the evidence is cumulative collapse plus an immediate additional consensus loss, not pristine local images suddenly ruined only at the final step. Similar center-crop suppression argues against a purely peripheral explanation.
+
+The VAE projection is identity. Actual final coefficients are (alpha, sigma, alpha_next, sigma_next) = (0.92459947, 0.07540054, 1, 0). Terminal assembly therefore equals the measured render/reassemble spatial cycle. Last-clean versus terminal raw spherical MAE is 0.00005520, RMS 0.00012440, contrast ratio 0.99999856. HF1 decreases from 0.00116041 to 0.00112371 (3.16% of an already tiny value); same-camera terminal differences remain small. Final assembly is not the dominant cause of this PixelDiT L collapse.
+
+After Q/R and this backend's P review, separate PixelDiT S/T jobs **19769301/19769302** were submitted on A100. FLUX S/T remain unsubmitted until its P review. No shared-noise policy or terminal-output change was added to S/T.
+
+### P — FLUX stage audit completed
+
+Job **19769228** reproduced historical L's terminal PNG byte-for-byte. Conditioning, initial states, cameras and prepared schedule pass exact historical guards; the historical resolved checkpoint revision remains unrecorded. Milestones are steps 2/10/18/20 and use the same four physical cameras as PixelDiT.
+
+| Step | Local HF1 RMS | Returned HF1 RMS | VAE-roundtrip HF1 RMS | Central returned/local HF1 | VAE/returned contrast ratio |
+|---:|---:|---:|---:|---:|---:|
+| 2 | 0.048295 | 0.010412 | 0.009356 | 0.177 | 0.9527 |
+| 10 | 0.002438 | 0.000797 | 0.000780 | 0.290 | 0.9529 |
+| 18 | 0.001063 | 0.000483 | 0.000612 | 0.400 | 0.9529 |
+| 20 | 0.000749 | 0.000426 | 0.000595 | 0.495 | 0.9549 |
+
+Visual review finds the early local outputs are strongly differing blurry compositions with grid texture, not sharp ground truth. Their returned consensus has overlapping footprint arcs/tiling. By step 10, faint local architecture is still visible but is suppressed further on consensus return. At steps 18/20 the local predictions themselves are almost featureless. Center crops also lose detail. This supports cumulative trajectory degradation plus immediate consensus suppression; it does not establish a uniformly healthy local trajectory that fails only at final fusion.
+
+The VAE roundtrip adds roughly 4–5% contrast reduction at the inspected stages (mean camera MAE 0.01404/0.01042/0.00947/0.00877). It sometimes raises late HF energy without restoring visible architecture; this is why HF is not treated as a quality score. PixelDiT's collapse without a VAE rules out a VAE-only account.
+
+Actual final coefficients are (0.85747063, 0.14252935, 1, 0). Last-clean to terminal assembly spherical MAE is **0.0106008**, RMS 0.0124015, contrast ratio **0.949126**. Global HF1 is 0.000197122 before versus 0.000157241 after (20.23% decrease in an already tiny signal). Final assembly adds measurable contrast/detail loss but acts on an already collapsed image. This is a possible separate output-stage ablation, not the primary explanation or a change included in S/T.
+
+Runtime 1568.21 s; diagnostics 4.96 s, exactly **16 extra VAE decodes, zero extra encodes or denoiser predictions**. Guided predictions and actual transformer forwards both 1,780. Peak allocated/reserved GPU memory 25.051/26.998 GiB; host process maximum 10.202 GiB. Four P artifacts only.
+
+After numeric and visual review of both P backends, Q and R, FLUX S/T jobs **19769470/19769471** began on A100. These are independent single-variable controls, not a combined intervention.
+
+### S/T — PixelDiT completed
+
+S job **19769301** restores recognizable columns, temple facades, foliage and stone forms compared with the blurred P/L baseline. The ERP remains a patchwork of repeated/incompatible structures; improved local detail is not proof of a coherent scene. T job **19769302** remains severely blurred at common display size and does not visually rescue the scene.
+
+Both pass all exact L pairing guards, retaining the identical initial local-state digest and 4,450 guided/actual transformer predictions each. S changes only normalized geometric influence at temperature 0.1. T changes only ERP size to 2048x4096, with 1024-square native views.
+
+| PixelDiT method | Mean full-view std | Mean view HF1 RMS | Mean view HF1/std | Central HF1/std | Runtime s | GPU allocated/reserved GiB | Host max GiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| P / exact L replay | 0.151689 | 0.001028 | 0.006781 | 0.008694 | 774.71 | 4.108 / 4.545 | 12.374 |
+| S / center weights | 0.178443 | 0.008879 | 0.049685 | 0.048295 | 773.78 | 4.115 / 4.635 | 10.550 |
+| T / double ERP | 0.151770 | 0.000705 | 0.004647 | 0.006137 | 936.08 | 4.518 / 5.186 | 16.310 |
+
+These are raw 1024-square renders into the same four 80-degree cameras; no cross-resolution ERP-gradient comparison is used. Larger S HF is interpreted alongside visible architecture, while its coherence defects remain explicit. T's measured angular detail is lower and its runtime about 21% higher than P; diagnostic and hardware timing caveats apply.
+
+S retains all cameras and 100% geometric coverage, 7–19 geometric contributors per ERP pixel (median 12, mean 12.9055). Accumulated weights range 0.117888–3.983120; p01/median/p99 are 0.129723/0.275361/3.329189. No pixels are uncovered or have accumulated weight below 1e-6. Effective contributor count N_eff has min/median/mean/max 1.0469/2.1783/2.5393/6.6288 (p01 1.0770, p99 6.4232). Geometric count and effective influence are distinctly different. Weighting changes influence without removing geometric coverage.
+
+### P — cross-backend stage conclusion
+
+| Backend | Local predicted clean | Returned consensus | VAE conversion | Last clean versus terminal assembly |
+|---|---|---|---|---|
+| FLUX | Strongly differing early compositions; faint architecture at halfway; almost featureless late | Suppresses remaining mid-stage architecture; early camera-footprint arcs | Additional ~4–5% contrast reduction in sampled roundtrips; late HF increase does not restore structure | MAE 0.01060; contrast -5.09%; HF1 -20.23% from an already tiny value |
+| PixelDiT | Differing/noisy early predictions; weak local structure persists mid/late but is already degraded | Strong added suppression, including central crops; returned/local HF1 0.155–0.228 across milestones | Identity; no VAE exists in this control | MAE 0.0000552; contrast effectively unchanged; HF1 -3.16% |
+
+Both terminal PNGs exactly match historical L. The diagnostics therefore reproduce the failure rather than creating a new failure mode. These snapshots locate immediate stage losses within a cumulatively degraded trajectory; they do not estimate the counterfactual quality of isolated local denoising.
+
+### Q — regional coherent-input check
+
+Synthetic cycle-20 regional errors below are unweighted within each specified region; the earlier global RMSE uses spherical area weights. Equatorial rows cover the middle third of the ERP; north/south caps cover the first/last sixth. Wrap MAE uses the first/last two columns.
+
+| Operator | ERP | Equatorial RMSE | North RMSE | South RMSE | Wrap MAE |
+|---|---|---:|---:|---:|---:|
+| L | 1024x2048 | 0.003099 | 0.001088 | 0.001087 | 0.001643 |
+| N | 1024x2048 | 0.003070 | 0.001076 | 0.001074 | 0.001653 |
+| O | 1024x2048 | 0.147541 | 0.030670 | 0.005981 | 0.036351 |
+| L | 2048x4096 | 0.036318 | 0.001716 | 0.001292 | 0.007309 |
+| N | 2048x4096 | 0.032092 | 0.001716 | 0.001294 | 0.006551 |
+| O | 2048x4096 | 0.140723 | 0.013493 | 0.005877 | 0.016906 |
+
+At baseline resolution, O shifts the selected wrap/north composite-signal peaks by about 2.12/2.47 degrees after 20 cycles; L/N peaks remain effectively at the same sampled locations. These peak tests compare against the sampled composite reference in predefined caps, not a subpixel fitted isolated marker. Tiny reported angular differences near 0.02 degrees are below the practical pixel/FP32 angular precision and should not be overinterpreted.
+
+Q peak GPU allocation was not recorded; host MaxRSS and zero model/VAE calls are verified.
+
+### Implementation scope and regression gate
+
+The working branch remains `no_sphere` at starting HEAD `8bf6d13257a32db5ee279ca973cde2dadc9beb25`; no commit, reset, checkout or historical-result rewrite was made. The changed/new files are:
+
+- `diffpano/config.py`
+- `diffpano/dense_consensus.py`
+- `diffpano/fusion.py`
+- `docs/NATIVE_CONTROLS.md`
+- `docs/NATIVE_CONTROLS_REPORT.md`
+- `tests/test_current_state_transition.py`
+- `tests/test_detail_preserving_consensus.py`
+- `tests/test_no_residual_planar.py`
+- `diffpano/consensus_audit.py`
+- `diffpano/planar_initialization_control.py`
+- `scripts/consensus_dense_controls.py`
+- `scripts/consensus_planar_controls.py`
+- `scripts/consensus_spatial_controls.py`
+- `scripts/report_consensus_controls.py`
+- `slurm/consensus_diagnostics.slurm`
+- `slurm/consensus_validate.slurm`
+- `tests/historical_configs.py`
+- `tests/test_consensus_audit.py`
+
+Core changes are limited to optional audit hooks, explicit S/T configuration guards and positive-weight normalization/effective-count tracking. New launchers embed paired resolved configs and hashes. Three historical config tests now read retained generation metadata when user-cleaned sidecars are absent.
+
+Gate job **19769155** passed compileall, `git diff --check`, **7 focused tests** and the **205-test full suite**. All scientific source/test hashes still match that gate. The display/report-only script was subsequently adjusted for readable matched-camera panels and stable exact byte accounting, then compiled separately; it does not affect any trajectory.
+
+### S/T — FLUX completed and cross-backend comparison
+
+FLUX S job **19769470** restores recognizable temple towers, columns, arches and stonework. Its panorama remains hazy with repeated, disconnected structures. FLUX T job **19769471** remains severely blurred and does not restore architecture at common ERP display size. Both match L conditioning, initial-state, camera and schedule hashes, with 1,780 guided predictions and actual transformer forwards each. S geometric/weight/N_eff statistics exactly match PixelDiT S. T retains 100% coverage and the same 7–19 geometric contributor range.
+
+| Backend / method | Mean matched-view std | HF1 RMS | HF1/std | Central HF1/std | Runtime s | GPU allocated/reserved GiB | Host max GiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| flux P | 0.124827 | 0.000397 | 0.003196 | 0.003614 | 1568.21 | 25.051 / 26.998 | 10.202 |
+| flux S | 0.134450 | 0.005442 | 0.040221 | 0.047937 | 1562.37 | 24.956 / 27.002 | 10.160 |
+| flux T | 0.125333 | 0.000207 | 0.001666 | 0.001836 | 1616.93 | 25.358 / 27.385 | 12.973 |
+| pixeldit P | 0.151689 | 0.001028 | 0.006781 | 0.008694 | 774.71 | 4.108 / 4.545 | 12.374 |
+| pixeldit S | 0.178443 | 0.008879 | 0.049685 | 0.048295 | 773.78 | 4.115 / 4.635 | 10.550 |
+| pixeldit T | 0.151770 | 0.000705 | 0.004647 | 0.006137 | 936.08 | 4.518 / 5.186 | 16.310 |
+
+P is the verified exact L replay. All view metrics use identical 1024-square diagnostic cameras, including T. They are means of four selected cameras, not a complete panorama quality metric. S increases full-view contrast-normalized HF1 about 12.6x for FLUX and 7.3x for PixelDiT, alongside visibly restored structure; coherence defects remain. T decreases the same metric to about 52% and 69% of P, respectively, and remains visually collapsed. No combined S+T run is supported by these results.
+
+Runtime is the dense pipeline interval including terminal assembly and existing diagnostics, excluding loading and preflight; P includes the separately counted optional stage audit. Small P/S timing differences do not establish a speed advantage. T takes about 3.1% more time for FLUX and 20.8% for PixelDiT in these runs. Total process times, stage timings, GPU model and node are embedded in each metadata file. Host maximum includes initialization/loading.
+
+### Final completion, resource counts and storage
+
+All scientific P–T jobs completed successfully and all saved comparisons were visually inspected. CPU summary/artifact job **19769554** completed in 3m03s. The final Slurm queue is empty. Earlier validation failures were corrected before model execution; A40 P attempts 19769172/19769173 stopped at strict conditioning-hash preflight with zero denoiser predictions. No duplicate successful trajectory was submitted.
+
+Output root: `outputs/vae-residual-controls/20260916-diagnostics-pt/`. The single shared figure is [P-S-T.png](../../outputs/vae-residual-controls/20260916-diagnostics-pt/P-S-T.png). Each directory in the table is relative to that root.
+
+| Experiment/backend | Completed job | Output directory | Measured pipeline seconds | Guided / actual forwards | Peak GPU allocated GiB | Host max GiB |
+|---|---|---|---:|---:|---:|---:|
+| Q, model-free | 19769161 | Q | 890.55 | 0 / 0 | not recorded | 13.666 |
+| P flux | 19769228 | P/flux | 1568.21 | 1780 / 1780 | 25.051 | 10.202 |
+| P pixeldit | 19769229 | P/pixeldit | 774.71 | 4450 / 4450 | 4.108 | 12.374 |
+| S flux | 19769470 | S/flux | 1562.37 | 1780 / 1780 | 24.956 | 10.160 |
+| S pixeldit | 19769301 | S/pixeldit | 773.78 | 4450 / 4450 | 4.115 | 10.550 |
+| T flux | 19769471 | T/flux | 1616.93 | 1780 / 1780 | 25.358 | 12.973 |
+| T pixeldit | 19769302 | T/pixeldit | 936.08 | 4450 / 4450 | 4.518 | 16.310 |
+| R pixeldit, all three methods | 19769230 | R | 104.52 | 450 / 450 | 4.243 | 10.263 |
+
+Total: **19,140 guided predictions and 19,140 actual transformer forward invocations**. CFG is internally batched where applicable. Q and failed P preflights add zero denoiser calls. P adds **16 FLUX VAE decodes, zero additional VAE encodes and zero additional denoiser calls**. Measured optional P diagnostics are 4.96 s for FLUX and 3.97 s for PixelDiT, about 0.32% and 0.51% of their pipeline intervals; these are instrumentation timings, not a controlled overhead benchmark. R paired/independent intervals are 70.43/34.08 s; total process 339.85 s includes loading and the required evidence-review wait.
+
+Exactly **28 experiment artifacts: 17 PNGs and 11 JSONs, 30,975,602 bytes (29.541 MiB)**. This includes execution/validation/review manifests and the shared sheet. Separately, 30 Slurm log files use 97,561 bytes. Combined artifacts plus logs: 58 files, 31,073,163 bytes. Source files, ordinary Python caches and model caches are excluded. All per-experiment file budgets pass. All 136 recorded historical L–O artifact hashes and the original report prefix remain unchanged.
+
+The shared sheet was inspected in both backend panels. S restores structure in equatorial, upper and polar views; the latter also expose severe orientation/scene inconsistencies. P and T remain blurred at all four selected camera directions. None of these results establishes global geometric correctness.
+
+### Measured conclusions and remaining hypotheses
+
+| Candidate cause | Evidence from this package | Scope / remaining uncertainty |
+|---|---|---|
+| Standard projection loss | Q L/N preserve the tested coherent bands well at baseline resolution; T does not rescue dense generation | Sampling damage exists, but these tests do not support ERP bandwidth alone as the dominant L cause; near-Nyquist content remains untested |
+| Averaging incompatible predictions | P shows immediate consensus suppression; S restores structure with the same states, cameras and calls | Strong support for excessive influence from disagreeing trajectories; no complete quantitative decomposition of all feedback effects |
+| Independent initialization | R-shared/native retain detail; independent overlaps blur | Positive evidence in one exact planar PixelDiT control; shared/native have documented numerical drift and this is not a spherical-noise solution |
+| Uniform geometric influence | S improves both FLUX and PixelDiT, with unchanged geometric coverage and lower N_eff | Direct dense evidence; one prompt/seed per backend and residual incoherence limit generalization |
+| Final output assembly | Negligible PixelDiT contrast loss; additional 5.09% FLUX contrast reduction | Measurable FLUX penalty, but severe collapse precedes final assembly |
+| VAE conversion | FLUX sampled roundtrips lose about 4–5% contrast | Additional backend-specific damage; insufficient as a sole explanation because PixelDiT also collapses |
+| Historical O pyramid operator | Q coherent-input assembly and cycles suppress bands and shift markers | Independent spatial defect/loss requiring scale-level characterization; normalization passes, so no count-denominator bug has been established |
+
+### Ranked next actions
+
+1. **Use S as the provisional dense baseline and test its repeatability/coherence on a small fixed seed set.** It is the only tested intervention that restores visible structure in both backends. Keep temperature 0.1 fixed initially and measure duplicated geometry/orientation as well as local detail.
+2. **Design a separate initialization-correspondence control for spherical views, starting with PixelDiT.** R gives a healthy planar reference and implicates the joint initialization structure there. Preserve valid marginal noise statistics and explicitly verify overlap correspondence; ordinary bilinear warping of Gaussian noise is not a validated construction.
+3. **Isolate O pyramid scale transport with model-free tests before spending more diffusion runs on it.** The coherent-input losses are already large at direct assembly. Any correction needs a new/versioned operator and independent frequency/marker tests; historical O remains unchanged.
+4. **Consider a small, separate FLUX last-clean-output ablation.** P measures a modest additional terminal contrast loss, but changing output semantics will not solve the earlier collapse. PixelDiT offers little evidence for prioritizing this change.
+
+Deprioritize larger ERP resolution and a combined S+T run on current evidence. There is no result here that motivates replacing the VAE, training a bridge or adding time travel.
+
+
+## Experiment V — One-Time ERP Noise Initialization (September 17)
+
+V changes only initialization of the completed S center-weighted pipeline. The direct-local S outputs are reused; no S model replay is planned. V-independent-erp draws one CPU FP32 native-channel ERP Gaussian per canonical camera; V-shared-erp draws one field for all cameras. Each source is sampled once with the exact existing nearest/pixel-center/wrap/pole conventions, scaled once through `NativeStateMixin.initialize_native_state`, then discarded. Persistent denoising states remain local native x_t tensors. For FLUX this is honestly a transient ERP-indexed 16-channel raw-latent field at initialization, not a persistent spherical latent sampler.
+
+Predetermined primary grids use H=ceil(pi*max_camera(max(fx_native,fy_native))), W=2H. The actual adapter shape properties resolve PixelDiT native views to 3x1024x1024 and FLUX to 16x128x128, giving **1917x3834** and **240x480** noise grids. FP32 source fields require approximately 84.1 MiB and 7.03 MiB per batch element. Half-grid checks use ceil(H/2), double-grid checks use 2H; these are model-free diagnostics, not image-quality sweeps. The clean RGB ERP remains **1024x2048** for every run.
+
+| Planned run | Views / steps | Guided predictions | Approximate S runtime / allocated GPU memory |
+|---|---:|---:|---|
+| PixelDiT independent ERP | 89 / 50 | 4,450 | 774 s / 4.12 GiB |
+| PixelDiT shared ERP | 89 / 50 | 4,450 | 774 s / 4.12 GiB |
+| FLUX independent ERP | 89 / 20 | 1,780 | 1,562 s / 24.96 GiB |
+| FLUX shared ERP | 89 / 20 | 1,780 | 1,562 s / 24.96 GiB |
+
+All four run under A100 Slurm allocations with the same checkpoint/cache, precision, conditioning, schedule, camera order, standard RGB warp, S center weights (temperature 0.1), current-x_t transition, Jacobi update and terminal assembly. The FLUX checkpoint remains ModelsLab/flux.1-dev with S's recorded cache revision; its older historical resolved revision is unavailable. The PixelDiT checkpoint and official-code commit are inherited exactly from S metadata.
+
+Nearest selection preserves scalar Gaussian marginals, **not IID samples when source indices repeat**. V-independent and V-shared use exactly the same sampling matrices and within-view covariance; their intended difference is cross-view field sharing. Initialization and diagnostics use separate CPU generators. No empirical patch normalization, whitening, clipping, variance repair, noise reinjection or VAE initialization is introduced.
+
+The numerical gate adds focused coverage for arbitrary channels, shape, exact nearest/tie/pole/wrap behavior, scaling, no-VAE initialization, source release, covariance, camera-order invariance, RNG isolation, unchanged direct initialization and trajectory/call-count preservation. A model-free preflight streams the full camera maps and Monte Carlo checks before any new model execution. Historical S milestone local predictions were not saved: S remains a valid paired final-output reference, but early/middle/late local agreement is compared between the two V variants only. No S rerun is added solely to fill that diagnostic gap.
+
+Artifacts are kept under `outputs/vae-residual-controls/20260917-noise-v/`, separate from P–T. The generation config remains explicitly identified as the inherited S sampler, with a separate V initialization config and top-level experiment identifier V. This preserves S config validation without weakening historical guards.
+
+### V validation gate
+
+Job 19771144 stopped at one overly strict diagnostic test: constant RGB alignment through four FP32 bilinear weights had MAE 1.02e-9 rather than bit-exact zero. The assertion now uses a four-FP32-epsilon accumulation bound; nearest-noise comparisons remain bit-exact. No model ran under that failed gate.
+
+Replacement job **19771149** passed compilation, diff whitespace checks, **10 focused V tests and all 215 full regression tests**. It then runs the complete half/primary/double map and covariance preflight. Source hashes are frozen at that gate and verified by every model launcher. Existing S and P–T scientific source files are unchanged.
+
+### V initialization preflight completed
+
+Job **19771149** completed the complete preflight with zero models/VAEs: 19.23 s measured geometry/statistics, 1.301 GiB process maximum RSS; its 9m20s Slurm duration also includes environment startup and regression tests. All exact map checks and statistical covariance gates passed. The predetermined primary grids remain unchanged.
+
+| Backend | Noise grid | Mean unique fraction | Mean duplicate fraction | Largest cell reuse | Mean horizontal / vertical neighbor collision | Selected ray-pair cell agreement |
+|---|---|---:|---:|---:|---|---:|
+| pixeldit half | 959x1918 | 0.232893 | 0.767107 | 16 | 0.462419 / 0.495608 | 0.876448 |
+| pixeldit primary | 1917x3834 | 0.722956 | 0.277044 | 5 | 0.124479 / 0.155352 | 0.755598 |
+| pixeldit double | 3834x7668 | 0.999905 | 0.000095 | 2 | 0.000001 / 0.000071 | 0.594981 |
+| flux half | 120x240 | 0.237844 | 0.762156 | 15 | 0.460388 / 0.494938 | 0.899386 |
+| flux primary | 240x480 | 0.730336 | 0.269664 | 4 | 0.120510 / 0.153593 | 0.785714 |
+| flux double | 480x960 | 0.999934 | 0.000066 | 2 | 0.000000 / 0.000044 | 0.596006 |
+
+These source-index agreement fractions are potential sharing for the shared-field variant. Independent fields have zero expected cross-view covariance even when their index coordinates match. The statistic covers six selected overlapping camera pairs, not every panorama point or all O(N²) camera pairs; polar matches contribute strongly. At primary resolution, equatorial pairs share 61.4–71.9% of indices for PixelDiT and 73.5% for FLUX; upper/lower pairs share about 45.1–45.4% and 51.9%; polar rotation pairs share 100% and 98.6%.
+
+For nonpolar matched rays, mean angular separation is about 0.030–0.032 degrees for PixelDiT and 0.232–0.270 degrees for FLUX; maximum is 0.0638 and 0.4484 degrees. Polar rotation pairs coincide to FP32 geometric precision. Ray matches are selected by projection followed by a 3x3 nearest-angular candidate search, never by equating array indices. Exact poses, all-camera reuse summaries and pair-specific values are retained in the preflight JSON.
+
+At the primary grids, 8,192-draw Monte Carlo cross-view covariance estimates are 0.78015 versus expected 0.78125 for PixelDiT and 0.81837 versus 0.82031 for FLUX on the bounded diagnostic subsets. Independent-field estimates are 0.00030/-0.00044 versus expected zero; cross-channel covariance is about 0.00157 versus zero; same-cell covariance about 0.99921 versus one. These subset expectations differ from the all-selected-ray aggregate because the Monte Carlo routine subsamples 128 pairs. Within-view horizontal/vertical covariance also passes against exact source-index equality. Dedicated diagnostic RNG does not advance initialization RNG.
+
+The primary sampler therefore introduces substantial within-view correlation, as designed and explicitly measured. Increasing the diagnostic grid nearly removes duplicate indices but also reduces sampled cross-view cell agreement. This tradeoff is recorded; no grid was selected after observing image quality, and only the primary grid enters model runs.
+
+PixelDiT independent/shared model jobs **19771157/19771158** were submitted only after this completed preflight review.
+
+### V execution order and release gate
+
+PixelDiT jobs 19771157/19771158 run independently on matched A100 hardware. Comparison job **19771159** depends on both. The self-contained numerical validity job **19771186** then verifies exact S sampler settings, prepared schedule, conditioning, weighting, source maps, first-camera equality, scaling, source draw counts 89/1, finite results and 4,450 predictions/forwards per variant. It releases FLUX jobs **19771183/19771184** only on success. FLUX comparison job **19771187** depends on both FLUX runs. Image quality is interpreted separately and is not used to suppress a negative PixelDiT result or skip FLUX.
+
+A pending administrative gate 19771167 was canceled before execution and replaced with 19771186 so the batch script is self-contained on compute nodes rather than referring to login-node /tmp. No scientific trajectory was duplicated. PixelDiT pending walltime reservations were reduced from 40 to 30 minutes in place; all hardware and scientific settings stayed fixed. Queue forecasts were several hours, but both PixelDiT jobs subsequently obtained backfill slots. All job states and workflow hashes are recorded in execution.json.
+
+### V PixelDiT completed: detail and agreement are different outcomes
+
+Jobs **19771157/19771158** and comparison/validity jobs **19771159/19771186** completed. Each model run uses exactly 4,450 guided predictions and 4,450 transformer forwards. Exact S config, prepared schedule, camera, conditioning, weight and checkpoint comparisons pass. The direct-local initializer regenerated for provenance matches S's saved digest; the two V modes have identical first-camera tensors, native shapes, maps and scaling, but different complete initial-state digests. Source draw counts are 89 and 1. All source fields are released before diffusion.
+
+The final panoramas, four matched perspective cameras and aligned final local-clean pair were visually inspected. Both V variants retain identifiable temples, columns, doorways and masonry. Independent ERP increases color and contrast relative to S. Shared ERP is much sharper but also strongly saturated, with harsh highlights, fragmented terrain/sky-water boundaries and structures with incompatible apparent scene orientation. These observations do not establish a final coherence improvement. Repeated temples alone are not used as evidence: in the actual aligned camera-7/8 footprint, corresponding doorway, terrace and roof features largely coincide in both V variants, although fine edges differ. Global scene plausibility and local overlap compatibility remain separate issues.
+
+| PixelDiT method | Mean four-view RGB std | HF1 RMS | HF1/std | Central HF1/std | Pipeline s | Initialization s | Diagnostic s | GPU allocated / reserved GiB | Host max GiB |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---:|
+| S direct local | 0.178443 | 0.008879 | 0.049685 | 0.048295 | 773.78 | historical | historical | 4.115 / 4.635 | 10.550 |
+| V independent ERP | 0.392162 | 0.023052 | 0.057392 | 0.053313 | 788.35 | 26.29 | 7.18 | 4.115 / 4.635 | 11.528 |
+| V shared ERP | 0.598108 | 0.054091 | 0.089397 | 0.087395 | 779.73 | 14.69 | 2.50 | 4.115 / 4.635 | 12.291 |
+
+These are raw tensor metrics before ordinary display clipping. HF1 is RMS of the image minus its separable Gaussian blur at sigma=1 pixel (radius 3, reflected boundaries), averaged across the same four full-size cameras; normalized columns average each view's ratio, not a ratio of aggregate means. Higher values alone do not establish better detail or geometry. The shared image's visible saturation and edge artifacts make that distinction particularly important. Pipeline timing includes diagnostics; initialization and model loading are outside that interval. Unequal diagnostic timings are instrumentation observations, not a controlled performance benchmark.
+
+| PixelDiT milestone | Independent / shared view-to-consensus MAE | Independent / shared RGB clean modification | Independent / shared aligned local-pair MAE | Independent / shared normalized local-pair MAE |
+|---|---|---|---|---|
+| 10%, step 5 | 0.48263 / 0.33362 | 0.55194 / 0.38554 | 0.89081 / 0.44732 | 0.99654 / 0.68946 |
+| 50%, step 25 | 0.18705 / 0.14721 | 0.24983 / 0.19824 | 0.40330 / 0.22564 | 0.75420 / 0.31914 |
+| 90%, step 45 | 0.04591 / 0.03520 | 0.06345 / 0.05762 | 0.09716 / 0.05770 | 0.21723 / 0.08147 |
+| Final, step 50 | 0.01094 / 0.01163 | 0.01580 / 0.02276 | 0.02345 / 0.03216 | 0.05246 / 0.04553 |
+
+The early and middle shared-field agreement advantage is clear under these definitions. Its final absolute-error advantage is lost: final local-pair MAE is 37% higher and view-to-consensus MAE 6% higher than independent ERP. Final contrast-normalized pair MAE is 13% lower, partly reflecting the substantially higher target contrast (0.7063 versus 0.4470). This mixed endpoint does not support claiming maintained final coherence improvement. It also does not mean the final trajectories are wholly incompatible; both pair errors are much smaller than at initialization-side milestones. The paired footprint covers 64.07% of camera B and is one selected overlap, not a global correspondence guarantee.
+
+Native clean modification equals RGB modification for PixelDiT. Maximum current-state reconstruction errors are 4.77e-7, 4.77e-7, 2.38e-7 and 5.96e-8 at the four milestones in both variants. This verifies transition algebra, not visual quality. At the middle milestone, local/returned-consensus HF1 is 0.08002/0.02157 for independent and 0.06911/0.04271 for shared: fusion still suppresses disagreement-associated detail, but less strongly in the shared run. The final local/returned values are 0.01978/0.02310 and 0.04563/0.05414, respectively; such resampling/assembly differences are not extra model predictions.
+
+The supported PixelDiT conclusion is an early agreement benefit with no clear final coherence win, alongside a strong change in contrast and texture. This is closest to the requested early-benefit-not-maintained case, with the qualification that normalized final disagreement remains slightly better. S's unsaved local predictions prevent a numerical S-versus-V trajectory comparison; only its paired final views and final detail metrics are available.
+
+While the FLUX pair waited for resources, its pending reservations were adjusted in place to **40 minutes and 32 GiB host memory**, retaining one A100 and eight CPUs. Historical FLUX S used 31m53s of allocation and 10.160 GiB peak process RSS, so this leaves time and memory headroom without changing model settings. Slurm requires numeric MiB for this memory update; an initial `32G` update was rejected and the accepted value was 32768 MiB. No new job or model run was submitted for these administrative changes.
+
+PixelDiT display-range audit: mean matched-view scalar fractions outside [-1,1] are 0% for S, 0.124% for independent ERP and **9.439% for shared ERP**; area-weighted ERP fractions are 0.00015%, 0.167% and **11.123%**, respectively. These are pre-display output values, not clipped initialization noise. Ordinary PNG conversion clips them for display. The large shared-run fraction quantitatively supports the visible harsh highlights/contrast warning and further limits interpretation of increased raw HF1 as useful detail.
+
+### V implementation boundaries and preserved invariants
+
+The V implementation is additive: `diffpano/erp_noise_initialization.py` supplies explicit noise config, native-shape camera construction, exact nearest source-index maps and bounded CPU initialization. `diffpano/noise_v_diagnostics.py` measures already-produced clean RGB predictions and embeds two compact final overlap thumbnails per run in metadata. `scripts/noise_v_common.py`, `scripts/noise_v_preflight.py`, `scripts/noise_v_run.py` and `scripts/report_noise_v.py` provide S pairing, preflight, guarded execution and comparison. Ten focused tests live in `tests/test_erp_noise_initialization.py`; three new Slurm scripts handle validation, comparison and the PixelDiT validity release gate. The existing generic model launcher is reused.
+
+The backend already exposed `NativeStateMixin.initialize_native_state`, so no backend scaling API or historical scientific implementation needed modification. The new initializer invokes that exact helper once per standard Gaussian local tensor. Both tested backends resolve scale to 1.0, while the focused scale test also covers a nonunit 2.5 scale. PixelDiT channels come from its actual adapter; FLUX raw channels and spatial scale come from the loaded transformer/VAE configuration and actual adapter properties. Transformer packing remains inside FLUX's adapter.
+
+The noise projector carries integer row/column coordinate channels separately through the established nearest padded ERP grid convention before forming int64 source indices. This avoids loss of integer precision from encoding a large flattened ERP index in FP32. The geometry tests include pixel centers, odd/even sizes, seams, pole reflection, roll and nearest tie behavior. No historical RGB projection helper was changed. Source sampling occurs directly at native spatial resolution; no RGB-resolution noise resize is used.
+
+Explicit invariants for every V run:
+
+- Source ERP noise is generated and used only during initialization, with one field resident at a time, and released before the evolving local-state loop.
+- Noise sampling is nearest, CPU FP32, with independent source channels and dedicated seeded CPU RNG. Camera assignment follows the stable canonical order, independently of inference execution order.
+- No VAE generates or decodes initial Gaussian noise. No empirical per-patch normalization, whitening, variance repair, clipping or view-count scaling is applied to that noise.
+- No fixed-noise renoising, later source sampling, initial-noise reinjection or persistent ERP noisy/native field is introduced. FLUX's ERP raw-latent source is transient and explicitly recorded.
+- S's 89 cameras, 1024-square RGB views, clean ERP 1024x2048, center weighting/temperature 0.1, RGB interpolation, scheduler arrays, current-x_t interpolation, Jacobi synchronization, guidance, conditioning, precision, VAE settings and terminal assembly remain unchanged.
+- DPA, LPW, VAE residual correction, time travel and camera motion are untouched. Initialization and diagnostics add zero denoiser calls and zero VAE calls; ordinary S-loop VAE conversions remain where applicable.
+
+Full scientific source hashes accompany each run, in addition to HEAD and dirty-diff provenance. Documentation can evolve while runs execute; the scientific source hash dictionary must remain identical to the passed validation gate. The historical S final outputs are reused because configuration, conditioning, model/cache, schedule, camera/weight and direct-initializer comparisons pass. FLUX's older resolved revision remains unavailable; the preserved ModelsLab cache revision `fa45a9eb6808ba8fdfc7cc2756f7f1a16e0921f4` is the one recorded and checked against S, with offline loading. No checkpoint substitution or S model replay was made.
+
+### V FLUX completed: early overlap benefit, nearly tied endpoint
+
+Jobs **19771183/19771184** and CPU comparison **19771187** completed. Each model run produced exactly 1,780 guided predictions and transformer forwards. The full numerical audit passes: S configuration/conditioning/checkpoint/camera/weight and direct-initializer hashes match; prepared coefficient arrays are identical; independent/shared native maps, shapes, source dimensions, scale and first-camera tensors match. The only literal schedule-metadata difference from S is ordering of the `_use_default_values` bookkeeping list. The existing `canonical_schedule` helper sorts that unordered key list; no coefficient, scheduler parameter or trajectory setting differs.
+
+Both final panoramas, S, all four common diagnostic cameras, and the aligned final local pair were visually inspected. Independent ERP has more contrast than S but soft, poorly resolved facades and terrain. Shared ERP restores more visible masonry, towers, gables and wall edges than independent ERP, with richer foreground structure. S retains some cleaner individual temple/roof forms despite its haze. Shared ERP does not establish a more coherent global scene: terrain/path/water boundaries remain fragmentary, and upper/polar views do not resolve a convincing continuous environment. These are scene-level observations, not a claim that repeated buildings prove mismatched correspondence.
+
+Within the actual camera-7/8 aligned footprint, the central stepped temple, adjacent wall and terrain boundaries in shared ERP largely occupy the same locations in both local predictions. The corresponding doorway/lake boundary also largely matches in independent ERP. Neither pair shows a clear gross displaced duplicate of the same feature in the displayed overlap. Remaining fine differences and smoothing are represented by the raw pair errors below; the near tie does not establish a final shared-field coherence gain. Historical S local predictions are unavailable, so no S pair-error value is invented.
+
+| FLUX method | Mean four-view RGB std | HF1 RMS | HF1/std | Central HF1/std | Pipeline s | Initialization s | Diagnostic s | GPU allocated / reserved GiB | Host max GiB |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---:|
+| S direct local | 0.134450 | 0.005442 | 0.040221 | 0.047937 | 1562.37 | historical | historical | 24.956 / 27.002 | 10.160 |
+| V independent ERP | 0.201431 | 0.005502 | 0.027554 | 0.024011 | 1576.20 | 3.08 | 5.52 | 24.977 / 27.002 | 10.144 |
+| V shared ERP | 0.230730 | 0.008423 | 0.036592 | 0.038918 | 1558.09 | 0.57 | 2.25 | 24.975 / 27.006 | 10.239 |
+
+FLUX shared ERP has 53% more absolute HF1 and 33% more normalized HF1 than independent ERP on these cameras. Against S, its absolute HF1 is 55% higher but normalized HF1 is 9% lower (central normalized HF1 19% lower). Independent ERP's normalized HF1 is 31% below S and central normalized HF1 about 50% below S. Thus recognizable recovered detail survives, particularly with sharing, but neither a universal sharpness improvement over S nor unchanged texture quality is established. All three FLUX methods have zero measured final out-of-range fraction in the ERP and four views; PixelDiT's clipping issue does not recur here.
+
+| FLUX milestone | Independent / shared view-to-consensus MAE | Independent / shared RGB clean modification | Independent / shared native clean modification | Independent / shared aligned local-pair MAE | Independent / shared normalized local-pair MAE |
+|---|---|---|---|---|---|
+| 10%, step 2 | 0.45416 / 0.45130 | 0.49515 / 0.50342 | 0.86866 / 0.85931 | 0.46992 / 0.35843 | 0.87378 / 0.59045 |
+| 50%, step 10 | 0.08644 / 0.07732 | 0.09982 / 0.09082 | 0.41771 / 0.39985 | 0.15778 / 0.13506 | 0.56728 / 0.43439 |
+| 90%, step 18 | 0.01877 / 0.01907 | 0.02140 / 0.02189 | 0.24182 / 0.24592 | 0.02912 / 0.02356 | 0.11669 / 0.08910 |
+| Final, step 20 | 0.00772 / 0.00854 | 0.00908 / 0.01086 | 0.20048 / 0.20382 | 0.01128 / 0.01133 | 0.04670 / 0.04489 |
+
+Shared ERP reduces aligned pair MAE by about 24%, 14% and 19% at early/middle/late milestones. At the final step it is 0.5% higher, effectively tied at the scale of this one-run comparison. The final normalized error is 3.9% lower, while full-camera view-to-consensus error is 10.7% higher. The early global view-to-consensus change is only 0.6%, much weaker than the selected pair's early improvement. These different aggregations must not be conflated. Native modification includes the unchanged FLUX decode/fuse/re-encode path and is not a latent-space geometric correspondence test.
+
+Maximum current-state reconstruction errors are 4.77e-7, 4.77e-7, 2.38e-7 and 2.38e-7 at the milestones in both variants. Middle local/returned HF1 is 0.01600/0.00564 for independent ERP and 0.00909/0.00779 for shared ERP. Final values are 0.00520/0.00584 and 0.00815/0.00889, before terminal output's final HF1 of 0.00550 and 0.00842. Detail is still affected by consensus and terminal assembly; neither was changed to favor V.
+
+### V three-way conclusions
+
+| Backend | S direct local | V independent ERP | V shared ERP |
+|---|---|---|---|
+| PixelDiT | Recognizable but hazy architecture; weak global scene coherence | More contrast and visible architecture; altered initialization operator strongly affects appearance | Strong early/middle agreement benefit; much sharper but saturated/artifact-prone; final raw agreement advantage lost, no clear final coherence win |
+| FLUX | Hazy but recognizable individual roofs/temples | Increased contrast but softer normalized detail; no established coherence gain | More structure than independent ERP; early/middle pair agreement improves; final absolute pair error essentially tied, no clear coherence win over S |
+
+The tested coupling is substantial, not absent: exact source-index checks and Monte Carlo covariance verify real geometric sharing, with about 75.6%/78.6% selected-ray agreement at the primary grids. The independent/shared controls have the same within-view sampling covariance by construction and identical measured maps. That covariance differs substantially from S's direct IID local initializer: about 27.7%/27.0% duplicate-source fractions. Independent ERP's large appearance changes show why comparing only shared ERP against S would confound coupling with the sampling operator.
+
+The data support a limited version of the hypothesis: common ERP-indexed noise helps selected early/middle perspective predictions agree. They do **not** establish a maintained final coherence improvement beyond S's center-weighted fusion in either backend. PixelDiT loses its final raw-error advantage; FLUX's final raw pair error is nearly tied. Slightly lower final contrast-normalized pair errors coexist with higher contrast and slightly worse global view-to-consensus errors. One prompt/seed, one selected local overlap, incomplete global geometry assessment and missing S trajectory diagnostics limit inference. These results do not rule out other shared initialization constructions or establish the primary grid as optimal.
+
+### V final jobs, calls and artifacts
+
+| Run | Job / node | Slurm elapsed | Pipeline s | Total process s | Guided / actual forwards | Peak GPU allocated GiB | Host process max GiB |
+|---|---|---|---:|---:|---:|---:|---:|
+| PixelDiT independent ERP | 19771157 / g038 | 19m18s | 788.35 | 1026.01 | 4450 / 4450 | 4.115 | 11.528 |
+| PixelDiT shared ERP | 19771158 / g047 | 16m23s | 779.73 | 890.90 | 4450 / 4450 | 4.115 | 12.291 |
+| FLUX independent ERP | 19771183 / g055 | 32m45s | 1576.20 | 1817.85 | 1780 / 1780 | 24.977 | 10.144 |
+| FLUX shared ERP | 19771184 / g025 | 29m52s | 1558.09 | 1696.62 | 1780 / 1780 | 24.975 | 10.239 |
+
+Exactly **four new scientific model runs**, with **12,460 guided predictions and 12,460 actual transformer forward invocations**. Both S references are reused without denoising replays. Initialization/preflight and added diagnostics account for **zero extra denoiser calls and zero extra VAE encodes/decodes**. Host values above are process-recorded peaks; sampled Slurm MaxRSS is retained separately and can miss transient peaks. Pipeline time excludes initialization/loading; total process excludes part of batch environment startup. These timings are not controlled speed benchmarks.
+
+Validation/preflight **19771149** completed in 9m20s with compilation, diff checks, ten focused tests, the full **215-test suite**, and all half/primary/double geometry/statistical gates passing. PixelDiT comparison **19771159** took 2m31s, release audit **19771186** took 1s, and FLUX comparison **19771187** took 1m34s. The earlier test-only failure 19771144 and canceled administrative gate 19771167 are documented above; no scientific model job failed or was duplicated. All four runs and both comparison sheets received numerical and visual review.
+
+Outputs: `outputs/vae-residual-controls/20260917-noise-v/`. Each of `pixeldit/V-independent-erp`, `pixeldit/V-shared-erp`, `flux/V-independent-erp`, `flux/V-shared-erp` contains only `final_result.png` and `metadata.json`. Shared artifacts are `initialization-preflight.json`, `execution.json`, `results.json`, [pixeldit-comparison.png](../../outputs/vae-residual-controls/20260917-noise-v/pixeldit-comparison.png), and [flux-comparison.png](../../outputs/vae-residual-controls/20260917-noise-v/flux-comparison.png). The two aligned final local thumbnails per V run are embedded in its metadata; there are no separate camera images, noise/source tensors, index-map dumps, full covariances or timestep images.
+
+The final audit verifies all **164 historical artifact hashes**, **70 prior scientific-source hashes**, the original report prefix and all **116 validated scientific-source hashes** unchanged. Workflow script hashes also pass. Branch remains `no_sphere`, HEAD remains `8bf6d13257a32db5ee279ca973cde2dadc9beb25`, all P–T uncommitted work is preserved, and no commit was made.
+
+Final exact storage: **13 artifacts (6 PNG, 7 JSON), 14,550,539 bytes (13.876 MiB)**. Separately, **18 Slurm logs use 48,729 bytes**; combined artifacts plus logs are **31 files, 14,599,268 bytes**. These totals include embedded overlap thumbnails and the completed execution/result manifests, and exclude source/model caches and ordinary Python caches. No extra scientific run, seed or model-quality grid sweep was added.
+
+## Bridge + Directional Prompting 2^4 Factorial Study — Ruins
+
+This new study is separate from historical A–V. Starting branch is `no_sphere`, HEAD `8bf6d13257a32db5ee279ca973cde2dadc9beb25`; the dirty P–V work and results are preserved. The output root is `outputs/bridge-factorial-ruins/20260918/`. The design has exactly 80 DiffPano scientific cells (five backends times 16 A/B/C/D combinations), plus two external original SphereDiff references. Four pilot cells per backend are part of those 80 and were reused. No additional seeds, prompts, parameter tuning or backend substitutions were added.
+
+### Prompt and fixed angular geometry
+
+Both `prompts/ruins.txt` and the original SphereDiff `data/prompts/ruins.txt` have SHA-256 **e74ca0410b7f22a43842a41a08ecfe857ac196cbf7379ae2c11585017cf79de0**, are byte-identical, and contain exactly five physical lines:
+
+```text
+An upward view of the night sky filled with countless stars and the Milky Way stretching across, creating a breathtaking cosmic scene. The ruins' silhouettes subtly frame the sky, adding a sense of ancient mystery.
+An upward view of the night sky filled with countless stars and the Milky Way stretching across, creating a breathtaking cosmic scene. The ruins' silhouettes subtly frame the sky, adding a sense of ancient mystery.
+A grand view of ancient ruins under a vast, starry night sky. The weathered stone columns and structures stand as silent witnesses to history, illuminated by the soft glow of moonlight and distant celestial bodies.
+A directly downward view of the ancient ruins, showing only the moss-covered stone foundations and weathered ground. Cracked stone pathways and scattered remnants of fallen pillars blend into the rugged terrain, illuminated by the faint glow of flickering torches or lanterns. The interplay of light and shadow highlights the textures of the aged stone and creeping vegetation.
+A upside-down view of the moss-covered stone foundations and weathered ground. Cracked stone pathways and scattered remnants of fallen pillars blend into the rugged terrain, illuminated by the faint glow of flickering torches or lanterns. The interplay of light and shadow highlights the textures of the aged stone and creeping vegetation.
+```
+
+The source is SphereDiff commit `2c8c68ba088f2803b3dce4b52b7b0d68bc996139`. The user's `/home/shig/SphereDiff` checkout is at a later HEAD with unrelated launcher edits; its pipeline code and ruins prompt have no diff from the requested commit. To avoid changing that checkout, an exact source snapshot is held at `/home/shig/diffpano_reference_sources/spherediff-2c8c68b/`, with recorded source hashes.
+
+The 89 canonical pose records are read directly from V's saved preflight and checked against L's existing geometry artifact and camera digests. No new cover is generated. The rings at pitches -90/-67.5/-45/-22.5/0/+22.5/+45/+67.5/+90 degrees contain 4/8/11/14/15/14/11/8/4 cameras, matching the saved artifact. Every camera retains its exact yaw, pitch, roll and **80 by 80 degree FOV**. A common `camera_geometry_sha256` hashes only these angular properties and their order, and must match across all 80 cells. The existing raster-inclusive camera digest is also retained.
+
+As clarified by the user, raster resolution is separate from perspective footprint. SD2 retains 512x512 local RGB and a 512x1024 clean ERP; SANA, FLUX, SD3.5 and PixelDiT retain 1024x1024 local RGB and a 1024x2048 clean ERP. These are fixed within each backend. The spherical patch is always an 80-degree frustum, with fx=W/(2*tan(40 degrees)) and fy=H/(2*tan(40 degrees)); planar patch-size/stride fields do not control this study's coverage. Standard and LPW share the exact poses/FOV; pyramid levels change sampling density, not angular extent. Native initialization constructs its maps directly at raw native resolution using the same angular camera records.
+
+Directional routing retains five vertical semantic bands and four yaw anchors per band, with maximum-cosine selection. Historical L–V's repeated global text is not silently reused: this new study uses the exact original night-sky ruins file above. Seed 0 is verified from all five existing dense configs and fixed throughout.
+
+### Common bridge and transition; factors
+
+All four latent backends use the **local identity-preserving VAE bridge**: decode model clean z0 once to I; encode that exact I to zrt; retain r=z0-zrt in the same camera's native coordinates; fuse/project clean RGB to Isync; encode Isync and add local r. The resulting bridged clean is passed to the existing `interpolate_from_current_state`. Residuals are never warped, spatially fused or assembled into an ERP latent canvas. PixelDiT uses `vae_bridge=not_applicable_identity` and synchronized clean RGB directly.
+
+The existing dense Jacobi loop is reused with optional local-residual hooks whose defaults preserve historical behavior. The new `erp_bridge_factorial` configuration has its own strict validation; historical L–V guards remain. All first-pass predictions see frozen local x_t, and next states are committed only after every view transition. Actual prepared flow sigmas or SD2 DDIM alpha/sigma coefficients drive current-state interpolation. No old endpoint, `reconstruct_next(clean=...)`, fixed-noise renoising or original-noise reinjection enters the factorial trajectory.
+
+A0/A1 reuse V's exact CPU FP32 nearest ERP initializer and predetermined center-density noise-grid rule. They differ only in 89 separate source draws versus one shared source. Sources are released before diffusion. C0 uses the existing `weighted_average` reducer for both D levels, so `average` cannot erase D1 weights. C1 uses existing DPA with alpha=1, power=1 and epsilon=1e-6. D0 is uniform valid support; D1 is the existing exp(-norm(u)/0.1) center map. All four C/D combinations run in standard RGB and independently at the current LPW coefficient levels. B1 is the existing O/Q-tested **current DiffPano LPW adaptation**, with five levels, no Jacobian LOD heuristic, periodic ERP reconstruction and unchanged nearest ERP-to-view/bilinear view-to-ERP interpolation; it is not claimed to be exact LookingGlass.
+
+### Validation and launch gates
+
+Preliminary CPU job **19784411** passed nine focused tests, including all A/B/C/D paths, local bridge/no-op behavior, current-state reconstruction, endpoint poisoning, Jacobi order and unchanged model counts. Additional contrast and camera-boundary diagnostic tests are included in the final gate. No scientific generation was released by the preliminary gate.
+
+The final CPU gate runs compilation, diff whitespace checks, all focused factorial tests and the complete existing regression suite, then freezes the manifest and source hashes. Five real-backend GPU preflights will verify actual native shapes, A0/A1 digests, coverage, conditioning/schedules and real VAE bridge identity before any pilot cell. Identity uses a per-element finite-precision bound `8*eps(native arithmetic dtype)*(abs(z0)+abs(E(D(z0)))+1)`, recording each backend's VAE dtype, actual error and magnitude-dependent bound rather than one blind absolute tolerance. Preflights perform zero denoiser predictions.
+
+The pilot is A0B0C0D0, A1B0C0D1, A0B1C1D0 and A1B1C1D1 for every backend. Numerical and visual review must pass before releasing the remaining 60 cells, without tuning based on pilot appearance. The launcher checks completed outputs, the live Slurm queue and prior accounting before submitting or retrying a missing/failed cell.
+
+The two external references use unchanged original `SphericalFluxPipeline` and `SphericalSanaPipeline`, their original checkpoint IDs and cached revisions, no model CPU offload and bf16 precision. FLUX retains 28 steps, guidance 3.5, true CFG 1, 26,500 points and temperature 0.1. SANA retains 20 steps, guidance 4.5, 1024-square call dimensions, 2,600 points, bf16 variant and temperature 0.1. Both retain native 2048x4096 ERP outputs. A CUDA generator seeded to zero is passed through the normal original API; initialization is not claimed to match DiffPano. The wrapper follows the original launcher's solver-order handling and otherwise only records timing, provenance and outputs.
+
+### CPU validation
+
+Full gate job `19784419` passed compilation and `git diff --check`, all **11 focused factorial tests** (15.326 s), and all **226 regression tests** (101.867 s). The earlier nine-test smoke gate `19784411` also passed; it was superseded by the expanded final gate. The focused suite exercises all sixteen factor combinations with flow, DDIM and pixel mocks, poisoned endpoint independence, bridged-clean transition inputs, Jacobi ordering, model/VAE call counts, orthogonal C/D reducers at LPW levels, saved angular geometry, exact prompt routing, matched initialization, and contrast arithmetic. Real-backend identity and initialization checks follow separately before the matrix.
+
+### Real-backend preflight results
+
+All five preflights passed with zero denoiser predictions. The four real VAE encoders were deterministic under repeated posterior-mode encoding. The maximum elementwise recovery-error/bound ratio was below 0.056 for every latent backend; the bound is defined above. PixelDiT has no VAE and its identity bridge is not assigned a synthetic VAE error. All A0/A1 pairs had identical sampling-map hashes, grid dimensions, initialization scales, native shapes and first-camera state hashes. Coverage was complete for every backend.
+
+| Backend | Native channels × H × W | Noise ERP H × W | Mean duplicate-source fraction | Maximum bridge identity error | Maximum error/bound ratio |
+|---|---|---|---:|---:|---:|
+| sd2 | 4 × 64 × 64 | 120 × 240 | 0.265537 | 2.38419e-07 | 0.049566 |
+| sana | 32 × 32 × 32 | 60 × 120 | 0.255267 | 4.76837e-07 | 0.05486 |
+| flux | 16 × 128 × 128 | 240 × 480 | 0.269664 | 4.76837e-07 | 0.0554617 |
+| sd35 | 16 × 128 × 128 | 240 × 480 | 0.269664 | 4.76837e-07 | 0.0553872 |
+| pixeldit | 3 × 1024 × 1024 | 1917 × 3834 | 0.277044 | N/A | N/A |
+
+The frozen angular geometry SHA-256 is `b55b4eb5051cdfb8c579e81d4f51ece1f15aeb0e8d7e1fde6b7b74a49154435c` across all 80 cells. `provenance.json` records all 1,647 preexisting output hashes. FLUX component configuration files match byte-for-byte; the seven Diffusers weight paths have identical cached content addresses and sizes. The official cache additionally contains `ae.safetensors` and `flux1-dev.safetensors`, which makes the whole-cache inventory comparison unequal. Weight bytes were not independently rehashed, so this is strong cache provenance evidence rather than independently established checkpoint-byte equivalence. Model IDs and revisions remain explicitly distinct.
+
+### External reference execution
+
+Original SphereDiff SANA completed under source commit `2c8c68ba088f2803b3dce4b52b7b0d68bc996139`, retaining the original pipeline and scheduler behavior. The native 2048 × 4096 ERP is in `outputs/bridge-factorial-ruins/20260918/references/sana/`. Generation took 212.441 s with 1780 transformer forwards and 10.241 GiB peak allocated GPU memory. It used the original SANA checkpoint/revision, BF16 variant and precision, 20 steps, guidance 4.5, 1024 × 1024 requested local dimensions, 2,600 spherical points, temperature 0.1, seed-0 CUDA generator, and no model CPU offload or VAE tiling. Runtime environment: Torch 2.7.0+cu126, Diffusers 0.32.2, Transformers 4.49.0. Final comparison is separate from factorial contrasts and uses matched perspective rasters.
+
+The original SANA scheduler executes with **solver order 1**, exactly as assigned by the original static launcher. Diffusers 0.32.2 `FrozenDict` retains a mapping value of 2 when its `solver_order` attribute is set to 1; the scheduler reads the attribute. A source-derived microcheck confirmed this distinction. The initial wrapper metadata used mapping `.get()`; its effective-order field was corrected to 1, retaining the originally captured mapping value and the verification hashes. No generation or algorithm was changed. The original spherical local transformer inputs were `[2,32,20,20]` for 1,760 forwards and `[2,32,21,21]` for 20 forwards, despite nominal height/width arguments of 1024. This differs from DiffPano’s fixed 32 × 32 SANA native raster and is another reason the reference is a whole-method comparison.
+
+Original SphereDiff FLUX also completed, preserving its native 2048 × 4096 output at `outputs/bridge-factorial-ruins/20260918/references/flux/`. It used the official pinned FLUX.1-dev checkpoint, BF16, variant None, 28 steps, guidance 3.5, true CFG 1.0, 26,500 spherical points, temperature 0.1, original local defaults, seed-0 CUDA generator, and no CPU offload or VAE tiling. Generation took 1890.135 s, with 2492 transformer calls, 35.665 GiB peak allocated and 37.061 GiB peak reserved GPU memory. Actual transformer-input shapes are recorded in metadata. Both original reference source snapshots remained unchanged.
+
+### Pilot completion and release of the remaining matrix
+
+All **20 pilot cells completed on their first attempts**, were visually reviewed, and are retained as final matrix cells. Numerical audit job `19784481` passed: all source hashes, scientific settings, camera geometry, initialization digests, transition flags, artifact contents and model-call counts match the frozen design. The pilot used exactly **56,960 guided model calls**. Each latent cell used two VAE encodes per camera/timestep, one clean decode per camera/timestep, plus 89 terminal decodes; PixelDiT used zero VAE calls. The remaining 60 cells were authorized for launch without scientific changes.
+
+The pilot images contain substantial negative outcomes. Uniform pilots are often blurred, noisy or nearly structureless. Shared/standard/arithmetic/center pilots show more recognizable structures in all five backends, but these four-cell comparisons change multiple factors and do **not** identify isolated main effects. LPW/DPA center pilots are visibly softer than their standard/arithmetic counterparts. PixelDiT’s standard center pilot has harsh silhouettes and 12.27% out-of-range diagnostic RGB values, while its uniform pilot has high-frequency grain without recognizable ruins. These observations motivate cautious interpretation of HF and agreement metrics, not retuning. All factor settings remain fixed.
+
+Only final PNGs and numerical metadata are retained per cell. Compact local-view PNG payloads inherited inside the reused V diagnostic metadata were removed as storage-only postprocessing; all numerical diagnostic values and scientific provenance remain unchanged.
+
+### Observed factorial contrasts: SD2
+
+These are descriptive contrasts over all 16 fixed seed-0 cells. Main effects are the factor-1 mean minus the factor-0 mean; two-factor interactions use the positive-product minus negative-product mean of the ±1 factor codes. An interaction is half the corresponding difference of simple effects. No p-values or population-level significance are claimed. Detail metrics below average the four fixed diagnostic views; normalized pair disagreement measures the selected aligned equatorial pair, not global semantic coherence.
+
+| Term | Contrast change | HF1/std change | Normalized aligned-pair MAE change |
+|---|---:|---:|---:|
+| A | +0.066777 | +0.009235 | -0.037819 |
+| B | -0.026361 | -0.015693 | +0.034694 |
+| C | +0.026539 | +0.008768 | +0.035681 |
+| D | +0.083159 | +0.006105 | -0.001550 |
+| A×B | -0.014236 | -0.004161 | -0.025755 |
+| A×C | +0.006133 | +0.000861 | -0.027130 |
+| A×D | -0.023432 | +0.000792 | +0.001138 |
+| B×C | -0.006804 | +0.001991 | +0.024165 |
+| B×D | -0.014949 | -0.003452 | +0.009223 |
+| C×D | -0.013999 | -0.005726 | -0.005063 |
+
+Shared initialization improves contrast and normalized HF while reducing normalized pair disagreement on average. Center weighting has the largest contrast gain, but is not the largest normalized-HF main effect. LPW decreases normalized HF in the full matrix, and matched image pairs are visibly softer or ghosted. DPA raises HF but also average pair disagreement; turquoise/colored blobs are conspicuous in several independent-initialization cells. Its positive HF effect must not be read as uniformly better detail. The negative C×D HF interaction means DPA’s incremental HF gain is smaller with center weighting; the positive B×C disagreement interaction indicates a larger DPA disagreement cost under LPW.
+
+All 16 native ERP previews were reviewed as matched D0/D1 pairs within each A/B/C setting. `A1B0C0D1` offers a cleaner-looking observed detail/agreement tradeoff; `A1B0C1D1` has higher HF1/std (0.051272 versus 0.047709) but worse normalized pair MAE (0.063326 versus 0.047230). Neither is a universal quality optimum.
+
+### Scheduling adjustment after measured pilots
+
+The longest pilot allocations, including import/model startup, were 35.42 minutes for FLUX, 42.67 for SD3.5, and 21.00 for PixelDiT. To improve backfill eligibility, 27 still-pending remaining-wave jobs had only their Slurm time limits reduced: FLUX standard/LPW 55/60 minutes, SD3.5 65/70 minutes, and PixelDiT 35/40 minutes. Every limit retained at least 14 minutes beyond the corresponding backend’s longest pilot allocation. No job was canceled or resubmitted, and no prompt, seed, model, precision, geometry, step count, bridge, transition, factor, or output setting changed. Per-job old/new limits are recorded in `execution.json`.
+
+### Observed factorial contrasts: SANA
+
+| Term | Contrast change | HF1/std change | Normalized aligned-pair MAE change |
+|---|---:|---:|---:|
+| A | +0.001442 | -0.000116 | -0.028112 |
+| B | -0.021591 | +0.008004 | +0.066821 |
+| C | -0.030938 | +0.017645 | +0.066383 |
+| D | +0.321709 | +0.003903 | -0.045893 |
+| A×B | +0.001189 | -0.003885 | -0.013644 |
+| A×C | +0.005128 | -0.002426 | -0.018123 |
+| A×D | -0.015431 | -0.000878 | +0.013383 |
+| B×C | -0.011889 | +0.020591 | +0.066868 |
+| B×D | -0.023226 | -0.016429 | -0.049705 |
+| C×D | +0.070884 | -0.012983 | -0.052650 |
+
+Center weighting is the dominant contrast and visual-structure factor. Shared initialization reduces normalized pair disagreement, while its average normalized-HF effect is nearly zero; the previews nevertheless show more recognizable structures under shared standard/uniform fusion. The low-level average does not capture that semantic difference.
+
+The positive average B effect on normalized HF must **not** be interpreted as an LPW detail improvement. The B×C interaction is +0.020591: LPW’s simple HF effect is -0.012586 with arithmetic fusion but +0.028595 with DPA. All 16 previews show that LPW/arithmetic smooths detail, whereas LPW/DPA with uniform weights introduces grain and streaked texture. `A0B1C1D0` has the highest HF1/std (0.073956) but very poor normalized pair MAE (0.352526) and an indistinct dark scene. It is a useful metric-extreme diagnostic, not a best-quality configuration.
+
+DPA also has a strong C×D contrast interaction: it darkens uniform cells while increasing contrast with center weighting. Standard center-weighted cells produce recognizable mossy terrain and star fields; DPA makes their colors more saturated, and LPW counterparts are softer. Shared/standard/center arithmetic remains a useful conservative visual baseline; the standard DPA/center cell has lower normalized pair MAE in this seed but is more saturated. Original SphereDiff remains a separate whole-method reference with different local spherical state dimensions and aggregation.
+
+### Observed factorial contrasts: FLUX
+
+| Term | Contrast change | HF1/std change | Normalized aligned-pair MAE change |
+|---|---:|---:|---:|
+| A | +0.055516 | +0.008633 | -0.021383 |
+| B | -0.050161 | +0.000267 | +0.030216 |
+| C | +0.002607 | +0.019258 | +0.036895 |
+| D | +0.207137 | -0.021793 | -0.055222 |
+| A×B | -0.043077 | -0.019120 | -0.010388 |
+| A×C | -0.002825 | -0.008421 | -0.027865 |
+| A×D | -0.049362 | -0.003058 | +0.025515 |
+| B×C | +0.006533 | +0.017509 | +0.031076 |
+| B×D | +0.013400 | -0.008824 | -0.018995 |
+| C×D | +0.048766 | -0.014488 | -0.033064 |
+
+Center weighting gives the largest contrast gain and reduces normalized pair disagreement, while its negative HF effect reflects suppression of artifact-heavy uniform outputs. Shared initialization raises average contrast and HF, but the complete previews show dense colored speckles in shared standard/uniform cells. These are not convincing ruin detail. With center weighting, the simple A effect on normalized pair MAE is slightly adverse (+0.004132), even though the average A effect is negative. Shared initialization is therefore not a universal visual improvement for FLUX in this study.
+
+The nearly zero average B HF effect (+0.000267) masks the strong B×C interaction (+0.017509). LPW’s simple HF effect is -0.017242 with arithmetic fusion and +0.017777 with DPA; the latter includes pronounced grain in uniform cells. Center-weighted LPW counterparts are softer or ghosted. The negative C×D HF interaction and positive C×D contrast interaction again distinguish artifact HF from useful structure.
+
+All 16 native previews were reviewed. Independent standard center-weighted `A0B0C1D1` is a useful observed detail/agreement candidate (normalized pair MAE 0.034463); `A0B0C0D1` is a less saturated alternative. Shared standard center cells have somewhat sharper-looking features but retain conspicuous bright sky artifacts. Original SphereDiff’s native preview has more naturally resolved stone structures and ground; the final quantitative comparison uses matched perspective rasters. The highest-HF cell, `A0B1C1D0` (HF1/std 0.100759), is dark and artifact-dominated and must not be presented as a perceptual optimum.
+
+### Frozen backend settings and metric interpretation
+
+| Backend | Steps | Guidance | Model/VAE precision | Prepared scheduler | VAE tiling | Local RGB / clean ERP |
+|---|---:|---:|---|---|---|---|
+| SD2 | 30 | 7.5 | FP16 | DDIMScheduler | on | 512² / 512×1024 |
+| SANA | 20 | 4.5 | BF16 | DPMSolverMultistepScheduler, order 1, flow sigmas | off | 1024² / 1024×2048 |
+| FLUX | 20 | 3.5, true CFG 1 | BF16 | FlowMatchEulerDiscreteScheduler | on | 1024² / 1024×2048 |
+| SD3.5 | 40 | 4.5 | BF16 | FlowMatchEulerDiscreteScheduler | off | 1024² / 1024×2048 |
+| PixelDiT | 50 | official CFG 2.75 | BF16 model, no VAE | PixelDiTFirstOrderSolver | N/A | 1024² / 1024×2048 |
+
+All local native states and bridge arithmetic use FP32. All initialization scales are 1.0. PixelDiT uses the existing official solver configuration, full [0,1] guidance interval and negative prompt `low quality, worst quality, over-saturated, blurry, deformed, watermark`; the generic generation guidance field of 1.0 is not its actual CFG scale. Exact prepared timestep/sigma arrays, SD2 coefficients, negative prompts, source revisions and common-setting hashes are retained in the manifest and per-cell metadata. Scientific parameters were fixed before pilot images were inspected.
+
+Pinned model revisions are SD2 `f5bc1bd97485577aa0b946fa8a9004e2ec147402`, SANA `e2b3c0cbffebcd09d83805e88b9f5f106afc74ac`, DiffPano FLUX `fa45a9eb6808ba8fdfc7cc2756f7f1a16e0921f4`, and SD3.5 `b940f670f0eda2d07fbb75229e779da1ad11eb80`. PixelDiT retains official source commit `41f73006ae532b0b41fee72b181dc22891a5a01a` and the cached `pixeldit_t2i_v1.pth` checkpoint. Original SphereDiff FLUX uses official revision `3de623fc3c33e44ffbe2bad470d0f45bccf2eb21`; original SANA uses the same SANA revision as DiffPano. Both environments have Diffusers 0.32.2, Transformers 4.49.0, Accelerate 1.4.0 and Safetensors 0.8.0.
+
+The contrast tables above use HF1 divided by view standard deviation. Absolute HF1 is also retained and must be examined separately: LPW's absolute-HF main effect is negative in SD2, SANA and FLUX (-0.004874, -0.001314 and -0.003855), despite positive normalized-HF effects in SANA and FLUX. Center weighting increases absolute HF in SD2 and SANA (+0.003820 and +0.009633) but decreases it in FLUX (-0.001506), where uniform outputs contain substantial artificial texture. Therefore center weighting's strong visual benefit does not imply that it maximizes every HF proxy.
+
+Normalized aligned-pair agreement is also distinct from raw agreement. D's raw pair-MAE effect is +0.004620 in SD2 and +0.015259 in SANA, despite negative normalized effects; contrast increases explain part of that difference. In FLUX, shared initialization's normalized-pair effect is negative but its raw-pair effect is +0.004161. These results support qualified statements about the measured normalized proxy, not blanket improvements in global scene coherence. Full-camera view-to-consensus error, fixed camera-boundary gradient ratio, and ERP-wrap ratio remain separately reported; none is a semantic scene-coherence oracle.
+
+The bridge and exact directional prompt are common to every factorial cell, so this design does not estimate a bridge-on/off or directional-prompt-on/off effect. In particular, a comparison with historical L–V changes more than one condition and cannot identify a causal bridge improvement. The supported question is how A/B/C/D behave **with** the local bridge and current-state transition held fixed. PixelDiT supplies a VAE-free within-backend factorial, but differences between its effects and latent-model effects cannot be attributed solely to the VAE. Its model, solver, native grid and learned image distribution also differ.
+
+### Observed factorial contrasts: PixelDiT (VAE-free)
+
+| Term | Contrast change | HF1/std change | Normalized aligned-pair MAE change |
+|---|---:|---:|---:|
+| A | +0.204283 | +0.062540 | -0.043820 |
+| B | -0.163880 | -0.009010 | +0.030946 |
+| C | +0.036885 | +0.034750 | +0.016609 |
+| D | +0.260512 | -0.142000 | -0.146918 |
+| A×B | -0.111191 | -0.018191 | +0.009858 |
+| A×C | +0.007180 | -0.020459 | -0.019711 |
+| A×D | -0.142660 | -0.039155 | +0.051964 |
+| B×C | -0.005997 | +0.043335 | +0.017010 |
+| B×D | +0.045097 | -0.013799 | -0.004812 |
+| C×D | +0.020130 | -0.028777 | -0.016101 |
+
+All 16 native ERP previews were reviewed. Center weighting restores recognizable ruins in both initialization conditions and reduces artifact-heavy high-frequency energy. Shared standard/uniform outputs contain severe black/white speckling and clipping: diagnostic out-of-range fractions are 18.45% for arithmetic and 24.67% for DPA. Shared standard/center outputs show clearer structures but retain harsh black outlines and about 12.27–12.42% out-of-range values. Independent standard/center outputs are less extreme, at 0.78% and 1.34% for arithmetic and DPA. These fractions are measured on diagnostic RGB before PNG clipping, not the proportion of clipped pixels in the saved PNG.
+
+A's positive contrast/HF means therefore do not establish better perceptual detail. Its mean normalized-pair effect is favorable, but A×D is +0.051964; with center weighting, the simple shared-initialization effect is adverse (+0.008145). Its full-camera view-to-consensus main effect is also adverse (+0.012938). The strong negative A×D contrast interaction means shared initialization contributes much less additional contrast when center weighting is already active.
+
+LPW's average normalized-HF effect is negative, and center-weighted counterparts are visibly blurry/ghosted. The positive B×C HF interaction (+0.043335) reverses LPW's simple HF effect from -0.052345 with arithmetic to +0.034325 with DPA, including grain in uniform outputs. DPA's mean normalized-pair cost is +0.016609; C×D is -0.016101, so that cost is largely concentrated in uniform-weight cells. The negative C×D HF interaction likewise reduces the extra artifact HF under center weighting.
+
+`A0B0C0D1` is a conservative observed PixelDiT candidate: recognizable but imperfect ruins, normalized pair MAE 0.035405, and 0.78% out-of-range diagnostic RGB. `A0B0C1D1` lowers that pair metric to 0.028922 but increases saturation/out-of-range values to 1.34%. Shared standard center cells have more aggressive fine edges, but their severe clipping prevents interpreting those edges as an unqualified detail improvement. LPW trades much of the clipping for blur. These effects occur without a VAE, demonstrating that blur, grain, clipping and factor interactions in this study need not originate in VAE reconstruction.
+
+### Observed factorial contrasts: SD3.5
+
+| Term | Contrast change | HF1/std change | Normalized aligned-pair MAE change |
+|---|---:|---:|---:|
+| A | -0.000119 | +0.005956 | +0.001369 |
+| B | -0.026349 | +0.010241 | +0.030294 |
+| C | -0.032673 | +0.027044 | +0.024936 |
+| D | +0.259027 | -0.012373 | -0.015210 |
+| A×B | +0.002109 | -0.008452 | -0.009925 |
+| A×C | +0.009400 | -0.000489 | -0.006203 |
+| A×D | -0.016835 | -0.004708 | +0.000272 |
+| B×C | -0.011752 | +0.023934 | +0.023488 |
+| B×D | -0.010870 | -0.014995 | -0.013531 |
+| C×D | +0.069392 | -0.017242 | -0.016268 |
+
+All 16 native ERP previews were reviewed. Center weighting produces recognizable columns/temples and terrain in both A conditions, while uniform independent outputs are murky and shared uniform outputs retain sky speckles and fragmented architecture. A has essentially zero average contrast effect, positive normalized HF, and slightly worse normalized pair disagreement (+0.001369); its raw pair and full-camera disagreement effects are also adverse. Shared initialization is not an overall agreement improvement for SD3.5 in this seed.
+
+D remains the strongest contrast main effect (+0.259027), but decreases normalized HF (-0.012373) while increasing absolute HF (+0.003044). LPW center counterparts are visibly soft. The positive B normalized-HF main effect again hides an interaction: B×C is +0.023934, with B's simple effect -0.013694 under arithmetic and +0.034175 under DPA. LPW/DPA uniform images contain grain, and their average disagreement is worse. LPW's absolute-HF main effect is effectively zero (+0.000018), not evidence of retained recognizable detail.
+
+DPA darkens uniform outputs and saturates center outputs, reflected in C×D contrast +0.069392 and HF -0.017242. Independent standard DPA/center `A0B0C1D1` has 13.63% out-of-range diagnostic RGB versus 0.96% for its arithmetic counterpart. The DPA cell's lower normalized pair MAE (0.014683 versus 0.017756) therefore comes with substantial clipping. `A0B0C0D1` is a conservative detail/agreement candidate. `A1B0C0D1` is an alternative with lower out-of-range fraction (0.32%) but worse normalized pair MAE (0.023044). Neither establishes globally consistent 3D architecture.
+
+### Runtime, memory and measured operation costs
+
+All 80 cells completed on NVIDIA A100 GPUs. These are observed run costs, not controlled throughput benchmarks; node startup, file-system load, VAE conventions and native dimensions differ. `runtime_seconds` covers the dense pipeline including terminal assembly/diagnostics, while `total_seconds` additionally includes model preparation and initialization after imports. Slurm allocation time includes batch/import startup.
+
+| Backend | Mean pipeline min (range) | Mean total min | Max GPU allocated / reserved GiB | Max host RSS GiB | Guided calls, 16 cells |
+|---|---:|---:|---:|---:|---:|
+| sd2 | 6.00 (5.46–6.63) | 9.26 | 2.459 / 2.994 | 6.690 | 42720 |
+| sana | 13.59 (13.08–14.25) | 16.47 | 5.807 / 8.469 | 7.197 | 28480 |
+| flux | 28.76 (28.12–29.48) | 32.17 | 25.016 / 26.951 | 10.392 | 28480 |
+| sd35 | 36.53 (35.67–37.49) | 39.89 | 7.496 / 9.328 | 17.594 | 56960 |
+| pixeldit | 13.47 (12.86–14.32) | 17.20 | 4.160 / 4.721 | 13.105 | 71200 |
+
+Mean denoising-loop stage seconds per cell follow. These timers omit some preparation, terminal work and diagnostics, so their sum is not the pipeline total.
+
+| Backend | Model | Decode | Local round-trip encode | Synchronized encode | Warp/fusion |
+|---|---:|---:|---:|---:|---:|
+| sd2 | 83.75 | 106.11 | 57.60 | 56.35 | 23.18 |
+| sana | 128.33 | 245.86 | 184.01 | 174.90 | 27.89 |
+| flux | 1010.31 | 307.63 | 157.29 | 157.90 | 29.00 |
+| sd35 | 799.76 | 604.20 | 313.86 | 314.84 | 55.44 |
+| pixeldit | 607.70 | N/A | N/A | N/A | 60.29 |
+
+The 80 cells used **227,840 guided predictions and the same number of actual transformer forwards**, with no repeated predictions for diagnostics. Their summed pipeline duration is 26.224 hours; summed scientific Slurm allocation time is **121,587 seconds (33.774 hours)**. The two original references add **4,272 forwards** and **2,837 seconds (0.788 hours)** of GPU allocation, for **34.562 GPU allocation-hours across all 82 scientific runs**. Validation, five zero-denoiser preflights and CPU reports are accounted separately in `execution.json`.
+
+The local bridge requires one clean decode and two encodes per view/timestep, plus 89 terminal decodes per latent cell. These costs are substantial, especially in SANA; PixelDiT has zero VAE calls and all VAE timing fields are not applicable. Mean independent/shared initialization times are SD2 1.886/0.333 s, SANA 0.362/0.260 s, FLUX 1.555/1.069 s, SD3.5 1.516/0.962 s, and PixelDiT 25.576/15.944 s. No quality setting was reduced for runtime.
+
+### Resolution-matched original SphereDiff comparison
+
+The native outputs are untouched. The reference sheet projects both methods into the same saved cameras 7 and 59, with **1024×1024 local rasters and 80°×80° FOV**. Metrics in the following table are means over those two full perspective images after loading the saved PNGs into RGB [-1,1]. They are distinct from the raw four-view factorial diagnostics.
+
+Representative selection was made after the full factorial analysis: the `detail` row maximizes HF1/std among cells with at most 1% out-of-range diagnostic RGB; the `agreement` row minimizes normalized aligned-pair MAE among cells at or above backend-median contrast. For both FLUX and SANA, the `detail` row is **A0B1C1D0, an artifact-dominated metric extreme, not a perceptual winner**. This deliberately exposes the failure of a scalar HF ranking. Agreement selects FLUX A0B0C1D1 and SANA A1B0C1D1. Those are descriptive tradeoff choices, not universal optima.
+
+| Backend / method | Mean contrast | Mean absolute HF1 | Mean HF1/std |
+|---|---:|---:|---:|
+| flux / detail A0B1C1D0 | 0.124095 | 0.013222 | 0.110736 |
+| flux / agreement A0B0C1D1 | 0.443090 | 0.007043 | 0.016225 |
+| flux / original SphereDiff | 0.442428 | 0.032780 | 0.074089 |
+| sana / detail A0B1C1D0 | 0.089371 | 0.006867 | 0.077100 |
+| sana / agreement A1B0C1D1 | 0.536881 | 0.014328 | 0.026775 |
+| sana / original SphereDiff | 0.448643 | 0.017321 | 0.038601 |
+
+The reviewed FLUX matched views show more naturally resolved stone blocks, arches, ground debris and fine star texture in original SphereDiff. DiffPano A0B0C1D1 is recognizable and avoids the shared cells' conspicuous confetti, but its masonry and upper-sky detail remain soft. A0B0C0D1 is a less saturated alternative, and shared standard/center cells show sharper-looking architecture at the cost of bright sky artifacts. None of the reviewed DiffPano FLUX cells convincingly matches the original reference's combined local detail and scene appearance.
+
+For SANA, A1B0C1D1 is the selected agreement candidate; A1B0C0D1 is the more conservative saturation alternative. Original SphereDiff shows finer sky/ground texture and fuller column structures, with some haze or smeared edges. DiffPano has stronger blue/green saturation and ridged, simplified ground. The original looks more naturally detailed overall in these views, but neither this visual assessment nor two view metrics establish globally correct 3D geometry.
+
+These are whole-method comparisons. The original uses persistent spherical native state, point-based sampling/aggregation and different initialization. FLUX also uses 28 rather than 20 steps; original ERP resolution is twice the DiffPano height/width; SANA's actual spherical local grids differ from the nominal call dimensions. Matching diagnostic raster/FOV removes the direct raw-pixel-resolution comparison error, but does not equalize the information present in native outputs. FLUX source IDs/revisions differ: matching component configs and seven cached weight content addresses/sizes provide strong evidence, but no independent full weight-byte rehash was performed. Seed 0 is deterministic within each implementation, not paired initialization across methods. Original references are excluded from every factorial contrast.
+
+Artifacts: [FLUX/SANA matched comparison](../../outputs/bridge-factorial-ruins/20260918/spherediff-comparison.png); original [FLUX ERP](../../outputs/bridge-factorial-ruins/20260918/references/flux/final_result.png) and [SANA ERP](../../outputs/bridge-factorial-ruins/20260918/references/sana/final_result.png).
+
+### Cross-backend answers and next research configuration
+
+The findings below are **observed factorial contrasts for this controlled seed-0 study**. They do not supply p-values, population-level generalization, or a universal best configuration.
+
+1. **Matched shared initialization:** normalized selected-pair disagreement improves on average in SD2, SANA, FLUX and PixelDiT, but slightly worsens in SD3.5. Raw pair error decreases only in SD2/SANA; it increases in FLUX/SD3.5/PixelDiT. Shared standard PixelDiT and FLUX cells demonstrate that positive HF effects can reflect artifacts.
+2. **LPW with the bridge active:** center-weighted images are visibly softer across all five backends. Absolute-HF main effects are negative in four backends and effectively zero in SD3.5. Positive normalized-HF means in SANA/FLUX/SD3.5 are driven partly by LPW×DPA grain, not established detail preservation.
+3. **DPA with the bridge active:** normalized HF rises in every backend, but so does normalized selected-pair disagreement. Saturation, clipping and coefficient-level grain qualify the nominal detail benefit. DPA is an optional tradeoff, not the default recommendation.
+4. **Center weighting:** D has the largest positive contrast main effect in every backend and the clearest visual benefit for recognizable ruins. It does not maximize HF: removing uniform-cell grain decreases normalized HF in FLUX/SD3.5/PixelDiT. Thus it remains the strongest observed structural/contrast factor, not a universal scalar detail optimum.
+5. **A×D:** normalized-pair interactions are positive in all five backends, especially FLUX (+0.025515) and PixelDiT (+0.051964). Shared initialization's normalized agreement benefit weakens when center weighting is active; the D1 simple effect is adverse in FLUX and PixelDiT.
+6. **C×D:** normalized-HF and normalized-pair interactions are negative in every backend. Center weighting reduces DPA's incremental artifact HF and disagreement cost. In SANA/FLUX/SD3.5/PixelDiT, positive contrast interactions also show stronger DPA contrast changes under center weighting. SD2's contrast interaction is negative.
+7. **B×C:** normalized-HF interactions are positive in every backend, particularly SANA, FLUX, SD3.5 and PixelDiT. In those four, LPW lowers normalized HF with arithmetic but raises it with DPA, accompanied by visible grain in uniform cells. These interactions explain why marginal B effects alone mislead.
+8. **VAE-free evidence:** PixelDiT reproduces the weighting benefit, LPW blur and LPW×DPA artifact interaction, as well as sharpness/clipping tradeoffs. Those behaviors do not require a VAE. Cross-model differences still do not isolate VAE causation.
+9. **Detail versus coherence:** shared standard uniform FLUX/PixelDiT and LPW/DPA uniform cells are examples of high HF with poor recognizable scene structure. DPA center cells can improve normalized pair error while worsening clipping. Low disagreement in dark or blurred cells is not evidence of useful global coherence.
+10. **Closest original-reference candidates:** FLUX A0B0C1D1, with A0B0C0D1 as a less saturated alternative; SANA A1B0C1D1, with A1B0C0D1 as a less saturated alternative. Original references remain more naturally detailed overall in the reviewed matched views; no single DiffPano factor explains the difference.
+
+Seam proxies reinforce the need for separate outcomes. LPW increases the ERP-wrap gradient ratio on average in all five backends. Center weighting lowers the fixed camera-boundary gradient ratio in all five, but its ERP-wrap ratio effect is adverse in PixelDiT. These ratios describe gradient concentration, not semantic continuity, and can change with texture or blur. Full-camera disagreement and absolute/normalized aligned-pair errors are retained separately in the machine-readable summary.
+
+**Recommended next baseline:** retain standard warp B0, arithmetic fusion C0 and center weighting D1, with the same local bridge/current-state framework and fixed angular cover. Use A1 for SD2/SANA as a useful observed baseline, and A0 for FLUX/SD3.5/PixelDiT as the conservative artifact/agreement choice. These are starting configurations for future independently authorized research, not population-level winners. Preserve C1 center variants as explicit saturation/detail tradeoffs for FLUX/SANA, rather than enabling DPA universally. No additional generations, seeds, prompts, parameter tuning or bridge-off experiments were run in this task.
+
+### Final completion and preservation audit
+
+**Completed: 80/80 DiffPano cells plus 2/2 original SphereDiff references. Failed: 0; skipped: 0; pending: 0.** All 82 scientific generations succeeded on their first attempts. The 20 pilot results were reused, with exactly 60 additional matrix generations and no scientific retries or tuning. Every study Slurm job, including validation/preflight/report jobs, finished with `COMPLETED` and exit code `0:0`.
+
+Final report job **19784607** passed the 80-cell audit: resolved configs and non-factor scientific settings, source hashes, exact prompt, common angular camera digest, schedules, bridge/transition flags, A0/A1 matched maps, source release, artifact budgets, finite diagnostics and **227,840** guided/actual-forward counts. All 1,647 historical artifact sizes and SHA-256 hashes were verified unchanged. The original report prefix, pinned manifest, validated scientific sources and original SphereDiff snapshot hashes also passed preservation checks. Branch remains `no_sphere`, HEAD remains `8bf6d13257a32db5ee279ca973cde2dadc9beb25`; dirty preexisting work is preserved and no commit was made.
+
+Maximum recorded current-state reconstruction errors across each full matrix are SD2 2.8610e-6, SANA 2.3842e-7, FLUX 3.0547e-7, SD3.5 1.1921e-7 and PixelDiT 5.9605e-8. These are separate from the real-VAE bridge identity oracle above. The tests and runtime audit retain the current-state transition; stored pre-fusion endpoints do not determine the next state.
+
+All 80 native images, all five 4×4 contact sheets, and both original-reference matched-camera comparisons received visual review. The two inherited metadata corrections are transparent: embedded PNG preview payloads were removed without changing numerical diagnostics, and original SANA's effective solver-order metadata was corrected from mapping value 2 to the actually used attribute value 1, retaining the evidence. No scientific source or generation was changed by either correction.
+
+Study artifacts total **183 files, 157,585,143 bytes (150.285 MiB)**: 88 PNGs, 93 JSON files, one CSV and the launcher lock. Each of the 82 scientific output folders contains exactly `final_result.png` and `metadata.json`; no noise, native-state, residual, per-step or pyramid tensors/images are retained. Associated Slurm logs add **182 files and 1,534,022 bytes**. Combined artifacts plus logs are **159,119,165 bytes**; source/model caches and temporary display helpers are excluded.
+
+The main artifacts are [manifest.json](../../outputs/bridge-factorial-ruins/20260918/manifest.json), [factor-summary.csv](../../outputs/bridge-factorial-ruins/20260918/factor-summary.csv), [factor-summary.json](../../outputs/bridge-factorial-ruins/20260918/factor-summary.json), and [execution.json](../../outputs/bridge-factorial-ruins/20260918/execution.json). The summary includes all four main effects and all six two-factor interactions for every scalar metric in the summary table, separately by backend.
+
+Contact sheets: [SD2](../../outputs/bridge-factorial-ruins/20260918/sd2-factorial.png), [SANA](../../outputs/bridge-factorial-ruins/20260918/sana-factorial.png), [FLUX](../../outputs/bridge-factorial-ruins/20260918/flux-factorial.png), [SD3.5](../../outputs/bridge-factorial-ruins/20260918/sd35-factorial.png), [PixelDiT](../../outputs/bridge-factorial-ruins/20260918/pixeldit-factorial.png), and [original SphereDiff comparison](../../outputs/bridge-factorial-ruins/20260918/spherediff-comparison.png).
+
+## Selected Ruins Cells at 2048×4096 ERP
+
+This follow-up changes only the clean RGB ERP raster to **height 2048, width 4096**, including the projection/fusion/coverage/diagnostic grids derived from that raster. It reuses 22 requested cells from the completed bridge factorial. Every resolved scientific config is compared with its completed baseline and must differ at exactly `erp.height` and `erp.width`.
+
+| Backend | Requested ABCD codes | Runs |
+|---|---|---:|
+| FLUX | 0001, 0101, 1001, 1011, 1101, 1111 | 6 |
+| PixelDiT | 1001, 1011, 1111, 0001 | 4 |
+| SANA | 0001, 0011, 1001, 1011, 1111 | 5 |
+| SD2 | 1001, 1011, 1111 | 3 |
+| SD3.5 | 1000, 1001, 1011, 1010 | 4 |
+
+The common saved 89-camera cover, camera ordering and every **80° horizontal × 80° vertical frustum** remain unchanged. SD2 keeps 512×512 local RGB; the other backends keep 1024×1024. Native dimensions, seed 0, exact five-line ruins prompt, checkpoint revisions, precision, guidance, prepared schedules, step counts, local bridge, current-state transition, A/B/C/D meanings, DPA parameters and five-level LPW settings remain identical to each corresponding baseline cell. The native noise ERP dimensions depend on the native raster/FOV, not clean RGB ERP size, and therefore also remain unchanged. Initial local state hashes must match each paired baseline exactly.
+
+The isolated harness lives in `studies/bridge_erp4k/`, with output root `outputs/bridge-erp4k-ruins/20260918/`. It imports the unchanged validated generation runner into a private module and supplies only study I/O, resolution-config and saved-camera verification hooks; it does not modify the original module or pipeline algorithms. Existing scientific code and all completed study artifacts are preserved. The original L geometry's raster-specific lookup is verified at its original raster, and full coverage is checked again at the new ERP raster using those exact saved cameras. No camera cover is regenerated.
+
+Validation includes four focused resolution/subset/invariance tests, the existing 226-test regression suite, and five real-backend preflights. Each preflight probes full-size standard and LPW DPA/center fusion with all 89 cameras, checks returned local dimensions, repeats the existing bridge/noise checks without denoising, and requires the schedule, conditioning, noise-map and initial-state metadata to match the completed baseline. All 22 actual generations retain their original steps and model-call budgets, totaling 59,630 guided predictions.
+
+This is a selected-cell paired resolution comparison, not another complete 2^4 matrix. No new factorial main effects/interactions will be inferred from the incomplete subset. Comparisons use the unchanged local diagnostic camera rasters/FOV, retaining native output PNGs. Raw ERP pixel-frequency and fixed-pixel seam metrics at differing ERP resolutions are not directly comparable. No additional original SphereDiff runs are needed; both existing original references already have 2048×4096 ERP outputs.
+
+CPU validation job **19786132** passed compilation, whitespace checks, all **4 focused tests** (19.817 s), and all **226 regression tests** (117.707 s). Total allocation duration, including environment/import startup, was 10m48s. The frozen 22-cell manifest contains only the two allowed config changes; the angular geometry SHA remains `b55b4eb5051cdfb8c579e81d4f51ece1f15aeb0e8d7e1fde6b7b74a49154435c`. GPU preflight jobs are 19786158–19786162.
+
+All **22 requested generation jobs** are submitted with Slurm `afterok` dependencies on all five preflights. The runtime independently enforces every passed preflight and matching source hashes before generation. Paired analysis/preservation job **19786195** depends on all 22 generations. No outputs are yet claimed complete. Pending preflight walltimes were reduced from 35 to 20 minutes for backfill eligibility, leaving over 11 minutes beyond the longest historical preflight; GPU type, memory and scientific settings were unchanged.

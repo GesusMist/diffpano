@@ -1,3 +1,4 @@
+from historical_configs import retained_reference
 import copy
 import unittest
 from pathlib import Path
@@ -92,7 +93,7 @@ class DetailConsensusTests(unittest.TestCase):
         specs = read('configs/experiments/vae_residual/h-all-models.json')
         self.assertEqual(set(specs), {'sd2','sana','flux','sd35','pixeldit'})
         for spec in specs.values():
-            config, _ = check_configs(spec)
+            config, _ = check_configs(retained_reference(spec))
             self.assertEqual(config.fusion, self.fusion)
             invalid = copy.deepcopy(config)
             invalid.global_pipeline.mode = 'native_multidiffusion'

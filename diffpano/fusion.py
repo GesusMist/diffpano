@@ -61,6 +61,7 @@ class RGBFusionAccumulator:
             batch, 1, height, width, device=self.previous.device, dtype=torch.float32
         )
         self.contributor_count = torch.zeros_like(self.ordinary_den)
+        self.squared_weight = torch.zeros_like(self.ordinary_den) if config.mode == "weighted_average" else None
         self.detail_num: Optional[torch.Tensor] = None
         self.detail_den: Optional[torch.Tensor] = None
         if config.mode == "detail_preserving_average":
@@ -97,6 +98,8 @@ class RGBFusionAccumulator:
             effective = effective * confidence
         self.ordinary_num.add_(rgb * effective)
         self.ordinary_den.add_(effective)
+        if self.squared_weight is not None:
+            self.squared_weight.add_(effective.square())
         self.contributor_count.add_((mask > 0).to(torch.float32))
         if self.detail_num is not None and self.detail_den is not None:
             detail_weight = effective * (rgb.abs() + self.config.epsilon).pow(self.config.power)
@@ -104,8 +107,15 @@ class RGBFusionAccumulator:
             self.detail_den.add_(detail_weight)
 
     def finalize(self) -> FusionResult:
-        covered = self.ordinary_den > self.config.epsilon
-        ordinary = self.ordinary_num / self.ordinary_den.clamp_min(self.config.epsilon)
+        # Center weights can be valid below epsilon; normalization must not darken
+        # them or depend on duplication/scaling. Historical average/DPA unchanged.
+        if self.config.mode == "weighted_average":
+            covered = self.ordinary_den > 0
+            denominator = torch.where(covered, self.ordinary_den, torch.ones_like(self.ordinary_den))
+        else:
+            covered = self.ordinary_den > self.config.epsilon
+            denominator = self.ordinary_den.clamp_min(self.config.epsilon)
+        ordinary = self.ordinary_num / denominator
         if self.detail_num is not None and self.detail_den is not None:
             detail = self.detail_num / self.detail_den.clamp_min(self.config.epsilon)
             fused = ordinary + self.config.alpha * (detail - ordinary)

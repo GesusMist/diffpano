@@ -1,3 +1,4 @@
+from historical_configs import retained_reference
 import copy
 import unittest
 from dataclasses import replace
@@ -122,11 +123,11 @@ class CurrentStateTests(unittest.TestCase):
         specs=read('configs/experiments/vae_residual/i-all-models.json')
         self.assertEqual(list(specs),['sd35','flux','sana','sd2'])
         for spec in specs.values():
-            config,_=check_configs(spec)
+            config,_=check_configs(retained_reference(spec))
             self.assertEqual(config.fusion.mode,'average')
             self.assertEqual(config.consensus_transition.mode,'preserve_current_state')
         from scripts.detail_preserving_experiment import check_configs as check_h
-        for spec in read('configs/experiments/vae_residual/h-all-models.json').values():check_h(spec)
+        for spec in read('configs/experiments/vae_residual/h-all-models.json').values():check_h(retained_reference(spec))
 
 
 if __name__=='__main__':unittest.main()

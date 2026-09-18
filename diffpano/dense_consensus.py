@@ -83,7 +83,7 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
                 warp_operator=warp_operator,flow_transition=flow_transition,view_order=view_order)
         else:
             f = warp_operator.fusion_config
-            if f.mode != 'detail_preserving_average' or f.weight_mode != 'uniform':
+            if (f.mode, f.weight_mode) not in {('detail_preserving_average', 'uniform'), ('weighted_average', 'spherediff_center')}:
                 raise ValueError('Dense DPA requires uniform weights')
             expected = LaplacianPyramidWarpOperator if warp_operator.warp_config.mode == 'lpw' else StandardWarpOperator
             if type(warp_operator) is not expected:
@@ -138,8 +138,15 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
     def _finalize(self, accumulator, timings):
         return self._timed(timings,'erp_reconstruction' if isinstance(self.operator,LaplacianPyramidWarpOperator) else 'rgb_finalize',accumulator.finalize)
 
+    def _local_clean_residual(self, clean, decoded_rgb, timings):
+        """Optional local bridge hook; historical trajectories have no residual."""
+        return None
+
+    def _consensus_native_clean(self, rgb, local_residual, timings):
+        return self._timed(timings, 'encode', lambda: self.backend.encode_clean(rgb))
+
     @torch.no_grad()
-    def run_dense(self, local_states, conditionings, *, required_minimum=1, progress=None, snapshot_callback=None, expected_initial_sha256=None):
+    def run_dense(self, local_states, conditionings, *, required_minimum=1, progress=None, snapshot_callback=None, expected_initial_sha256=None, stage_audit=None):
         if camera_digest(self.cameras) != self.camera_sha256:
             raise AssertionError('Camera slots changed')
         count = len(self.cameras)
@@ -160,11 +167,12 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
         scheduler = getattr(getattr(self.backend,'pipeline',None),'scheduler',None)
         before = getattr(self.backend,'guided_prediction_count',0)
         totals = {}; step_summaries = []
+        last_clean = None; audit_seconds = 0.
         for step,timestep in enumerate(timesteps):
             if camera_digest(self.cameras) != self.camera_sha256:
                 raise AssertionError('Camera slots changed during trajectory')
             timings = {}; acc = self._accumulator(batch)
-            originals = [None]*count; native_cleans = [None]*count; coefficients = None
+            originals = [None]*count; native_cleans = [None]*count; local_residuals = [None]*count; coefficients = None
             # All denoiser predictions see frozen states; no next state yet exists.
             for i in self.view_order:
                 if scheduler is not None:
@@ -183,6 +191,7 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
                 rgb = self._timed(timings,'decode',lambda:self.backend.decode_clean(pair.clean))
                 if tuple(rgb.shape) != (batch,3,self.cameras[i].height,self.cameras[i].width):
                     raise ValueError('Wrong clean RGB view dimensions')
+                local_residuals[i] = self._local_clean_residual(pair.clean, rgb, timings)
                 originals[i] = rgb.detach().cpu()
                 self._accumulate(acc,rgb,self.cameras[i],timings)
                 del pair,rgb,x
@@ -205,7 +214,19 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
                 if pixels:
                     error = (contribution.rgb-fused.erp_rgb).abs()*valid
                     statistics['overlap_view_to_consensus'].add(error.sum()/(3*pixels),error.max())
-                clean = self._timed(timings,'encode',lambda:self.backend.encode_clean(crop))
+                clean = self._consensus_native_clean(crop, local_residuals[i], timings)
+                if stage_audit is not None and stage_audit.wants(step+1, i):
+                    started_audit = time.perf_counter()
+                    devices = [self.backend.device.index or 0] if self.backend.device.type == 'cuda' else []
+                    with torch.random.fork_rng(devices=devices):
+                        if stage_audit.backend_name == 'flux':
+                            roundtrip = self.backend.decode_clean(clean.detach().clone())
+                            stage_audit.extra_decodes += 1
+                        else:
+                            roundtrip = crop.detach().clone()
+                        stage_audit.observe(step+1, i, original.detach().clone(), crop.detach().clone(), roundtrip)
+                        del roundtrip
+                    audit_seconds += time.perf_counter()-started_audit
                 d = (clean-native_cleans[i].to(self.backend.device)).abs()
                 statistics['native_consensus_delta'].add(d.mean(),d.max())
                 a,s,an,sn = coefficients
@@ -219,7 +240,7 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
                 if not bool(torch.isfinite(nxt).all()):
                     raise ValueError('Non-finite next state')
                 next_states[i] = nxt.cpu()
-                originals[i] = native_cleans[i] = None
+                originals[i] = native_cleans[i] = local_residuals[i] = None
                 del x,original,crop,contribution,clean,nxt,d,error,reconstructed,update
             if not bool(torch.isfinite(fused.erp_rgb).all()):
                 raise ValueError('Non-finite clean ERP')
@@ -232,7 +253,9 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
                 snapshot_callback(dict(requested_percentages=milestones[step+1],completed_step=step+1,
                     scheduler_timestep=float(timestep),alpha=float(coefficients[0]),sigma=float(coefficients[1]),
                     next_alpha=float(coefficients[2]),next_sigma=float(coefficients[3])),fused.erp_rgb.detach().clone())
-            del fused,acc,originals,native_cleans
+            if stage_audit is not None and step+1 == len(timesteps):
+                last_clean = fused.erp_rgb.detach().clone()
+            del fused,acc,originals,native_cleans,local_residuals
             for name in ('last_model_prediction','last_clean_prediction'):
                 if hasattr(self.backend,name):setattr(self.backend,name,None)
             if progress is not None:progress(step,len(timesteps),step_summaries[-1])
@@ -250,12 +273,18 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
             raise AssertionError('Conditioning mutated')
         calls = self.backend.guided_prediction_count-before
         if calls != count*len(timesteps):raise AssertionError('Unexpected denoiser count')
+        stage_record = {}
+        if stage_audit is not None:
+            started_audit = time.perf_counter()
+            stage_record = stage_audit.finish(last_clean, final.erp_rgb, self.cameras, self.operator, coefficients)
+            audit_seconds += time.perf_counter()-started_audit
+            stage_record['diagnostic_seconds'] = audit_seconds
         return DenseConsensusResult(final.erp_rgb,compact_series(step_summaries),totals,
-            dict(guided_predictions=calls,expected_guided_predictions=count*len(timesteps),extra_denoiser_calls=0,
+            dict(stage_audit=stage_record, guided_predictions=calls,expected_guided_predictions=count*len(timesteps),extra_denoiser_calls=0,
                  camera_sha256=self.camera_sha256,cameras_fixed=True,conditioning_fixed=True,
                  conditioning_sha256=hashlib.sha256(''.join(condition_hashes).encode()).hexdigest(),
                  initial_local_sha256=initial_hash,initialization='one CPU Gaussian stream in fixed camera order',
                  synchronous=True,persistent_state='local native noisy',erp_state='transient clean RGB',
-                 transition='preserve_current_state',vae_residual=False,fixed_noise_renoising=False,
+                 transition='preserve_current_state',vae_residual=getattr(self, 'uses_local_vae_bridge', False),fixed_noise_renoising=False,
                  spherical_latent=False,erp_latent=False,warp=self.operator.warp_config.mode,fusion=self.operator.fusion_config.mode,
                  diagnostics='O(N) view-to-fused-ERP overlap; raw RGB; mean across view means, max pixel error'))

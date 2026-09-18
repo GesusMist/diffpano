@@ -255,14 +255,20 @@ class ExperimentConfig:
     dense_consensus: Optional[DenseConsensusConfig] = None
 
     def validate(self) -> None:
+        factorial = self.global_pipeline.mode == "erp_bridge_factorial"
+        if factorial:
+            from diffpano.bridge_factorial import validate_factorial_config
+            validate_factorial_config(self)
         if self.consensus_transition.mode not in {"preserve_prefusion_endpoint", "preserve_current_state"}:
             raise ValueError("Unknown consensus transition mode")
-        if self.consensus_transition.mode == "preserve_current_state":
-            if self.global_pipeline.mode not in {"implied_endpoint_consensus", "erp_local_current_consensus", "erp_local_dense_consensus"} or (self.fusion.mode != "average" and not (self.global_pipeline.mode == "erp_local_dense_consensus" and self.dense_consensus is not None and self.dense_consensus.experiment in {"N", "O"} and self.fusion.mode == "detail_preserving_average")) or self.fusion.weight_mode != "uniform":
+        if self.consensus_transition.mode == "preserve_current_state" and not factorial:
+            dense_label = self.dense_consensus.experiment if self.global_pipeline.mode == "erp_local_dense_consensus" and self.dense_consensus else None
+            allowed = ("detail_preserving_average", "uniform") if dense_label in {"N", "O"} else (("weighted_average", "spherediff_center") if dense_label == "S" else ("average", "uniform"))
+            if self.global_pipeline.mode not in {"implied_endpoint_consensus", "erp_local_current_consensus", "erp_local_dense_consensus"} or (self.fusion.mode, self.fusion.weight_mode) != allowed:
                 raise ValueError("Experiment I requires implied endpoint consensus and average/uniform fusion")
         if self.global_pipeline.mode == "erp_local_dense_consensus":
             dense = self.dense_consensus
-            if dense is None or dense.experiment not in {"L", "M", "N", "O"}:
+            if dense is None or dense.experiment not in {"L", "M", "N", "O", "P", "S", "T"}:
                 raise ValueError("Dense ERP requires an explicit L/M/N/O configuration")
             expected = "spherediff_directional" if dense.experiment != "M" else "original_k_global_slot_8"
             if dense.prompt_assignment != expected or not dense.geometry_file:
@@ -270,7 +276,11 @@ class ExperimentConfig:
             if self.canvas.mode != "erp" or self.warp.mode != ("lpw" if dense.experiment == "O" else "standard") or self.sampling.strategy != "spherediff_fixed":
                 raise ValueError("Dense ERP requires standard fixed-camera geometry")
             expected_fusion = "detail_preserving_average" if dense.experiment in {"N", "O"} else "average"
-            if self.fusion.mode != expected_fusion or self.fusion.weight_mode != "uniform":
+            if dense.experiment == "S":
+                expected_fusion = "weighted_average"
+                if self.fusion.spherediff_temperature != 0.1:
+                    raise ValueError("S fixes the canonical temperature at 0.1")
+            if self.fusion.mode != expected_fusion or self.fusion.weight_mode != ("spherediff_center" if dense.experiment == "S" else "uniform"):
                 raise ValueError("Dense experiment has the wrong fusion mode")
             if dense.experiment in {"N", "O"}:
                 if dense.geometry_file != "outputs/vae-residual-controls/20260915-dense-lm/geometry/experiment_l.json":
@@ -294,7 +304,7 @@ class ExperimentConfig:
                 raise ValueError("K requires individual fixed camera slots without rotation")
         if self.canvas.mode not in {"erp", "planar"}:
             raise ValueError("canvas.mode must be erp or planar")
-        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus", "native_multidiffusion", "implied_endpoint_consensus", "erp_local_current_consensus", "erp_local_dense_consensus"}:
+        if self.global_pipeline.mode not in {"erp_rgb_state", "erp_x0_consensus", "native_multidiffusion", "implied_endpoint_consensus", "erp_local_current_consensus", "erp_local_dense_consensus", "erp_bridge_factorial"}:
             raise ValueError(
                 "global_pipeline.mode must be erp_rgb_state, erp_x0_consensus, native_multidiffusion, or implied_endpoint_consensus"
             )
