@@ -1,0 +1,101 @@
+{
+  "sha": "005a67a3efdfcb30491515955101d0a8cfdd62d6",
+  "node_id": "C_kwDOMPld8NoAKDAwNWE2N2EzZWZkZmNiMzA0OTE1MTU5NTUxMDFkMGE4Y2ZkZDYyZDY",
+  "commit": {
+    "author": {
+      "name": "Ryan Burgert",
+      "email": "ryancentralorg@gmail.com",
+      "date": "2026-05-29T17:01:34Z"
+    },
+    "committer": {
+      "name": "Ryan Burgert",
+      "email": "ryancentralorg@gmail.com",
+      "date": "2026-05-29T17:01:34Z"
+    },
+    "message": "Error SUpproess",
+    "tree": {
+      "sha": "e5b26480e41af7b6170dafa3574ed2f64477a0c0",
+      "url": "https://api.github.com/repos/RyannDaGreat/CommonSource/git/trees/e5b26480e41af7b6170dafa3574ed2f64477a0c0"
+    },
+    "url": "https://api.github.com/repos/RyannDaGreat/CommonSource/git/commits/005a67a3efdfcb30491515955101d0a8cfdd62d6",
+    "comment_count": 0,
+    "verification": {
+      "verified": false,
+      "reason": "unsigned",
+      "signature": null,
+      "payload": null,
+      "verified_at": null
+    }
+  },
+  "url": "https://api.github.com/repos/RyannDaGreat/CommonSource/commits/005a67a3efdfcb30491515955101d0a8cfdd62d6",
+  "html_url": "https://github.com/RyannDaGreat/CommonSource/commit/005a67a3efdfcb30491515955101d0a8cfdd62d6",
+  "comments_url": "https://api.github.com/repos/RyannDaGreat/CommonSource/commits/005a67a3efdfcb30491515955101d0a8cfdd62d6/comments",
+  "author": {
+    "login": "RyannDaGreat",
+    "id": 17944835,
+    "node_id": "MDQ6VXNlcjE3OTQ0ODM1",
+    "avatar_url": "https://avatars.githubusercontent.com/u/17944835?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/RyannDaGreat",
+    "html_url": "https://github.com/RyannDaGreat",
+    "followers_url": "https://api.github.com/users/RyannDaGreat/followers",
+    "following_url": "https://api.github.com/users/RyannDaGreat/following{/other_user}",
+    "gists_url": "https://api.github.com/users/RyannDaGreat/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/RyannDaGreat/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/RyannDaGreat/subscriptions",
+    "organizations_url": "https://api.github.com/users/RyannDaGreat/orgs",
+    "repos_url": "https://api.github.com/users/RyannDaGreat/repos",
+    "events_url": "https://api.github.com/users/RyannDaGreat/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/RyannDaGreat/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "committer": {
+    "login": "RyannDaGreat",
+    "id": 17944835,
+    "node_id": "MDQ6VXNlcjE3OTQ0ODM1",
+    "avatar_url": "https://avatars.githubusercontent.com/u/17944835?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/RyannDaGreat",
+    "html_url": "https://github.com/RyannDaGreat",
+    "followers_url": "https://api.github.com/users/RyannDaGreat/followers",
+    "following_url": "https://api.github.com/users/RyannDaGreat/following{/other_user}",
+    "gists_url": "https://api.github.com/users/RyannDaGreat/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/RyannDaGreat/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/RyannDaGreat/subscriptions",
+    "organizations_url": "https://api.github.com/users/RyannDaGreat/orgs",
+    "repos_url": "https://api.github.com/users/RyannDaGreat/repos",
+    "events_url": "https://api.github.com/users/RyannDaGreat/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/RyannDaGreat/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "parents": [
+    {
+      "sha": "dcf34b27a7a216e8809cf36d614394377170bf40",
+      "url": "https://api.github.com/repos/RyannDaGreat/CommonSource/commits/dcf34b27a7a216e8809cf36d614394377170bf40",
+      "html_url": "https://github.com/RyannDaGreat/CommonSource/commit/dcf34b27a7a216e8809cf36d614394377170bf40"
+    }
+  ],
+  "stats": {
+    "total": 23,
+    "additions": 19,
+    "deletions": 4
+  },
+  "files": [
+    {
+      "sha": "0b13fd953e2ad31446cbfa829ccad1c5b0b416d7",
+      "filename": "projects/mask_generator/random_video_mask_generator.py",
+      "status": "modified",
+      "additions": 19,
+      "deletions": 4,
+      "changes": 23,
+      "blob_url": "https://github.com/RyannDaGreat/CommonSource/blob/005a67a3efdfcb30491515955101d0a8cfdd62d6/projects%2Fmask_generator%2Frandom_video_mask_generator.py",
+      "raw_url": "https://github.com/RyannDaGreat/CommonSource/raw/005a67a3efdfcb30491515955101d0a8cfdd62d6/projects%2Fmask_generator%2Frandom_video_mask_generator.py",
+      "contents_url": "https://api.github.com/repos/RyannDaGreat/CommonSource/contents/projects%2Fmask_generator%2Frandom_video_mask_generator.py?ref=005a67a3efdfcb30491515955101d0a8cfdd62d6",
+      "patch": "@@ -237,10 +237,25 @@ def __init__(self):\n         }\n \n     def draw(self, frame, frame_width, frame_height):\n-        h = self.hyperparameters\n-        axes = (max(1, int(h[\"width\"] / 2)), max(1, int(h[\"height\"] / 2)))\n-        cv2.ellipse(frame, (int(h[\"center_x\"]), int(h[\"center_y\"])),\n-                    axes, int(h[\"angle\"]), 0, 360, 255, -1)\n+        # Animation deltas can drive width/height negative; OpenCV's ellipse\n+        # asserts axes >= 0, so clamp them to a valid range.\n+        axes = (\n+            max(0, int(self.hyperparameters[\"width\"] / 2)),\n+            max(0, int(self.hyperparameters[\"height\"] / 2)),\n+        )\n+        cv2.ellipse(\n+            frame,\n+            (\n+                int(self.hyperparameters[\"center_x\"]),\n+                int(self.hyperparameters[\"center_y\"]),\n+            ),\n+            axes,\n+            int(self.hyperparameters[\"angle\"]),\n+            0,\n+            360,\n+            (255, 255, 255),\n+            -1,\n+        )\n         return frame\n \n     def randomize_hyperparameters(self, frame_width, frame_height):"
+    }
+  ]
+}

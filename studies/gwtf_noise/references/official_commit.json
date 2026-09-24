@@ -1,0 +1,101 @@
+{
+  "sha": "018f35148b3afae9bf57aa915d79c4e2d055552c",
+  "node_id": "C_kwDONn1YdNoAKDAxOGYzNTE0OGIzYWZhZTliZjU3YWE5MTVkNzljNGUyZDA1NTU1MmM",
+  "commit": {
+    "author": {
+      "name": "Ning Yu",
+      "email": "ningyu.hust@gmail.com",
+      "date": "2025-08-06T06:24:47Z"
+    },
+    "committer": {
+      "name": "GitHub",
+      "email": "noreply@github.com",
+      "date": "2025-08-06T06:24:47Z"
+    },
+    "message": "Update README.md",
+    "tree": {
+      "sha": "84ea80be4152b4ef7d7d0f80516de0762ab7e39c",
+      "url": "https://api.github.com/repos/Eyeline-Labs/Go-with-the-Flow/git/trees/84ea80be4152b4ef7d7d0f80516de0762ab7e39c"
+    },
+    "url": "https://api.github.com/repos/Eyeline-Labs/Go-with-the-Flow/git/commits/018f35148b3afae9bf57aa915d79c4e2d055552c",
+    "comment_count": 0,
+    "verification": {
+      "verified": true,
+      "reason": "valid",
+      "signature": "-----BEGIN PGP SIGNATURE-----\n\nwsFcBAABCAAQBQJokvUvCRC1aQ7uu5UhlAAA+kkQAH40/nRpAr3Q0tBWERvcU1f9\nz9ucgfOXAm84IHkaS7j86GwZ6lGo9ig8zqM566ZR0txM97iBo8pNcUUYBhvXdpIO\n6w2NLchvqac0KYGtyuhXw/MpJWg0o40lK0Mv5gRPZIz3xyUHzela255izJylj9cH\nhOoYRQVElOx6dRRKZBxg6aR+RvZkjQYerja5YufLVifFk/r2quQkMc1o7WK65W5/\nmDGMlGVow6wsBXyjCDqtnzl2gpadAGL3KrcvzHTvN+1VoY1CCygYLGIVAK9t7qkv\ncJTOTbChcPVA9e8YVyzgJA4GcXi72RLUypDWzUeA3VEIe37TMYOcnKSuzvbCRwsZ\n+iIzY/ghhZ05h/IZSVXZh1IqA+bSsTJy9J/HKD/zYhOQ2pLZrt5NOOntLmAohaxu\n6CBnP+qHyjC/azS5EbUHhmAWSYtYe+qTFCjj+0d9sYXhbddXoxV751YYgE0aVqTR\n+PPozAi0zV/t+y8Cc6jD7w5K2ibNcd5N4O44gSEf4NuREgBvI6rkgpLYKjhyGYz7\nfnAU3ysKWB2xprDatdPFyUy5mK00LZYxLt4AwkfdryBuVjtySE6FoWORkOVUtWdi\n9VMFt9UUxy5cDgww3Di1jNVrXrCysBM0Ggw3AI7TM4QOukvouS33wCdDCgwC3JqA\nLBYP7VJ2n2WGuEoKt8Di\n=m1rv\n-----END PGP SIGNATURE-----\n",
+      "payload": "tree 84ea80be4152b4ef7d7d0f80516de0762ab7e39c\nparent 47f19228e1d3fe643cab0b4bdb5b651c39f90140\nauthor Ning Yu <ningyu.hust@gmail.com> 1754461487 -0700\ncommitter GitHub <noreply@github.com> 1754461487 -0700\n\nUpdate README.md",
+      "verified_at": "2025-08-06T06:24:48Z"
+    }
+  },
+  "url": "https://api.github.com/repos/Eyeline-Labs/Go-with-the-Flow/commits/018f35148b3afae9bf57aa915d79c4e2d055552c",
+  "html_url": "https://github.com/Eyeline-Labs/Go-with-the-Flow/commit/018f35148b3afae9bf57aa915d79c4e2d055552c",
+  "comments_url": "https://api.github.com/repos/Eyeline-Labs/Go-with-the-Flow/commits/018f35148b3afae9bf57aa915d79c4e2d055552c/comments",
+  "author": {
+    "login": "ningyu1991",
+    "id": 13144825,
+    "node_id": "MDQ6VXNlcjEzMTQ0ODI1",
+    "avatar_url": "https://avatars.githubusercontent.com/u/13144825?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/ningyu1991",
+    "html_url": "https://github.com/ningyu1991",
+    "followers_url": "https://api.github.com/users/ningyu1991/followers",
+    "following_url": "https://api.github.com/users/ningyu1991/following{/other_user}",
+    "gists_url": "https://api.github.com/users/ningyu1991/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/ningyu1991/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/ningyu1991/subscriptions",
+    "organizations_url": "https://api.github.com/users/ningyu1991/orgs",
+    "repos_url": "https://api.github.com/users/ningyu1991/repos",
+    "events_url": "https://api.github.com/users/ningyu1991/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/ningyu1991/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "committer": {
+    "login": "web-flow",
+    "id": 19864447,
+    "node_id": "MDQ6VXNlcjE5ODY0NDQ3",
+    "avatar_url": "https://avatars.githubusercontent.com/u/19864447?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/web-flow",
+    "html_url": "https://github.com/web-flow",
+    "followers_url": "https://api.github.com/users/web-flow/followers",
+    "following_url": "https://api.github.com/users/web-flow/following{/other_user}",
+    "gists_url": "https://api.github.com/users/web-flow/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/web-flow/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/web-flow/subscriptions",
+    "organizations_url": "https://api.github.com/users/web-flow/orgs",
+    "repos_url": "https://api.github.com/users/web-flow/repos",
+    "events_url": "https://api.github.com/users/web-flow/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/web-flow/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "parents": [
+    {
+      "sha": "47f19228e1d3fe643cab0b4bdb5b651c39f90140",
+      "url": "https://api.github.com/repos/Eyeline-Labs/Go-with-the-Flow/commits/47f19228e1d3fe643cab0b4bdb5b651c39f90140",
+      "html_url": "https://github.com/Eyeline-Labs/Go-with-the-Flow/commit/47f19228e1d3fe643cab0b4bdb5b651c39f90140"
+    }
+  ],
+  "stats": {
+    "total": 2,
+    "additions": 1,
+    "deletions": 1
+  },
+  "files": [
+    {
+      "sha": "01e143f4ec7d123e6cb5faa49bd8a8e371eec813",
+      "filename": "README.md",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 1,
+      "changes": 2,
+      "blob_url": "https://github.com/Eyeline-Labs/Go-with-the-Flow/blob/018f35148b3afae9bf57aa915d79c4e2d055552c/README.md",
+      "raw_url": "https://github.com/Eyeline-Labs/Go-with-the-Flow/raw/018f35148b3afae9bf57aa915d79c4e2d055552c/README.md",
+      "contents_url": "https://api.github.com/repos/Eyeline-Labs/Go-with-the-Flow/contents/README.md?ref=018f35148b3afae9bf57aa915d79c4e2d055552c",
+      "patch": "@@ -9,7 +9,7 @@\n [![Project Page](https://img.shields.io/badge/Project-Page-green?logo=googlechrome&logoColor=green)](https://eyeline-labs.github.io/Go-with-the-Flow/)\n [![Paper](https://img.shields.io/badge/Paper-arXiv-b31b1b?logo=arxiv&logoColor=red)](https://arxiv.org/abs/2501.08331)\n [![YouTube Tutorial](https://img.shields.io/badge/YouTube-Tutorial-red?logo=youtube&logoColor=red)](https://www.youtube.com/watch?v=IO3pbQpT5F8)\n-[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Go--with--the--Flow-blue)](https://huggingface.co/Eyeline-Research/Go-with-the-Flow/tree/main)\n+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Go--with--the--Flow-blue)](https://huggingface.co/Eyeline-Labs/Go-with-the-Flow/tree/main)\n \n \n [Ryan Burgert](https://ryanndagreat.github.io)<sup>1,3</sup>, [Yuancheng Xu](https://yuancheng-xu.github.io)<sup>1,4</sup>, [Wenqi Xian](https://www.cs.cornell.edu/~wenqixian/)<sup>1</sup>, [Oliver Pilarski](https://www.linkedin.com/in/oliverpilarski/)<sup>1</sup>, [Pascal Clausen](https://www.linkedin.com/in/pascal-clausen-a179566a/?originalSubdomain=ch)<sup>1</sup>, [Mingming He](https://mingminghe.com/)<sup>1</sup>, [Li Ma](https://limacv.github.io/homepage/)<sup>1</sup>, "
+    }
+  ]
+}
