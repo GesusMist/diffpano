@@ -1,0 +1,1510 @@
+PROJECT
+=======
+
+Repository:
+    https://github.com/GesusMist/diffpano
+
+Working branch:
+    no_sphere
+
+Last remotely inspected revision:
+    ed1d31ff8c54c15934eb39ee08632584b18aff9b
+
+Work on the actual current checkout. Do not reset to that revision.
+
+We have successfully implemented GWTFlow initialization and generated
+4096×2048 ruins and underwater panoramas with five backends.
+
+Now implement and RUN a controlled study of:
+
+1. Original-noise time travel.
+2. Cylindrical equal-area RGB consensus with adjusted camera sampling.
+
+This is an implementation-and-experiment task, not merely a design document.
+Complete the code, validation, GPU experiments, artifact audit, and report
+where the execution environment permits.
+
+Do not claim that an unexecuted stage passed.
+
+======================================================================
+1. FIXED SCIENTIFIC SCOPE
+======================================================================
+
+Backends:
+    sd2
+    sana
+    flux
+    sd35
+    pixeldit
+
+Prompt sets:
+    ruins
+    underwater
+
+Seed:
+    0, verified against the completed baseline metadata
+
+Batch size:
+    1
+
+Consensus canvas:
+    H=2048, W=4096
+
+Final exported panorama:
+    width 4096, height 2048
+
+Local perspective FoV:
+    horizontal 80 degrees
+    vertical 80 degrees
+
+Preserve each backend's existing local RGB/native raster.
+
+Preserve the working B0C0D1 generation choices:
+    standard spatial warp
+    arithmetic/weighted-average reducer
+    spherediff_center spatial weights
+    temperature 0.1
+    current-state-preserving downhill transition
+    local identity-preserving VAE bridge for latent backends
+    identity/no-VAE path for PixelDiT
+
+Keep LPW and DPA disabled.
+
+Preserve:
+    checkpoint/revision
+    precision
+    guidance/CFG
+    negative prompts
+    VAE tiling settings
+    directional prompt contents and assignment rule
+    GWTFlow source-grid rule and transport algorithm
+    terminal-local-state decoding semantics
+
+Do NOT:
+    train anything
+    modify model weights
+    replace the noise initializer
+    introduce dynamic cameras during denoising
+    add geometry guidance
+    change FoV or camera count
+    implement perceptual/CLIP/FID/GPT metrics
+    rerun SphereDiff
+    combine CEA and time travel automatically
+    launch extra seeds or prompt sweeps
+    tune parameters after seeing generated images
+
+======================================================================
+2. INSPECT THESE FILES FIRST
+======================================================================
+
+Read:
+
+    diffpano/dense_consensus.py
+    diffpano/bridge_factorial.py
+    diffpano/current_state_transition.py
+    diffpano/gwtf_noise_initialization.py
+    diffpano/erp_noise_initialization.py
+    diffpano/camera.py
+    diffpano/geometry.py
+    diffpano/projection.py
+    diffpano/warp.py
+    diffpano/fusion.py
+    diffpano/pipelines/native_state.py
+    diffpano/pipelines/endpoints.py
+    diffpano/pipelines/clean_prediction.py
+    relevant backend adapters and scheduler helpers
+
+    studies/gwtf_noise/common.py
+    studies/gwtf_noise/run.py
+    studies/gwtf_erp4k/common.py
+    studies/gwtf_erp4k/run.py
+    studies/gwtf_erp4k/run.slurm
+    studies/gwtf_underwater/common.py
+    studies/gwtf_underwater/run.py
+
+Read the relevant existing tests.
+
+References for context:
+    https://arxiv.org/html/2504.08902v1
+    https://proj.org/en/stable/operations/projections/cea.html
+
+The equations specified below define THIS experiment.
+Do not silently replace them with another paper's re-noising operator.
+
+======================================================================
+3. ISOLATE ALL NEW CODE AND TESTS
+======================================================================
+
+Implement inside:
+
+    studies/tt_cea/
+
+Use this structure:
+
+    studies/tt_cea/
+        __init__.py
+        experiment.yaml
+        README.md
+        common.py
+        audit.py
+        schedule.py
+        time_travel.py
+        cameras.py
+        canvas.py
+        pipeline.py
+        preflight.py
+        run.py
+        launch.py
+        report.py
+        validate.py
+        validate.slurm
+        preflight.slurm
+        run.slurm
+        report.slurm
+        tests/
+            test_schedule.py
+            test_time_travel.py
+            test_canvas.py
+            test_cameras.py
+            test_pipeline.py
+            test_manifest.py
+
+Small file consolidation is acceptable, but keep these responsibilities clear.
+
+Do not add files under diffpano/, scripts/, or the root tests/ directory for
+this experiment. Historical source-hash gates scan those locations.
+
+Import and reuse frozen helpers when possible.
+
+If an experimental version of the single-interval loop is necessary, keep
+it study-local and record which frozen functions/lines it was derived from.
+
+Do not:
+    weaken historical validators
+    rewrite historical source hashes
+    edit old manifests
+    modify old generation code
+    monkeypatch old study globals across concurrent experiments
+
+Expected output root:
+
+    outputs/tt-cea/seed0-v1/
+
+If that root already exists, resume only after confirming its manifest is
+identical. Otherwise fail rather than overwrite or silently mix studies.
+
+No reset, clean, commit, push, or PR.
+
+======================================================================
+4. AUDIT THE COMPLETED BASELINES
+======================================================================
+
+Primary historical roots:
+
+    ruins:
+        outputs/gwtf-erp4k/20260923/
+
+    underwater:
+        outputs/gwtf-underwater/20260923/
+
+Expected per-backend files:
+    gwtf-final.png
+    metadata.json
+    gpu-preflight.json
+
+Verify actual filenames and metadata rather than assuming they exist.
+
+Do not select:
+    old lower-resolution runs
+    shared/ nearest-noise controls
+    contact sheets
+    intermediate predicted-clean images
+    an aesthetically selected sample
+
+For each of the ten baseline panoramas, record:
+
+    absolute/relative image path
+    image SHA256
+    metadata SHA256
+    width and height
+    seed
+    full prompt text and SHA256
+    checkpoint and revision
+    full resolved generation configuration
+    local RGB/native dimensions
+    native channel count
+    prepared scheduler and coefficients
+    original camera list/order/digest
+    GWTFlow source shape and seed
+    initial_local_sha256
+    initialization scale
+    interpolation modes
+    fusion/bridge/transition settings
+
+Use existing geometry/config builders where appropriate.
+
+Important:
+The underwater study deliberately validates its inherited ruins config
+before applying the prompt-only change. Do not weaken the historical
+ruins-only factorial guard to make new configurations pass.
+
+Validate NEW study overlays separately.
+
+Create an immutable manifest listing all planned samples and controls.
+List the allowed configuration differences for every experimental row.
+
+Capture starting:
+    git HEAD
+    branch
+    dirty status
+    modified/untracked file inventory
+    relevant historical source/artifact hashes
+
+At completion, verify that historical files are unchanged.
+
+======================================================================
+5. EXACT EXPERIMENT MATRIX
+======================================================================
+
+Use the following case IDs:
+
+R0:
+    projection = erp
+    cameras = old89
+    time_travel = off
+    steps = N
+    historical baseline; reuse when exactly matched
+
+T1:
+    projection = erp
+    cameras = old89
+    time_travel = original_noise_one_replay
+    original steps = N
+
+TB:
+    projection = erp
+    cameras = old89
+    time_travel = off
+    ordinary steps = N + K
+
+C0:
+    projection = cea
+    cameras = old89
+    time_travel = off
+    steps = N
+
+P0:
+    projection = erp
+    cameras = ea89
+    time_travel = off
+    steps = N
+
+C1:
+    projection = cea
+    cameras = ea89
+    time_travel = off
+    steps = N
+
+K is the number of eligible time-travel intervals defined below.
+
+All five backends × both prompts × six cases:
+    60 manifest rows
+
+If all ten R0 baselines are valid:
+    50 new production generations
+
+Do not silently add more cases.
+
+Interpret comparisons as:
+
+    R0 vs T1:
+        requested time-travel effect
+
+    T1 vs TB:
+        replay strategy versus equal downhill-evaluation budget
+
+    R0 vs C0:
+        RGB projection change with identical camera/noise state
+
+    R0 vs P0:
+        camera-layout change, including its induced prompt/noise binding
+
+    P0 vs C1:
+        RGB projection change under the new camera layout
+
+    R0 vs C1:
+        total proposed CEA + camera-layout change
+
+Do not attribute all of R0→C1 to projection alone.
+
+======================================================================
+6. FREEZE THESE STUDY CONFIGURATION VALUES
+======================================================================
+
+experiment.yaml must explicitly contain:
+
+    seed: 0
+    prompts: [ruins, underwater]
+    backends: [sd2, sana, flux, sd35, pixeldit]
+
+    canvas:
+      height: 2048
+      width: 4096
+      geometry_dtype: float32
+      fusion_dtype: float32
+
+    local_views:
+      fov_x_degrees: 80.0
+      fov_y_degrees: 80.0
+      count: 89
+      raster_policy: inherit_backend_baseline
+
+    time_travel:
+      mode: original_noise_bridge
+      repeats_per_eligible_interval: 1
+      start_ratio: 0.2
+      end_ratio: 0.8
+      end_exclusive: true
+      eligibility: original_interval_index
+      original_noise_storage: cpu
+      original_noise_dtype: float32
+      fresh_random_noise: false
+
+    cea:
+      mapping: longitude_sine_latitude
+      longitude_origin: baseline
+      cap_reconstruction: explicit_pole_linear_polar_angle
+
+    ea89:
+      construction: fibonacci_equal_area_centers
+      count: 89
+      longitude_phase: 0.5
+      roll_degrees: 0.0
+      dynamic: false
+
+    execution:
+      max_concurrent_gpu_jobs: 5
+      overwrite: false
+      save_intermediate_tensors: false
+      save_all_local_views: false
+      run_combined_cea_time_travel: false
+
+The generation configuration and study overlay must both be saved.
+
+Do not serialize a CEA run as if its active projection were ERP merely
+because an inherited config field retains the old name.
+
+======================================================================
+7. TIME TRAVEL: WHAT "ORIGINAL NOISE" MEANS
+======================================================================
+
+Original noise is the unscaled local native Gaussian epsilon_init[v]
+produced by GWTFlow for camera v.
+
+It is NOT:
+    the global ERP parent field
+    a newly sampled Gaussian
+    the current predicted epsilon
+    a current model-implied endpoint
+    decoded/encoded noise
+    noise warped between cameras
+
+The initializer returns:
+
+    initial_state[v] =
+        native_initial_noise_sigma * epsilon_init[v]
+
+Recover epsilon_init using that scale, or expose it through a study-local
+wrapper without changing GWTFlow's random draws.
+
+For current unit-scale backends this should be bitwise identical.
+
+For a nonunit-scale test backend, use finite-precision tolerance rather than
+requiring division to reverse floating-point multiplication bitwise.
+
+Store one immutable CPU FP32 noise bank.
+Do not serialize this large bank to disk.
+
+Do not let it alias evolving states.
+Do not modify it in place.
+
+Record its hash before and after generation.
+
+For old89, use the historical canonical camera IDs 0,...,88 so the
+GWTFlow states reproduce existing initialization hashes.
+
+The global ERP source and graph buffers are still released after the
+one-time initializer.
+
+Only T1 needs to retain the original-noise bank during denoising.
+
+======================================================================
+8. TIME TRAVEL: SCHEDULE CONTRACT
+======================================================================
+
+Define a study-local immutable interval record:
+
+    Interval:
+        k
+        model_timestep
+        alpha_high
+        sigma_high
+        alpha_low
+        sigma_low
+        eligible
+        schedule_identity
+
+Create:
+
+    prepare_interval_table(backend) -> tuple[Interval, ...]
+
+It must read the backend's ACTUAL prepared schedule.
+
+Use the same coefficient conventions as:
+    flow_bounds / flow_endpoints
+    ddim_endpoints
+    pixel_endpoints
+
+For DDIM, respect the actual previous-timestep/final-alpha convention.
+Do not infer coefficients using k/N.
+For flow models, do not shift the sigma schedule a second time.
+For PixelDiT, use its actual prepared shifted solver schedule.
+
+Each model prediction's returned coefficients must agree with its interval
+record.
+
+Check continuity of interval endpoints where the existing scheduler
+requires it. Report any inconsistency; do not silently repair schedules.
+
+For N original intervals, k=0,...,N-1:
+
+    eligible[k] = (0.2 <= k/N < 0.8)
+
+Use the exact integer predicate:
+
+    N <= 5*k < 4*N
+
+Only the ORIGINAL interval index controls eligibility.
+Replay passes do not advance this index and cannot trigger another replay.
+
+Expected current schedules:
+
+    backend    N    eligible k      K    N+K
+    sd2       30    6..23          18     48
+    sana      20    4..15          12     32
+    flux      20    4..15          12     32
+    sd35      40    8..31          24     64
+    pixeldit  50   10..39          30     80
+
+Verify N against actual baseline metadata before freezing the manifest.
+If it differs, report the mismatch instead of silently changing the study.
+
+======================================================================
+9. TIME TRAVEL: IMPLEMENT THIS EXACT BACKWARD FUNCTION
+======================================================================
+
+API:
+
+    backward_original_noise(
+        x_low,
+        epsilon_init,
+        *,
+        alpha_low,
+        sigma_low,
+        alpha_high,
+        sigma_high,
+    ) -> x_high_revisited
+
+Implement:
+
+    ratio = alpha_high / alpha_low
+
+    x_high_revisited = (
+        ratio * x_low
+        + (sigma_high - ratio * sigma_low) * epsilon_init
+    )
+
+Require:
+    identical native tensor shapes
+    matching device/dtype after explicit conversion
+    finite scalar coefficients
+    alpha_low > 0
+    finite output
+    valid high/low noise ordering for the prepared interval
+
+Do not clamp coefficients.
+
+For straight flow, alpha=1-sigma, so this is equivalent to:
+
+    x_high_revisited = (
+        x_low
+        + (sigma_high-sigma_low)
+          * (epsilon_init-x_low)/(1-sigma_low)
+    )
+
+This is the original-noise-directed Euler move in increasing flow sigma.
+
+For SD2, retain the generalized coefficient formula.
+Do not call it Euler in the integer DDPM timestep variable.
+
+The equivalent clean anchor:
+
+    c_anchor = (x_low - sigma_low*epsilon_init)/alpha_low
+
+is algebraic only. Never decode it or treat it as a new model clean
+prediction.
+
+Do NOT implement:
+    x_low + delta_sigma*epsilon_init
+    restoring the old cached x_high
+    negating a cached model velocity
+    using pair.endpoint instead of epsilon_init
+    mixing original noise with an unrelated clean estimate
+    fresh stochastic forward diffusion
+
+No model call, VAE call, RGB projection, or random draw occurs here.
+
+Tiny required numerical examples:
+
+Flow:
+    sigma_low=0.4, sigma_high=0.5
+    alpha_low=0.6, alpha_high=0.5
+    x_low=0.2, epsilon_init=1.4
+    expected x_high_revisited=0.4
+
+DDIM-like coefficients:
+    alpha_low=0.8, sigma_low=0.6
+    alpha_high=0.6, sigma_high=0.8
+    expected:
+        x_high_revisited = 0.75*x_low + 0.35*epsilon_init
+
+======================================================================
+10. SINGLE-INTERVAL GENERATION CONTRACT
+======================================================================
+
+Create an experimental interval executor:
+
+    advance_interval(
+        states,
+        conditionings,
+        interval,
+        canvas_operator,
+        *,
+        pass_kind,
+        diagnostics,
+    ) -> next_states, interval_summary
+
+It must reproduce the frozen two-pass Jacobi algorithm:
+
+PASS A — all cameras read frozen current states:
+
+    reset relevant backend scheduler state
+    predict_clean_and_endpoint
+    verify interval coefficients
+    obtain predicted clean native state
+    decode clean RGB
+    compute local VAE residual using that exact decoded image
+    accumulate RGB into the chosen canvas
+
+    residual[v] = z0[v] - E(D(z0[v]))
+
+    PixelDiT:
+        no encode/decode/residual calls
+
+Finalize one synchronized RGB canvas.
+
+PASS B — reconstruct all next native states:
+
+    project synchronized canvas into camera v
+    encode synchronized RGB, when latent
+    add that camera's local residual
+    apply existing interpolate_from_current_state
+    retain all next states without modifying current states
+
+Then commit all next states together.
+
+Reuse:
+    the existing current-state transition helper
+    backend prediction/encoding/decoding helpers
+    the existing local residual formula
+    existing center-weight generation and arithmetic fusion conventions
+
+Residuals remain local and are never warped.
+
+Do not replace this with ordinary scheduler.step if that bypasses the
+current RGB-consensus/bridge logic.
+
+The replay pass executes BOTH passes again with fresh model predictions.
+Do not reuse the previous clean prediction, RGB consensus, or residual.
+
+======================================================================
+11. TIME-TRAVEL OUTER LOOP
+======================================================================
+
+Implement exactly:
+
+    for interval in original_intervals:
+        low, initial_summary = advance_interval(
+            states, ..., interval, pass_kind="initial"
+        )
+
+        if time_travel_enabled and interval.eligible:
+            revisited = [
+                backward_original_noise(
+                    low[v],
+                    original_noise[v],
+                    alpha_low=interval.alpha_low,
+                    sigma_low=interval.sigma_low,
+                    alpha_high=interval.alpha_high,
+                    sigma_high=interval.sigma_high,
+                )
+                for v in canonical_camera_order
+            ]
+
+            low, replay_summary = advance_interval(
+                revisited, ..., interval, pass_kind="replay"
+            )
+
+        states = low
+
+All views move backward before ANY view is denoised again.
+
+The next original interval starts only after every replay next-state is
+committed.
+
+Do not mutate the prepared timestep list to encode replays.
+Do not carry invalid multistep history across a reversal.
+
+Terminal output remains:
+    decode terminal local states
+    fuse them in the active canvas
+
+Do not replace terminal output with the last predicted-clean consensus.
+
+======================================================================
+12. TB: MATCHED DOWNHILL-EVALUATION BUDGET
+======================================================================
+
+TB uses N+K ordinary denoising steps and no backward moves.
+
+Prepare the backend's normal schedule at N+K.
+Do not manually splice/interpolate DDIM timesteps.
+
+Preserve initial GWTFlow states, camera cover, source grid, prompt,
+guidance, local raster, and all other shared settings.
+
+T1 and TB should have equal guided-prediction counts, but not necessarily
+identical walltime. Report both.
+
+For M=89, expected guided predictions per panorama:
+
+    backend    R0/C0/P0/C1    T1/TB
+    sd2             2670       4272
+    sana            1780       2848
+    flux            1780       2848
+    sd35            3560       5696
+    pixeldit        4450       7120
+
+Record actual transformer/U-Net invocations separately from guided calls.
+
+For latent backends, absent extra diagnostics:
+
+    VAE encodes = 2 * guided_predictions
+    VAE decodes = guided_predictions + 89
+
+PixelDiT:
+    VAE encodes = 0
+    VAE decodes = 0
+
+If the actual adapter's implementation has a documented additional call,
+account for it explicitly. Do not hide it inside “one step.”
+
+======================================================================
+13. CEA CANVAS API
+======================================================================
+
+Implement:
+
+    CanvasSpec:
+        projection: "erp" or "cea"
+        height
+        width
+
+    CanvasResult:
+        rgb
+        contributor_count
+        weight_sum
+        pole_rgb          # CEA-only transient RGB boundary values
+        pole_weight_sum   # CEA-only
+
+    CanvasOperator:
+        make_accumulator(batch_size)
+        accumulate(acc, perspective_rgb, camera)
+        finalize(acc) -> CanvasResult
+        sample_view(canvas_result, camera) -> perspective_rgb
+        export_erp(canvas_result, height, width) -> erp_rgb
+
+For ERP, delegate to the existing StandardWarpOperator and accumulator
+without changing their arithmetic.
+
+For CEA, implement the mappings below.
+
+Do not pass a CEA image through a helper that internally assumes ERP just
+because it accepts [B,3,H,W].
+
+======================================================================
+14. CEA GEOMETRY AND SAMPLING
+======================================================================
+
+Normalized mapping:
+
+    u = remainder((longitude + pi)/(2*pi), 1)
+    v = (1 - sin(latitude))/2
+
+Inverse:
+
+    longitude = 2*pi*(u - 0.5)
+    s = 1 - 2*v
+    latitude = asin(s)
+
+Use the existing world convention:
+    +Y up
+    longitude atan2(world_x, world_z)
+
+CEA pixel-center rays:
+
+    u = (column+0.5)/W
+    v = (row+0.5)/H
+    s = 1-2*v
+    lambda = 2*pi*(u-0.5)
+
+    world = [
+        sqrt(max(0,1-s*s))*sin(lambda),
+        s,
+        sqrt(max(0,1-s*s))*cos(lambda)
+    ]
+
+Native CEA raster:
+    H=2048, W=4096
+
+This fixed 2:1 storage aspect is deliberate.
+Equal-area sampling does not require changing the pixel budget.
+
+Each texel represents:
+
+    area = 4*pi/(H*W)
+
+Do not apply an extra cos(latitude) multiplier to CEA fusion weights.
+
+Perspective -> CEA:
+
+    iterate CEA target rays
+    rotate rays into source camera
+    compute perspective normalized coordinates
+    require positive camera depth and in-FoV coordinates
+    bilinearly sample perspective RGB and existing center weights
+    accumulate valid weighted RGB and weight sum
+
+CEA -> perspective:
+
+    compute existing perspective pixel-center world rays
+    convert them to CEA u,v
+    sample the CEA canvas using nearest interpolation in the interior,
+    matching the baseline canvas-to-view interpolation choice
+
+Use align_corners=False and explicit pixel-center conventions.
+
+Horizontal interpolation must wrap circularly.
+
+Cache keys must include:
+    projection
+    height/width
+    camera pose/FoV/raster
+    interpolation where relevant
+    device/dtype
+
+Never share an ERP projection grid with a CEA request.
+
+======================================================================
+15. FIXED CEA POLAR-BOUNDARY RECONSTRUCTION
+======================================================================
+
+Do not blindly copy ERP vertical-reflection padding into CEA.
+Uniform sine-latitude rows are not uniform latitude rows.
+
+Use this explicit study convention:
+
+A. During CEA accumulation, additionally sample the two exact world rays:
+
+       north = (0,+1,0)
+       south = (0,-1,0)
+
+   For each source perspective image:
+       test visibility
+       use the same bilinear source RGB sampling
+       use the same source-view center weighting
+
+   Fuse these into two RGB boundary values P_north and P_south.
+
+   These are tiny transient RGB boundary samples, not latent states.
+   They add no denoiser or VAE calls.
+   Require positive pole weight sums.
+
+B. The first CEA row is at:
+
+       s0 = 1 - 1/H
+       theta0 = acos(s0)
+
+   where theta is polar angle from the north pole.
+
+   For a target ray with 0 <= theta < theta0:
+
+       a = theta/theta0
+
+       output =
+           (1-a)*P_north
+           + a*longitude_sample(first_CEA_row, lambda)
+
+   Use the mirrored construction at the south pole.
+
+C. Outside these unsampled polar caps, use ordinary CEA sampling with the
+   configured interpolation.
+
+D. At the exact poles:
+       output must equal the fused pole RGB
+       and be independent of arbitrary longitude
+
+E. Do not smooth any additional rows.
+   Do not use this rule as an appearance-tuning parameter.
+
+Document this as our CEA boundary reconstruction convention, not a theorem
+about the projection or an exact author-provided implementation.
+
+Use the same rule during:
+    CEA -> perspective synchronization
+    CEA -> ERP export
+    direct diagnostic view rendering
+
+Record the two terminal RGB pole values in metadata.
+
+The two CEA-specific controls C0 and C1 use the identical rule.
+The historical ERP implementation remains unchanged.
+
+======================================================================
+16. CEA OUTPUT CONVENTION
+======================================================================
+
+During generation, stay in CEA.
+Do not convert to ERP between denoising steps.
+
+At termination:
+    decode terminal local states
+    fuse into the native CEA canvas
+    export once to ERP
+
+For ERP export, construct ERP output pixel-center rays:
+
+    lambda = 2*pi*((x+0.5)/W_export - 0.5)
+    phi = pi*(0.5 - (y+0.5)/H_export)
+
+Then sample CEA at:
+    u = (lambda+pi)/(2*pi)
+    v = (1-sin(phi))/2
+
+Use bilinear export sampling plus the fixed polar-cap rule.
+
+Export from floating-point native CEA RGB before PNG clipping/quantization.
+
+Save:
+    final.png          # standard ERP, 4096×2048
+    final_cea.png      # CEA visualization, clearly labeled
+
+Do not treat the flat CEA image as if it were an ERP skybox.
+
+Also render report viewports directly from the floating-point CEA canvas.
+This lets us distinguish generation degradation from ERP-export loss.
+
+======================================================================
+17. FIXED NEW CAMERA COVER: EA89
+======================================================================
+
+Do not use equal pixel strides in a CEA image to define rectangular model
+patches. Models must still denoise ordinary perspective views.
+
+Construct 89 fixed camera centers:
+
+    M = 89
+    golden_ratio = (1+sqrt(5))/2
+
+    for j in range(M):
+        s = 1 - 2*(j+0.5)/M
+        u = frac(j/golden_ratio + 0.5)
+
+        pitch = asin(s)
+        yaw = 2*pi*(u-0.5)
+        roll = 0
+
+Use radians in PerspectiveCamera.
+FoV values remain degrees.
+
+Use backend-specific existing local raster dimensions.
+
+Compute the list once, serialize it, and hash it.
+Do not regenerate different lists inside different jobs.
+
+Name this approximately equal-area-distributed camera centers, not an
+exact equal-area partition of perspective footprints.
+
+The camera set stays fixed throughout the trajectory.
+
+Recompute directional prompt assignment using the existing world-direction
+rule. Preserve the prompt bank text.
+
+Do not assign prompts by reusing old camera indices.
+
+Record prompt-band counts so the changed layout's conditioning distribution
+is visible.
+
+Use distinct stable innovation identities for this new cover, for example:
+    "ea89:000", ..., "ea89:088"
+
+Old89 retains integer IDs 0,...,88 for historical reproducibility.
+
+======================================================================
+18. KEEP THE WORKING NOISE REPRESENTATION UNCHANGED
+======================================================================
+
+CEA changes the CLEAN RGB consensus canvas only.
+
+The GWTFlow source remains ERP-indexed in every case.
+
+Preserve:
+    primary_noise_size(native_cameras(...))
+    source seed
+    native channels
+    source density
+    graph transport
+    channel chunking
+    innovation seed derivation
+    native initialization scale
+
+For old89:
+    R0, T1, TB, C0 must share identical initialized native states
+
+For ea89:
+    P0 and C1 must share identical initialized native states
+
+Changing camera geometry legitimately changes its transported local noise.
+Do not claim old89 and ea89 have paired-identical local tensors.
+
+Noisy native states are never warped through CEA.
+
+======================================================================
+19. CAMERA AND CANVAS GEOMETRY PREFLIGHT
+======================================================================
+
+Before loading denoisers, evaluate old89 and ea89 coverage on:
+
+    the full 2048×4096 ERP raster
+    the full 2048×4096 CEA raster
+    1,000,000 independent deterministic spherical probe directions
+    exact north and south poles
+    explicit rays on both sides of the longitude seam
+
+Process in chunks; do not allocate every camera×ray relation at once.
+
+For each probe set report:
+    uncovered fraction
+    minimum/median/maximum contributor count
+    minimum/percentile weight sums
+    strongest contributing-view weight
+    latitude-binned statistics
+
+Acceptance:
+    no uncovered production texels
+    no uncovered independent probe directions
+    no uncovered poles
+    finite positive denominators
+    no silent zero fallback
+
+Use the same existing center-weight definition.
+
+Do not change the 89-camera construction based on generated-image quality.
+
+If the specified cover fails geometry coverage:
+    save the failure evidence
+    stop affected geometry experiments
+    do not silently increase camera count/FoV
+
+TT experiments do not depend on EA89 passing.
+
+======================================================================
+20. REQUIRED NUMERICAL TESTS
+======================================================================
+
+A. Time-travel helper
+
+Test:
+    the two explicit scalar examples above
+    arbitrary BCHW/channel counts
+    nonunit initialization scale
+    identity when high=low
+    finite actual eligible coefficients for all five backends
+    wrong shape/device/coefficient rejection
+    no mutation of x_low or epsilon_init
+    no model/VAE/RNG calls
+
+Straight-line oracle:
+
+    x_H = alpha_H*c + sigma_H*epsilon
+    x_L = alpha_L*c + sigma_L*epsilon
+
+Backward helper must recover x_H within FP32 tolerance.
+
+A perfect unchanged downhill oracle must return x_L.
+Do not require a real learned replay to improve the image.
+
+B. Schedule tests
+
+Assert exact replay sets:
+    N=20: 4..15
+    N=30: 6..23
+    N=40: 8..31
+    N=50: 10..39
+
+Also test small/non-divisible N, empty windows, and repeats disabled.
+
+Assert:
+    no recursive replay
+    correct final noise level
+    exact N+K downhill count
+    unchanged original prepared schedule
+    stored interval coefficients match model-returned coefficients
+
+C. Experimental interval equivalence
+
+Using independent mocks:
+    compare full no-TT ERP/old89 trajectories against frozen logic
+    compare local states, clean proposals, bridge inputs, and final RGB
+    use identical initial tensors and conditioning
+    poison cached model endpoints to ensure the old endpoint is not used
+      for the backward move
+    verify fresh model calls during replay
+
+For real backends:
+    compare one original frozen two-pass interval against the new
+    experimental interval on identical states and conditions
+
+Do not use the new interval helper on both sides of the oracle.
+
+D. CEA
+
+Use independent float64 geometric references.
+
+Test:
+    direction-coordinate-direction round trips
+    texel solid angles and total 4*pi
+    normalized unit rays
+    longitude wrap and camera roll
+    first/last rows
+    pole values and longitude invariance at poles
+    polar-cap boundary continuity
+    constant RGB preservation
+    valid weighted aggregation
+    projection-aware cache isolation
+    no core ERP behavior changes
+
+Analytic tests:
+    f(d)=constant
+    f(d)=d_x
+    f(d)=d_y
+    f(d)=d_z
+    low-frequency directional patterns
+    great-circle markers
+
+For interpolated image comparisons, use error tolerances appropriate to
+raster resolution. Do not demand lossless round trips.
+
+E. Camera/noise binding
+
+Test:
+    exactly 89 cameras
+    exact deterministic camera list/digest
+    correct FoV and native shapes
+    stable IDs
+    correct prompt routing
+    ERP/CEA paired noise hashes within each cover
+    unchanged old89 initializer hashes
+    original-noise-bank immutability
+
+F. Model-free resampling stress tests
+
+For both projections and both covers:
+    synthesize perspective views from analytic spherical patterns
+    assemble a canvas
+    resample perspective views
+    repeat 1, 5, and 20 round trips
+
+Save error summaries and one compact comparison figure.
+Report poles and equator separately.
+
+Use these to identify aliasing, cap artifacts, blur, or coordinate mistakes.
+Do not require CEA to beat ERP.
+
+======================================================================
+21. VALIDATION COMMANDS AND GATES
+======================================================================
+
+Implement these entry points:
+
+    python -m studies.tt_cea.audit \
+        --config studies/tt_cea/experiment.yaml
+
+    python -m studies.tt_cea.validate \
+        --config studies/tt_cea/experiment.yaml
+
+    python -m studies.tt_cea.preflight \
+        --config studies/tt_cea/experiment.yaml --phase geometry
+
+    python -m studies.tt_cea.preflight \
+        --config studies/tt_cea/experiment.yaml \
+        --phase backend --backend <name>
+
+    python -m studies.tt_cea.run \
+        --config studies/tt_cea/experiment.yaml \
+        --backend <name> --prompt <ruins|underwater> --case <case>
+
+    python -m studies.tt_cea.report \
+        --config studies/tt_cea/experiment.yaml
+
+Validation must actually run:
+
+    python -m compileall -q studies/tt_cea
+    git diff --check
+    python -m unittest discover -s studies/tt_cea/tests -v
+    python -m unittest discover -s tests -v
+
+Also run relevant existing study-local tests.
+
+Capture commands, exits, logs, test counts, durations, environment, and
+source hashes.
+
+Create passed=true only after successful execution.
+Do not turn skipped/inaccessible tests into successful tests.
+
+New production jobs verify the NEW gate and relevant historical invariants.
+Never update an old validation record to bless new behavior.
+
+======================================================================
+22. REAL-BACKEND PREFLIGHT DETAILS
+======================================================================
+
+Use one GPU preflight job per backend.
+
+Verify:
+    checkpoint, precision, guidance, local raster
+    old89 baseline initialization digest
+    ea89 paired initialization reproducibility
+    original-noise-bank scale
+    N-step and N+K-step schedule extraction
+    absence of initialization VAE/denoiser calls
+
+For interval equivalence:
+    produce a private prefix up to the first eligible interval
+    compare a frozen-reference interval and experimental interval from
+    identical cloned high states
+    compare returned low native states with measured tolerances
+    perform one original-noise backward move and replay
+
+This prefix is a numerical preflight, not a production result.
+
+Also exercise one initial CEA interval for both covers at production raster.
+
+Do not save these preflight images as scientific comparison samples.
+Do not reuse their mutated scheduler/model state in production processes.
+
+Record every preflight model call separately from production counts.
+
+If the shared interval implementation fails, block affected production jobs.
+If only CEA geometry fails, do not suppress valid time-travel jobs.
+If one backend fails, continue unrelated backends and report the failure.
+
+======================================================================
+23. SLURM EXECUTION
+======================================================================
+
+Reuse the environment pattern from the working 4K runner.
+
+Expected setup, to verify on this checkout:
+
+    partition: gpu
+    GPU: one A100
+    CPUs: 8
+    host memory: 64G
+    working directory: /home/shig/diffpano
+
+    module purge
+    module load WebProxy
+    source activate_venv diffpano
+
+    HF_HOME="$SCRATCH/diffpano/hf_cache"
+    HF_HUB_CACHE="$HF_HOME/hub"
+    HF_HUB_OFFLINE=1
+    TRANSFORMERS_CACHE="$HF_HOME/transformers"
+    TMPDIR="$SCRATCH/diffpano/tmp"
+
+    PYTHONUNBUFFERED=1
+    OMP_NUM_THREADS=2
+
+Verify paths and activation; do not invent another environment or reinstall
+the working model stack.
+
+Use the existing 3-hour reservation as a conservative initial maximum.
+Estimate actual per-case needs from historical runtime and the 1.6×
+downhill-pass budget for T1/TB. Administrative changes must not change
+scientific settings.
+
+No heavy inference on the login node.
+
+Implement launch.py with phases:
+    validate
+    preflight
+    time-travel
+    projection
+    report
+    status
+
+Print a dry-run plan before submission.
+
+Production wave 1:
+    T1 and TB for all five backends × both prompts
+    20 jobs
+
+Production wave 2:
+    C0, P0, C1 for all five backends × both prompts
+    30 jobs
+
+Maximum concurrent GPU jobs:
+    5
+
+Use per-backend and feature-specific dependencies.
+Do not make other backends depend on PixelDiT or FLUX looking good.
+
+Job names must identify:
+    study
+    case
+    backend
+    prompt
+
+Persist a durable submission ledger with Slurm IDs.
+Before any submission/retry:
+    inspect output status
+    inspect squeue
+    inspect sacct
+    check the ledger
+
+A timed-out submission command is not proof that submission failed.
+Do not submit duplicates.
+
+Failed attempts get separate attempt records.
+Retry only documented infrastructure failures without changing science.
+
+Each production generation starts in a fresh process.
+
+======================================================================
+24. MEMORY AND ARTIFACT LIMITS
+======================================================================
+
+Keep local native states/noise banks on CPU between per-view operations,
+as the current pipeline does.
+
+Do not keep all 89 full-resolution projection grids on GPU.
+
+Use bounded projection caches:
+    at most two per-direction device entries
+    CPU fallback allowed
+    projection-aware keys
+
+Do not precompute all camera×pixel visibility tensors simultaneously.
+
+Keep temporary original predictions/residuals only as long as required
+by the two-pass interval.
+
+No full per-step noisy-state dumps.
+No saved original-noise tensors.
+No saved GWTFlow graph/source tensors.
+No 89-view image dump at every step.
+
+Per production sample:
+
+    final.png
+    final_cea.png            # CEA cases only
+    metadata.json
+    schedule.csv
+    diagnostics.csv
+    status.json
+
+Optional:
+    one compact replay montage for T1
+    one compact fixed-viewport sheet
+
+Keep intermediate debug images off by default.
+
+Root-level artifacts:
+
+    manifest.json
+    baseline_audit.json
+    preservation.json
+    validation.json
+    execution.json
+    geometry/
+        old89.json
+        ea89.json
+        coverage.json
+        operator_tests.json
+    preflight/
+        <backend>.json
+    report/
+        summary.csv
+        summary.json
+        report.md
+        comparison sheets
+
+Use atomic completion status.
+Never mark a run complete before image and metadata audits pass.
+
+======================================================================
+25. DIAGNOSTICS WITHOUT A NEW QUALITY-METRIC PROJECT
+======================================================================
+
+Record lightweight numerical diagnostics:
+
+    NaN/Inf checks
+    current-state reconstruction error
+    actual native update magnitude
+    backward-move magnitude
+    original-noise-bank hash
+    source-state hashes at selected replay boundaries
+    RGB range/out-of-range fraction
+    coverage and denominator checks
+    guided/physical denoiser counts
+    VAE counts
+    stage/runtime/memory
+
+Do not interpret raw tensor variance as a proof that a learned state has
+an exact diffusion marginal.
+
+No extra denoiser calls for diagnostics.
+No extra VAE calls merely to create intermediate displays.
+
+Any retained pre-fusion agreement statistic is a mechanism diagnostic,
+not a perceptual or 3D-consistency score.
+
+A negative visual result is not a numerical validation failure.
+
+======================================================================
+26. FIXED VISUAL COMPARISON DIRECTIONS
+======================================================================
+
+Use the same independent report viewports for every sample:
+
+    pitch  0: yaw 0, 90, 180, -90
+    pitch +60: yaw 0, 180
+    pitch -60: yaw 0, 180
+    north pole: pitch +90, yaw 0, roll 0
+    south pole: pitch -90, yaw 0, roll 0
+
+Report viewport:
+    FoV 80×80 degrees
+    raster 1024×1024
+
+Use one fixed high-quality rendering convention for report viewports.
+Do not change actual generation interpolation.
+
+Include a seam-crossing viewport based on the established ERP longitude
+convention. Label its actual yaw rather than assuming yaw=0 is the seam.
+
+For CEA report both:
+    direct native-CEA rendering
+    exported-ERP rendering
+
+Generate all report samples from the same floating-point final result
+before discarding it where practical, while also retaining standard PNGs.
+
+Create:
+
+    per-backend/per-prompt:
+        R0 | T1 | TB
+        R0 | C0 | P0 | C1
+
+    all-backend summary sheets:
+        ruins
+        underwater
+
+Keep panel sizes/aspect ratios fixed.
+Show every condition, including failed-looking outputs.
+Do not select only attractive crops.
+
+Inspect:
+    ruins: columns, arches, masonry, terrain, stars
+    underwater: object boundaries, coral/rock texture, water continuity
+    both: seams, poles, ghosting, grain, saturation, distorted structures
+
+Do not judge a native flat CEA image as a perspective photograph.
+
+======================================================================
+27. REPORT THE RESULT WITHOUT OVERCLAIMING
+======================================================================
+
+The final report must answer:
+
+TIME TRAVEL:
+    Does T1 visibly improve over R0?
+    Does T1 improve over the equal-budget TB?
+    Does it introduce ghosting, saturation, duplicated structure, or blur?
+    Which backend/prompt combinations improve or regress?
+
+PROJECTION:
+    Does C0 improve over R0 with identical initial states/cameras?
+    Does C1 improve over P0 with identical new-cover states/cameras?
+    Does P0 already explain the apparent benefit of C1?
+    Are any gains concentrated near the equator?
+    Are poles degraded?
+    Is a defect already in native CEA or introduced during ERP export?
+
+CORRECTNESS:
+    Did baseline/no-op parity pass?
+    Was original noise reused exactly?
+    Were coefficients/schedules unchanged except TB's explicit step count?
+    Did call counts match the frozen plan?
+    Did historical outputs remain unchanged?
+
+COST:
+    initialization
+    normal denoising
+    backward bridge
+    replay denoising
+    projection/fusion
+    terminal decode/export
+    total walltime
+    CPU/GPU peak memory
+
+State explicitly:
+    equal-area does not imply distortion-free
+    fixed-noise time travel is not a proven exact learned-ODE inverse
+    initial GWTFlow Gaussianity does not establish Gaussianity after replay
+    one seed/two prompts do not establish universal improvement
+    camera-layout changes also change local noise and prompt allocation
+
+Provide exact:
+    files added
+    validation logs
+    Slurm IDs
+    completed/failed/pending run counts
+    artifact paths
+    numerical implementation errors/call counts
+    visual observations
+
+Do not automatically select a new default or change our production pipeline.
+
+Stop after this study.

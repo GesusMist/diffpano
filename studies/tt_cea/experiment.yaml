@@ -1,0 +1,39 @@
+seed: 0
+prompts: [ruins, underwater]
+backends: [sd2, sana, flux, sd35, pixeldit]
+canvas:
+  height: 2048
+  width: 4096
+  geometry_dtype: float32
+  fusion_dtype: float32
+local_views:
+  fov_x_degrees: 80.0
+  fov_y_degrees: 80.0
+  count: 89
+  raster_policy: inherit_backend_baseline
+time_travel:
+  mode: original_noise_bridge
+  repeats_per_eligible_interval: 1
+  start_ratio: 0.2
+  end_ratio: 0.8
+  end_exclusive: true
+  eligibility: original_interval_index
+  original_noise_storage: cpu
+  original_noise_dtype: float32
+  fresh_random_noise: false
+cea:
+  mapping: longitude_sine_latitude
+  longitude_origin: baseline
+  cap_reconstruction: explicit_pole_linear_polar_angle
+ea89:
+  construction: fibonacci_equal_area_centers
+  count: 89
+  longitude_phase: 0.5
+  roll_degrees: 0.0
+  dynamic: false
+execution:
+  max_concurrent_gpu_jobs: 5
+  overwrite: false
+  save_intermediate_tensors: false
+  save_all_local_views: false
+  run_combined_cea_time_travel: false

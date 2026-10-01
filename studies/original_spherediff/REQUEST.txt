@@ -1,0 +1,634 @@
+PROJECT
+=======
+
+Repository:
+    https://github.com/GesusMist/diffpano
+
+Working branch:
+    no_sphere
+
+TASK
+====
+
+Run the ORIGINAL SPHEREDIFF SANA and FLUX pipelines on our existing
+ruins and underwater prompts.
+
+Required cases:
+
+    1. Original SphereDiff SANA / ruins / seed 0
+    2. Original SphereDiff SANA / underwater / seed 0
+    3. Original SphereDiff FLUX / ruins / seed 0
+    4. Original SphereDiff FLUX / underwater / seed 0
+
+Final panorama:
+    width 4096
+    height 2048
+
+“Original” means:
+    the official SphereDiff spherical-latent generation implementation.
+
+It does NOT mean:
+    ordinary planar SANA/FLUX text-to-image generation
+    our DiffPano backend adapters
+    our legacy spherical reimplementation
+    our GWTFlow pipeline
+    our RGB-consensus pipeline
+
+This is a narrow baseline-generation task.
+Do not implement metrics or change any research method.
+
+======================================================================
+1. INSPECT THE EXISTING ORIGINAL-REFERENCE WORKFLOW
+======================================================================
+
+Read:
+
+    scripts/bridge_factorial_common.py
+    scripts/bridge_factorial_reference.py
+
+Also inspect:
+
+    studies/gwtf_erp4k/common.py
+    studies/gwtf_underwater/common.py
+    studies/gwtf_erp4k/run.slurm
+
+The existing original-reference workflow records:
+
+    SphereDiff source commit:
+        2c8c68ba088f2803b3dce4b52b7b0d68bc996139
+
+    Frozen local reference snapshot:
+        /home/shig/diffpano_reference_sources/spherediff-2c8c68b
+
+    Historical reference output root:
+        outputs/bridge-factorial-ruins/20260918/references/
+
+Verify actual paths and source files.
+
+The original checkout may also exist at:
+    /home/shig/SphereDiff
+
+Do not modify either checkout.
+
+Use the verified frozen reference snapshot where available.
+If it is missing, obtain the exact pinned official source in a new,
+isolated reference directory without modifying existing work.
+
+Official upstream:
+    https://github.com/pmh9960/SphereDiff
+
+Do not substitute a newer revision silently.
+
+======================================================================
+2. KEEP THIS TASK SEPARATE FROM TIME TRAVEL / CEA
+======================================================================
+
+The time-travel/CEA experiments may be implemented, pending, or running.
+
+Do not:
+    edit their code or manifests
+    cancel their jobs
+    consume or overwrite their output directories
+    modify shared source files to support this baseline task
+    change historical validation hashes
+
+Place any new launcher, tests, and reporting code under:
+
+    studies/original_spherediff/
+
+Suggested files:
+
+    __init__.py
+    config.yaml
+    audit.py
+    run.py
+    report.py
+    run.slurm
+    tests/
+        test_runner.py
+    README.md
+
+Do not add files to diffpano/, scripts/, or the root tests/ directory.
+Historical source-hash gates inspect those locations.
+
+Do not reset, clean, commit, or push.
+
+======================================================================
+3. EXACT SOURCE AND IMPORT REQUIREMENTS
+======================================================================
+
+Use:
+
+    pipelines_ours.SphericalSanaPipeline
+    pipelines_ours.SphericalFluxPipeline
+
+from the verified official SphereDiff snapshot.
+
+Before loading weights, record and verify:
+
+    inspect.getfile(SphericalSanaPipeline)
+    inspect.getfile(SphericalFluxPipeline)
+    pipelines_ours.__file__
+
+The paths must resolve into the intended original-source directory.
+
+This prevents accidentally importing a similarly named module from
+DiffPano or another checkout.
+
+Preserve the official:
+
+    persistent spherical latent state
+    native Gaussian initialization
+    dynamic spherical-to-perspective latent sampling
+    distortion-aware aggregation
+    prompt routing
+    scheduler behavior
+    decoding
+    final ERP assembly
+
+Do not import our generation pipeline to produce these images.
+
+======================================================================
+4. EXACT PROMPTS
+======================================================================
+
+Use the SAME prompt contents as our completed DiffPano experiments:
+
+    prompts/ruins.txt
+    prompts/underwater.txt
+
+Read the actual files. Do not manually reconstruct the text.
+
+Check against the completed experiment metadata:
+
+    ruins:
+        outputs/gwtf-erp4k/20260923/
+
+    underwater:
+        outputs/gwtf-underwater/20260923/
+
+Verify:
+    prompt identity
+    SHA256
+    complete text
+    directional line ordering
+    numerical seed
+
+Compare the local prompt files against:
+
+    <SphereDiff snapshot>/data/prompts/ruins.txt
+    <SphereDiff snapshot>/data/prompts/underwater.txt
+
+Record whether they are byte-identical.
+
+The input text must match our actual experiments. If the official files
+differ, pass our verified prompt file to the original pipeline through
+prompt_txt_path and record the difference.
+
+Do not:
+    summarize the prompt
+    use only its middle line
+    merge directional lines
+    reorder lines
+    correct grammar
+    add/remove descriptions
+    change capitalization or punctuation
+    generate new prompts
+
+If the current local file differs from the completed run's recorded prompt,
+resolve the exact original text from preserved evidence before generation.
+Do not silently compare different prompts.
+
+======================================================================
+5. ORIGINAL SANA CONFIGURATION
+======================================================================
+
+Use this existing original-reference preset:
+
+Pipeline:
+    SphericalSanaPipeline
+
+Model:
+    Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers
+
+Pinned revision:
+    e2b3c0cbffebcd09d83805e88b9f5f106afc74ac
+
+Variant:
+    bf16
+
+Model precision:
+    torch.bfloat16
+
+Model CPU offload:
+    false
+
+VAE tiling:
+    false
+
+Call parameters:
+
+    num_inference_steps = 20
+    guidance_scale = 4.5
+    height = 1024
+    width = 1024
+    n_spherical_points = 2600
+    weighted_average_temperature = 0.1
+    erp_height = 2048
+    erp_width = 4096
+    prompt_txt_path = verified prompt file
+    generator = fresh CUDA generator seeded to 0
+
+Preserve other defaults from the pinned original implementation.
+
+Important:
+The nominal height/width arguments do not justify forcing the original
+spherical sampler into our fixed native patch dimensions.
+
+Allow SphereDiff to derive its own local latent patches from its spherical
+representation. Record actual model-input shape histograms.
+
+Do not change 2600 points to match our local latent raster.
+
+======================================================================
+6. ORIGINAL FLUX CONFIGURATION
+======================================================================
+
+Use this existing original-reference preset:
+
+Pipeline:
+    SphericalFluxPipeline
+
+Model:
+    black-forest-labs/FLUX.1-dev
+
+Pinned revision:
+    3de623fc3c33e44ffbe2bad470d0f45bccf2eb21
+
+Variant:
+    None
+
+Model precision:
+    torch.bfloat16
+
+Model CPU offload:
+    false
+
+VAE tiling:
+    false
+
+Call parameters:
+
+    num_inference_steps = 28
+    guidance_scale = 3.5
+    true_cfg_scale = 1.0
+    n_spherical_points = 26500
+    weighted_average_temperature = 0.1
+    erp_height = 2048
+    erp_width = 4096
+    prompt_txt_path = verified prompt file
+    generator = fresh CUDA generator seeded to 0
+
+Preserve other local-generation defaults from the pinned implementation.
+Record their resolved values.
+
+Do not:
+    switch to FLUX.1-schnell
+    substitute ModelsLab weights without verified equivalence
+    reduce the steps to 20
+    use our fixed native patch dimensions
+    alter the spherical point count
+    replace the official sampler
+
+This is the original-reference preset, not a compute-matched ablation.
+
+Explicitly state in the report that original FLUX uses 28 steps, which may
+differ from the existing DiffPano FLUX runs.
+
+Do not launch an additional 20-step FLUX experiment in this task.
+
+======================================================================
+7. SEEDING AND SCHEDULER DETAILS
+======================================================================
+
+Run each new scientific case in a fresh process.
+
+Follow the established original-reference seeding procedure:
+
+    random.seed(0)
+    numpy.random.seed(0)
+    torch.manual_seed(0)
+    torch.cuda.manual_seed_all(0)
+
+Create a fresh generator for each generation:
+
+    torch.Generator(device="cuda").manual_seed(0)
+
+Pass it through the official pipeline's generator argument.
+
+Verify from source that the generator reaches the original initialization.
+Do not claim seed control merely because a metadata field says seed=0.
+
+Preserve the historical RNG initialization order when matching/reusing a
+historical reference.
+
+Do not reuse the advanced generator from the ruins run for underwater.
+
+Preserve the original static launcher's first-order solver handling.
+Read:
+
+    <SphereDiff snapshot>/generate_static_wallpaper.py
+
+There is a known metadata trap:
+    scheduler.config.get("solver_order")
+    and the effective solver_order attribute may disagree after assignment.
+
+Record:
+    original serialized solver order
+    actual effective solver order used by the scheduler
+    scheduler class
+    full relevant config
+    actual timesteps
+    actual sigmas where present
+
+Do not report the mapping value as the effective value without checking.
+
+Do not replace the scheduler with our DiffPano scheduler merely for easier
+configuration.
+
+Do not turn on new deterministic backend flags or change attention
+implementations without documenting the resulting environment difference.
+
+Same numerical seed does NOT imply:
+    identical initial noise across SANA and FLUX
+    identical initial noise across SphereDiff and DiffPano
+    identical local latent shapes or random-number consumption
+
+These are complete-method reference runs.
+
+======================================================================
+8. REUSE VALID COMPLETED REFERENCES
+======================================================================
+
+Inspect existing original SphereDiff results first, particularly:
+
+    outputs/bridge-factorial-ruins/20260918/references/sana/
+    outputs/bridge-factorial-ruins/20260918/references/flux/
+
+Also inspect relevant newer reference manifests for completed underwater
+runs. Use bounded, targeted searches rather than scanning model caches.
+
+Reuse a completed result only if all relevant settings match:
+
+    original source commit and source hashes
+    model identity/revision
+    exact prompt contents
+    seed and RNG device
+    step count
+    guidance and true CFG
+    spherical point count
+    output resolution
+    precision
+    CPU-offload and VAE-tiling settings
+    effective scheduler behavior
+    applicable original defaults
+    final output semantics
+
+Verify the image is readable and exactly 4096×2048.
+
+Record explicit reuse evidence.
+
+If the historical SANA metadata has the known solver-order reporting issue,
+use preserved execution/source evidence to establish the actual behavior.
+Write the interpretation into the NEW audit; do not edit the old metadata.
+
+Do not blindly trust an experiment name or filename.
+Do not use a DiffPano result as an original SphereDiff reference.
+
+Expected workload:
+    four required result entries
+    generate only those without valid matching completed outputs
+
+For example, if both original ruins references match:
+    reuse two ruins results
+    generate two underwater results
+
+Do not rerun valid completed references merely to create a new directory.
+
+======================================================================
+9. OUTPUTS AND MANIFEST
+======================================================================
+
+Use:
+
+    outputs/original-spherediff/ruins-underwater-seed0-v1/
+
+Create:
+
+    manifest.json
+    audit.json
+    execution.json
+    report.md
+
+For NEW generations:
+
+    sana/ruins/seed0/
+        final_result.png
+        metadata.json
+        status.json
+
+    sana/underwater/seed0/
+        final_result.png
+        metadata.json
+        status.json
+
+    flux/ruins/seed0/
+        final_result.png
+        metadata.json
+        status.json
+
+    flux/underwater/seed0/
+        final_result.png
+        metadata.json
+        status.json
+
+For REUSED results:
+    store their existing paths/hashes in manifest.json
+    do not overwrite or unnecessarily duplicate their files
+
+Use an exclusive per-run lock and atomic completion status.
+Mark completed only after image/metadata validation.
+
+Metadata must contain:
+
+    backend and pipeline class
+    actual imported source paths
+    SphereDiff source commit and file hashes
+    checkpoint identity/revision
+    complete call arguments and relevant defaults
+    prompt text and SHA256
+    seed and generator device
+    scheduler details
+    output dimensions and image SHA256
+    actual transformer forward count
+    model-input shape histogram
+    generation-only runtime
+    total process/model-loading timing where available
+    GPU peak allocated/reserved memory
+    host peak memory
+    GPU/node/software versions
+    Slurm job ID
+    reused versus newly generated status
+
+Do not save intermediate denoising images, latent tensors, or noise fields.
+
+A logging callback may report progress, but must return callback state
+unchanged and add no model predictions.
+
+======================================================================
+10. VALIDATION AND EXECUTION
+======================================================================
+
+Implement a small study-local runner supporting:
+
+    python -m studies.original_spherediff.audit
+
+    python -m studies.original_spherediff.run \
+        --backend sana --prompt ruins
+
+    python -m studies.original_spherediff.run \
+        --backend sana --prompt underwater
+
+    python -m studies.original_spherediff.run \
+        --backend flux --prompt ruins
+
+    python -m studies.original_spherediff.run \
+        --backend flux --prompt underwater
+
+    python -m studies.original_spherediff.report
+
+Audit before submission.
+
+Focused tests must check:
+
+    correct official class/import source
+    exact SANA and FLUX argument construction
+    correct prompt selection
+    fresh seed/generator per case
+    matching-control reuse and mismatch rejection
+    output path separation
+    overwrite protection
+    scheduler metadata serialization
+    logging wrappers preserve returned values
+
+Run:
+    compileall for the new study
+    git diff --check
+    study-local tests
+
+This task does not require another five-backend statistical preflight or
+a new GWTFlow test matrix.
+
+Validate the wrapper without extra full scientific generations.
+
+Then actually submit and run all missing cases.
+Do not stop after preparing scripts.
+
+======================================================================
+11. SLURM AND MODEL CACHES
+======================================================================
+
+Use the existing proven SphereDiff-compatible environment.
+
+Inspect historical reference environment metadata and existing working
+Slurm scripts before selecting dependencies.
+
+Do not reinstall or upgrade the shared DiffPano/TT-CEA environment.
+
+If necessary, use an isolated environment matching the original reference
+dependencies.
+
+Expected GPU allocation:
+    one A100 per generation
+    8 CPUs
+    64 GiB host memory
+    up to 3 hours initial walltime
+
+Use at most two concurrent baseline jobs by default.
+Do not cancel or reprioritize unrelated jobs.
+
+Resolve the pinned checkpoints from existing caches, including the
+SphereDiff-specific cache when needed.
+
+Use local_files_only=True when the required snapshot is present.
+
+Do not assume the official FLUX checkpoint lives in the same cache as
+our ModelsLab-based historical runs.
+
+If a required pinned snapshot is unavailable:
+    report the missing model/revision
+    use an authorized download path if available
+    never silently substitute another checkpoint
+
+Before submitting/retrying:
+    inspect manifest/status
+    inspect squeue
+    inspect sacct
+    inspect recorded Slurm IDs
+
+A submission timeout does not prove the job was not submitted.
+
+Record failed attempts.
+Retry infrastructure failures without changing scientific settings.
+Never overwrite a completed result.
+
+======================================================================
+12. FINAL COMPARISON SHEET AND REPORT
+======================================================================
+
+Create a single overview sheet:
+
+                        ruins               underwater
+
+    Original SANA       full ERP            full ERP
+    Original FLUX       full ERP            full ERP
+
+Preserve image aspect ratios and label methods accurately.
+
+Optionally include a small fixed-viewport sheet for viewing detail:
+    same camera directions for both methods
+    same FoV and display raster
+    include horizon and polar views
+
+These are visualization-only exports.
+Do not alter the scientific final images.
+
+Do not implement quantitative metrics in this task.
+Do not launch new DiffPano runs for comparison.
+
+Final response must contain:
+
+    1. A four-row completion table.
+    2. Which results were reused and the exact matching evidence.
+    3. Which results were newly generated.
+    4. Exact prompt hashes and seed.
+    5. Actual SANA/FLUX generation settings.
+    6. Effective scheduler behavior.
+    7. Output paths and image dimensions.
+    8. New Slurm job IDs and runtime/memory.
+    9. The overview sheet path.
+    10. Any failed or unavailable cases, stated explicitly.
+
+Completion table:
+
+    Backend | Prompt | Seed | Steps | Resolution |
+    Reused/New | Status | Output path | Job ID
+
+Required final state:
+    all four original-reference entries present and audited,
+    or a precise account of what prevented completion.
+
+Do not claim these runs are compute-matched to DiffPano.
+Do not claim matching seeds create identical initial noise.
+
+Stop after these original SANA/FLUX reference runs and their report.

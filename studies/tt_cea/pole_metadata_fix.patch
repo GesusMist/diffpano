@@ -1,0 +1,423 @@
+--- a/studies/tt_cea/common.py
++++ b/studies/tt_cea/common.py
+@@ -101,16 +101,17 @@
+     return True
+ 
+ def require_gate(backend=None,case=None):
++    from studies.tt_cea.metadata import compatible_source_hashes
+     v=read(ROOT/'validation.json')
+     assert v['passed'] and v['source_hashes']==study_hashes(),'New study sources changed after validation'
+     assert v['manifest_sha256']==sha(ROOT/'manifest.json')
+     verify_preservation()
+     if backend:
+         p=read(ROOT/'preflight'/(backend+'.json'))
+-        assert p['interval_passed'] and p['source_hashes']==study_hashes()
++        assert p['interval_passed'] and p['source_hashes'] in compatible_source_hashes(v)
+         if case in ('C0','P0','C1'):
+             g=read(ROOT/'geometry/coverage.json')
+-            key=CASES[case]['cameras'];assert g['source_hashes']==study_hashes() and g['covers'][key]['passed']
++            key=CASES[case]['cameras'];assert g['source_hashes'] in compatible_source_hashes(v) and g['covers'][key]['passed']
+             operator=read(ROOT/'geometry/operator_tests.json');assert operator['passed']
+             if case in ('P0','C1'):assert p['ea_noise_passed'],p.get('ea_noise_error')
+             if case in ('C0','C1'):assert p['cea_passed_by_cover'][key],p.get('cea_errors')
+--- a/studies/tt_cea/metadata.py
++++ b/studies/tt_cea/metadata.py
+@@ -0,0 +1,146 @@
++"""Pole metadata capture and certification of this exact metadata-only revision."""
++import ast
++import math
++from studies.tt_cea.common import REPO, ROOT, read, sha, study_hashes
++
++ARCHIVE = ROOT / 'provenance/pre-pole-metadata'
++PRIOR_VALIDATION_SHA256 = 'e67d31333c5b2b77b5fb2d96d13b0f7aede14c32655d2c116eefb2eb9867e141'
++SOURCE_SNAPSHOT_SHA256 = '4ef6d3eed257e25b985fc1261a25ec727ed0d2cd0846b824321c1d063173b404'
++
++
++def validate_pole_record(value):
++    assert isinstance(value, dict) and set(value) == {'north', 'south'}
++    for color in value.values():
++        assert isinstance(color, list) and len(color) == 3
++        assert all(type(x) in (int, float) and math.isfinite(x) for x in color)
++    return value
++
++
++def terminal_pole_rgb(native):
++    """Copy actual floating pole colors, in raw, unclipped RGB [-1,1] convention."""
++    import torch
++    assert native.pole_rgb is not None
++    poles = native.pole_rgb.detach().cpu()
++    assert tuple(poles.shape) == (1, 3, 2, 1) and poles.dtype == torch.float32
++    assert bool(torch.isfinite(poles).all())
++    return validate_pole_record(dict(north=poles[0, :, 0, 0].tolist(),
++                                    south=poles[0, :, 1, 0].tolist()))
++
++
++def assert_capture_only_run_change(before, after):
++    tree = ast.parse(after)
++    imports = [n for n in tree.body if isinstance(n, ast.ImportFrom)
++               and n.module == 'studies.tt_cea.metadata']
++    assert len(imports) == 1
++    assert [(n.name, n.asname) for n in imports[0].names] == [('terminal_pole_rgb', None)]
++    tree.body.remove(imports[0])
++    hits = []
++    expected = ast.parse("terminal_pole_rgb(native) if row['projection']=='cea' else None", mode='eval').body
++    for node in ast.walk(tree):
++        if isinstance(node, ast.Call):
++            for keyword in list(node.keywords):
++                if keyword.arg == 'terminal_pole_rgb':
++                    assert isinstance(node.func, ast.Name) and node.func.id == 'dict'
++                    assert ast.dump(keyword.value) == ast.dump(expected)
++                    node.keywords.remove(keyword)
++                    hits.append(keyword)
++    assert len(hits) == 1
++    assert ast.dump(tree) == ast.dump(ast.parse(before)), 'Generation AST changed beyond pole capture'
++
++
++def revised_common_source(before):
++    header = 'def require_gate(backend=None,case=None):\n'
++    assert before.count(header) == 1
++    result = before.replace(header, header + '    from studies.tt_cea.metadata import compatible_source_hashes\n')
++    for name in ('p', 'g'):
++        source = name + "['source_hashes']==study_hashes()"
++        assert result.count(source) == 1
++        result = result.replace(source, name + "['source_hashes'] in compatible_source_hashes(v)")
++    return result
++
++
++def certify_metadata_revision():
++    import hashlib
++    prior_path = ARCHIVE / 'records/validation.json'
++    snapshot_path = ARCHIVE / 'source_snapshot.json'
++    assert sha(prior_path) == PRIOR_VALIDATION_SHA256
++    assert sha(snapshot_path) == SOURCE_SNAPSHOT_SHA256
++    prior = read(prior_path)
++    snapshot = read(snapshot_path)
++    assert prior['passed'] and prior['source_hashes'] == snapshot['source_hashes']
++    assert prior['manifest_sha256'] == sha(ROOT / 'manifest.json')
++    for path, source in snapshot['source_text'].items():
++        assert hashlib.sha256(source.encode()).hexdigest() == prior['source_hashes'][path]
++    current = study_hashes()
++    added = {'studies/tt_cea/metadata.py', 'studies/tt_cea/tests/test_metadata.py',
++             'studies/tt_cea/recover_poles.py', 'studies/tt_cea/recover_poles.slurm'}
++    changed = {'studies/tt_cea/common.py', 'studies/tt_cea/run.py',
++               'studies/tt_cea/report.py', 'studies/tt_cea/validate.py'}
++    assert set(current) == set(prior['source_hashes']) | added
++    protected = sorted(set(prior['source_hashes']) - changed)
++    for path in protected:
++        assert current[path] == prior['source_hashes'][path], 'Protected source changed: ' + path
++    assert_capture_only_run_change(snapshot['source_text']['studies/tt_cea/run.py'],
++                                   (REPO / 'studies/tt_cea/run.py').read_text())
++    assert (REPO / 'studies/tt_cea/common.py').read_text() == revised_common_source(
++        snapshot['source_text']['studies/tt_cea/common.py'])
++    def render_functions(source):
++        return {n.name: ast.dump(n) for n in ast.parse(source).body
++                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
++                and n.name in ('panel', 'baseline_views', 'viewport', 'comparisons')}
++    assert render_functions(snapshot['source_text']['studies/tt_cea/report.py']) == render_functions(
++        (REPO / 'studies/tt_cea/report.py').read_text())
++    return dict(kind='terminal_CEA_pole_metadata_only', prior_validation_sha256=PRIOR_VALIDATION_SHA256,
++                source_snapshot_sha256=SOURCE_SNAPSHOT_SHA256, prior_source_hashes=prior['source_hashes'],
++                current_source_hashes=current, protected_sources_unchanged=protected,
++                generation_AST_unchanged_except_metadata=True,
++                common_changes_limited_to_provenance_checks=True, report_rendering_unchanged=True)
++
++
++def compatible_source_hashes(validation):
++    current = study_hashes()
++    assert validation['passed'] and validation['source_hashes'] == current
++    accepted = [current]
++    certificate = validation.get('metadata_only_compatibility')
++    if certificate is not None:
++        assert certificate == certify_metadata_revision()
++        accepted.append(certificate['prior_source_hashes'])
++    return accepted
++
++
++
++def assert_same_recovery_sample(original,candidate):
++    for key in ('backend','prompt','case','generation_configuration','model_checkpoint','model_revision',
++                'camera_geometry_sha256','local_native_resolution','local_RGB_resolution','native_channels',
++                'native_scale','prepared_intervals','conditioning_sha256','counts','manifest_sha256'):
++        assert original[key]==candidate[key], 'Recovery configuration mismatch: '+key
++    assert original['initialization']['initial_local_sha256']==candidate['initialization']['initial_local_sha256']
++    assert original['diagnostics']['terminal_state_sha256']==candidate['diagnostics']['terminal_state_sha256']
++    for file in ('final.png','final_cea.png','viewports.png','schedule.csv'):
++        assert original['artifacts'][file]==candidate['artifacts'][file], 'Recovery artifact mismatch: '+file
++    validate_pole_record(candidate['terminal_pole_rgb'])
++
++
++def recovered_pole_record(backend,prompt,case,original):
++    if (prompt,case)!=('ruins','C0'):return None
++    directory=ROOT/'pole-metadata-recovery'/backend
++    certificate_path=directory/'certificate.json'
++    if not certificate_path.exists():return None
++    certificate=read(certificate_path)
++    if not certificate['passed']:return None
++    original_folder=ROOT/'samples'/prompt/backend/case
++    candidate_folder=directory/'attempt-1'
++    candidate=read(candidate_folder/'metadata.json');status=read(candidate_folder/'status.json')
++    assert certificate['original_metadata_sha256']==sha(original_folder/'metadata.json')
++    assert certificate['candidate_metadata_sha256']==sha(candidate_folder/'metadata.json')==status['metadata_sha256']
++    assert status['state']=='complete'
++    assert candidate['source_hashes'] in compatible_source_hashes(read(ROOT/'validation.json'))
++    assert_same_recovery_sample(original,candidate)
++    for file in ('final.png','final_cea.png','viewports.png','schedule.csv'):
++        assert sha(candidate_folder/file)==candidate['artifacts'][file]
++    assert certificate['terminal_pole_rgb']==candidate['terminal_pole_rgb']
++    return validate_pole_record(candidate['terminal_pole_rgb'])
++
++if __name__ == '__main__':
++    import json
++    print(json.dumps(certify_metadata_revision(), indent=2))
+--- a/studies/tt_cea/recover_poles.py
++++ b/studies/tt_cea/recover_poles.py
+@@ -0,0 +1,55 @@
++"""Explicitly authorized, separate reexecution to recover omitted pole metadata."""
++import traceback
++from studies.tt_cea.common import *
++from studies.tt_cea.metadata import assert_same_recovery_sample, validate_pole_record
++
++
++def recover(backend,authorization_file):
++    authorization=read(authorization_file)
++    assert authorization['approved'] and [backend,'ruins','C0'] in authorization['authorized_cases']
++    assert authorization['user_instruction'].strip()
++    require_gate(backend,'C0')
++    original_folder=sample_dir(backend,'ruins','C0')
++    original_status=read(original_folder/'status.json');original=read(original_folder/'metadata.json')
++    assert original_status['state']=='complete' and sha(original_folder/'metadata.json')==original_status['metadata_sha256']
++    assert original.get('terminal_pole_rgb') is None
++    target=ROOT/'pole-metadata-recovery'/backend/'attempt-1'
++    certificate=target.parent/'certificate.json'
++    assert not target.exists() and not certificate.exists(),'No silent retries or duplicate recovery'
++    from studies.tt_cea import run as runner
++    # This fresh process redirects only the NEW study runner's output directory.
++    # No historical module, model, schedule, tensor, or numerical helper is patched.
++    original_directory_function=runner.sample_dir
++    def recovery_directory(name,prompt,case):
++        assert (name,prompt,case)==(backend,'ruins','C0')
++        return target
++    try:
++        runner.sample_dir=recovery_directory
++        runner.run(backend,'ruins','C0')
++    finally:
++        runner.sample_dir=original_directory_function
++    try:
++        status=read(target/'status.json');candidate=read(target/'metadata.json')
++        assert status['state']=='complete' and sha(target/'metadata.json')==status['metadata_sha256']
++        assert_same_recovery_sample(original,candidate)
++        for file in ('final.png','final_cea.png','viewports.png','schedule.csv'):
++            assert sha(original_folder/file)==original['artifacts'][file]
++            assert sha(target/file)==candidate['artifacts'][file]
++        assert sha(original_folder/'metadata.json')==original_status['metadata_sha256']
++        atomic(certificate,dict(passed=True,purpose='terminal pole metadata recovery only',
++            backend=backend,prompt='ruins',case='C0',job=status['job'],
++            original_folder=str(original_folder),candidate_folder=str(target),
++            original_metadata_sha256=original_status['metadata_sha256'],candidate_metadata_sha256=status['metadata_sha256'],
++            terminal_state_sha256=candidate['diagnostics']['terminal_state_sha256'],
++            terminal_pole_rgb=validate_pole_record(candidate['terminal_pole_rgb']),
++            authorization_sha256=sha(authorization_file),source_hashes=study_hashes()))
++        print('POLE METADATA RECOVERED',backend,flush=True)
++    except Exception:
++        atomic(certificate,dict(passed=False,backend=backend,error=traceback.format_exc()))
++        raise
++
++
++if __name__=='__main__':
++    p=parser(__doc__);p.add_argument('--backend',choices=BACKENDS,required=True)
++    p.add_argument('--authorization-file',required=True)
++    a=p.parse_args();load_settings(a.config);recover(a.backend,a.authorization_file)
+--- a/studies/tt_cea/recover_poles.slurm
++++ b/studies/tt_cea/recover_poles.slurm
+@@ -0,0 +1,20 @@
++#!/bin/bash
++#SBATCH --job-name=ttcea-run
++#SBATCH --partition=gpu
++#SBATCH --gres=gpu:a100:1
++#SBATCH --ntasks=1
++#SBATCH --cpus-per-task=8
++#SBATCH --mem=64G
++#SBATCH --time=03:00:00
++#SBATCH --output=logs/%x.%j.out
++#SBATCH --error=logs/%x.%j.err
++set -euo pipefail
++module purge
++module load WebProxy
++source activate_venv diffpano
++cd /home/shig/diffpano
++export HF_HOME="$SCRATCH/diffpano/hf_cache"
++export HF_HUB_CACHE="$HF_HOME/hub" HF_HUB_OFFLINE=1
++export TRANSFORMERS_CACHE="$HF_HOME/transformers" TMPDIR="$SCRATCH/diffpano/tmp"
++export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=2
++python -m studies.tt_cea.recover_poles --config studies/tt_cea/experiment.yaml "$@"
+--- a/studies/tt_cea/report.py
++++ b/studies/tt_cea/report.py
+@@ -8,6 +8,7 @@
+ from diffpano.diagnostics import tensor_to_pil
+ from diffpano.projection import erp_to_perspective,ProjectionCache
+ from studies.tt_cea.common import *
++from studies.tt_cea.metadata import compatible_source_hashes, validate_pole_record, recovered_pole_record
+ from studies.tt_cea.cameras import report_cameras
+ from studies.tt_cea.run import VIEW_LABELS,write_csv
+ 
+@@ -58,13 +59,24 @@
+     if s['state']!='complete':result['error']=s.get('error');return result
+     try:
+         assert sha(folder/'metadata.json')==s['metadata_sha256'];m=read(folder/'metadata.json')
+-        assert m['source_hashes']==study_hashes() and m['manifest_sha256']==sha(ROOT/'manifest.json')
++        assert m['source_hashes'] in compatible_source_hashes(read(ROOT/'validation.json')) and m['manifest_sha256']==sha(ROOT/'manifest.json')
++        gate=read(ROOT/'validation.json')
++        result['source_validation_job']=gate['job'] if m['source_hashes']==gate['source_hashes'] else read(ROOT/'provenance/pre-pole-metadata/records/validation.json')['job']
+         for file,h in m['artifacts'].items():assert sha(folder/file)==h,file
+         with Image.open(folder/'final.png') as im:assert im.size==(4096,2048);im.verify()
+         expected=row['expected_guided_predictions'];actual=m['counts']
+         assert actual['denoiser']==expected and actual['initialize']==0
+         assert actual['encode']==(0 if n=='pixeldit' else 2*expected)
+         assert actual['decode']==(0 if n=='pixeldit' else expected+89)
++        if row['projection']=='cea':
++            poles=m.get('terminal_pole_rgb')
++            if m['source_hashes']==study_hashes():assert poles is not None,'Missing terminal pole RGB in revised runner'
++            recovered=False
++            if poles is None:
++                poles=recovered_pole_record(n,p,c,m);recovered=poles is not None
++            if poles is not None:validate_pole_record(poles)
++            if recovered:result['terminal_pole_recovery_job']=read(ROOT/'pole-metadata-recovery'/n/'certificate.json')['job']
++            result.update(terminal_pole_rgb=poles,terminal_pole_metadata_status='recomputed with matching terminal states and artifacts' if recovered else 'recorded' if poles is not None else 'missing before metadata revision')
+         diagnostics=m['diagnostics'];logs=diagnostics['diagnostics']
+         assert len(logs)==row['downhill_passes']
+         if c=='T1':assert diagnostics['original_noise_sha256_before']==diagnostics['original_noise_sha256_after']
+@@ -129,9 +141,13 @@
+     comparisons(rows,out);preserved=verify_preservation();counts=dict(Counter(r['status'] for r in rows))
+     review=read(out/'visual_review.json') if (out/'visual_review.json').exists() else {'status':'pending direct visual inspection','observations':[]}
+     pref={n:read(ROOT/'preflight'/(n+'.json')) if (ROOT/'preflight'/(n+'.json')).exists() else None for n in BACKENDS}
++    missing_poles=[dict(backend=r['backend'],prompt=r['prompt'],case=r['case']) for r in rows
++        if r.get('terminal_pole_metadata_status')=='missing before metadata revision']
+     summary=dict(rows=rows,counts=counts,historical_unchanged=preserved,visual_review=review,
+         validation=str(ROOT/'validation.json'),preflight=pref,source_hashes=study_hashes(),
+-        complete=counts.get('reused',0)==10 and counts.get('complete',0)==50,
++        complete=counts.get('reused',0)==10 and counts.get('complete',0)==50 and not missing_poles,
++        scientific_matrix_complete=counts.get('reused',0)==10 and counts.get('complete',0)==50,
++        terminal_pole_metadata_missing=missing_poles,
+         execution=read(ROOT/'execution.json') if (ROOT/'execution.json').exists() else None)
+     atomic(out/'summary.json',summary)
+     temp=out/'summary.csv.tmp'
+@@ -145,7 +161,8 @@
+       '', '| Backend | Frozen interval passed | Max native error | Old89 CEA | EA89 CEA |', '|---|---|---|---|---|']
+     for n,v in pref.items():
+         text.append('| '+n+' | '+('pending | pending | pending | pending' if v is None else f"{v['interval_passed']} | {v.get('equivalence',{}).get('native_state_max_abs_error')} | {v['cea_passed_by_cover']['old89']} | {v['cea_passed_by_cover']['ea89']}")+' |')
+-    text+=['','Cost separates initialization, ordinary/replay model calls, the model-free backward bridge, projection/fusion, terminal decode/export and total process time. These stage timings do not count model-loading overhead as denoising. Historical R0 used more diagnostic work, so its total runtime is not a pure implementation speed benchmark.',
++    text+=['','Cost separates initialization, ordinary/replay model calls, the model-free backward bridge, projection/fusion, terminal decode/export and main-run time (see timing_scope.md for exact boundaries and Slurm allocation elapsed time). These stage timings do not count model-loading overhead as denoising. Historical R0 used more diagnostic work, so its total runtime is not a pure implementation speed benchmark.',
++      '', 'Terminal CEA pole metadata: '+str(len(missing_poles))+' pre-revision samples lack the actual saved floating-point pole RGB values: '+str(missing_poles)+'. These values were used during generation but cannot be recovered exactly from quantized PNGs. No values are estimated or fabricated. Later samples save both values directly. Any approved recovery is stored separately and accepted only after terminal-state, configuration, initialization and image-artifact hashes match the original. The immutable prior validation/source snapshot and metadata-only compatibility certificate preserve provenance; numerical operators, generation AST apart from the added metadata field, and report rendering are unchanged.',
+       '', '## Visual comparisons',
+       'Every condition is shown, including pending, failed and visually poor samples. Each backend/prompt has fixed R0–T1–TB and R0–C0–P0–C1 sheets. The first row is the ERP; the next ten rows are fixed independent 80° viewports. Yaw 180° crosses the longitude seam. New viewports use floating final results with bilinear spherical sampling, rendered at 1024² and reduced for display. R0 viewports necessarily use the historical quantized PNG. CEA sample viewports.png compares direct native CEA with its floating ERP export under the same cap convention.',
+       '', 'Visual-review status: '+review.get('status','unspecified')]
+--- a/studies/tt_cea/run.py
++++ b/studies/tt_cea/run.py
+@@ -11,6 +11,7 @@
+ from diffpano.diagnostics import tensor_to_pil
+ from diffpano.projection import erp_to_perspective,ProjectionCache
+ from studies.tt_cea.runtime import *
++from studies.tt_cea.metadata import terminal_pole_rgb
+ from studies.tt_cea.cameras import report_cameras,routing
+ from studies.tt_cea.schedule import records,execution_plan
+ 
+@@ -110,6 +111,7 @@
+             output_range=dict(min=float(erp.min()),max=float(erp.max()),out_of_range_fraction=float(((erp<-1)|(erp>1)).float().mean())),
+             viewports=views,artifacts=hashes,source_hashes=study_hashes(),manifest_sha256=sha(ROOT/'manifest.json'),
+             environment=environment(),baseline_image_sha256=sha(BASES[prompt]/name/'gwtf-final.png'),
++            terminal_pole_rgb=terminal_pole_rgb(native) if row['projection']=='cea' else None,
+             native_CEA_note='final_cea.png is an equal-area canvas visualization, not an ERP skybox' if row['projection']=='cea' else None)
+         require_gate(name,case);atomic(folder/'metadata.json',historical_scheduler_json(metadata))
+         assert read(folder/'metadata.json')['counts']['denoiser']==expected
+--- a/studies/tt_cea/tests/test_metadata.py
++++ b/studies/tt_cea/tests/test_metadata.py
+@@ -0,0 +1,69 @@
++import copy
++import unittest
++from types import SimpleNamespace
++from unittest.mock import patch
++import torch
++from studies.tt_cea.metadata import (terminal_pole_rgb, validate_pole_record,
++    assert_capture_only_run_change, compatible_source_hashes, certify_metadata_revision, assert_same_recovery_sample)
++from studies.tt_cea.common import study_hashes
++
++
++class PoleMetadataTests(unittest.TestCase):
++    def test_exact_values_order_no_mutation_or_rng(self):
++        poles=torch.arange(6,dtype=torch.float32).reshape(1,3,2,1)-2
++        before=poles.clone();rng=torch.random.get_rng_state().clone()
++        value=terminal_pole_rgb(SimpleNamespace(pole_rgb=poles))
++        self.assertEqual(value,dict(north=[-2.,0.,2.],south=[-1.,1.,3.]))
++        self.assertTrue(torch.equal(poles,before));self.assertTrue(torch.equal(torch.random.get_rng_state(),rng))
++        value['north'][0]=999
++        self.assertTrue(torch.equal(poles,before))
++
++    def test_missing_wrong_shape_nonfinite_rejected(self):
++        for poles in (None,torch.zeros(1,3,1,2),torch.full((1,3,2,1),float('nan')),
++                      torch.zeros(1,3,2,1,dtype=torch.float64)):
++            with self.assertRaises(AssertionError):terminal_pole_rgb(SimpleNamespace(pole_rgb=poles))
++
++    def test_record_validation_raw_values_not_clipped(self):
++        value=dict(north=[-2.,0.,2.],south=[3.,4.,5.])
++        self.assertEqual(validate_pole_record(value),value)
++        for bad in (None,{},dict(north=[0,0],south=[0,0,0]),dict(north=[0,0,float('inf')],south=[0,0,0])):
++            with self.assertRaises(AssertionError):validate_pole_record(bad)
++
++    def test_generation_ast_guard(self):
++        before="def run():\n    metadata=dict(answer=42)\n"
++        after="from studies.tt_cea.metadata import terminal_pole_rgb\ndef run():\n    metadata=dict(answer=42,terminal_pole_rgb=terminal_pole_rgb(native) if row['projection']=='cea' else None)\n"
++        assert_capture_only_run_change(before,after)
++        with self.assertRaises(AssertionError):assert_capture_only_run_change(before,after.replace('answer=42','answer=43'))
++        with self.assertRaises(AssertionError):assert_capture_only_run_change(before,after.replace("row['projection']=='cea'","True"))
++
++    def test_prior_sources_require_exact_passed_certificate(self):
++        current={'new':'hash'};prior={'old':'hash'};certificate={'prior_source_hashes':prior}
++        with patch('studies.tt_cea.metadata.study_hashes',return_value=current),patch('studies.tt_cea.metadata.certify_metadata_revision',return_value=certificate):
++            self.assertEqual(compatible_source_hashes(dict(passed=True,source_hashes=current)),[current])
++            self.assertEqual(compatible_source_hashes(dict(passed=True,source_hashes=current,metadata_only_compatibility=certificate)),[current,prior])
++            with self.assertRaises(AssertionError):compatible_source_hashes(dict(passed=False,source_hashes=current))
++            with self.assertRaises(AssertionError):compatible_source_hashes(dict(passed=True,source_hashes=prior))
++            with self.assertRaises(AssertionError):compatible_source_hashes(dict(passed=True,source_hashes=current,metadata_only_compatibility={}))
++
++    def test_real_revision_certificate_and_protected_source_rejection(self):
++        certificate=certify_metadata_revision()
++        self.assertTrue(certificate['generation_AST_unchanged_except_metadata'])
++        changed=copy.deepcopy(study_hashes());changed['studies/tt_cea/pipeline.py']='0'*64
++        with patch('studies.tt_cea.metadata.study_hashes',return_value=changed):
++            with self.assertRaises(AssertionError):certify_metadata_revision()
++
++    def test_recovery_requires_state_configuration_and_image_match(self):
++        keys=('backend','prompt','case','generation_configuration','model_checkpoint','model_revision',
++              'camera_geometry_sha256','local_native_resolution','local_RGB_resolution','native_channels',
++              'native_scale','prepared_intervals','conditioning_sha256','counts','manifest_sha256')
++        original={key:'same' for key in keys}
++        original.update(initialization={'initial_local_sha256':'initial'},diagnostics={'terminal_state_sha256':'terminal'},
++            artifacts={f:'identical' for f in ('final.png','final_cea.png','viewports.png','schedule.csv')})
++        candidate=copy.deepcopy(original);candidate['terminal_pole_rgb']=dict(north=[0.,0.,0.],south=[1.,1.,1.])
++        assert_same_recovery_sample(original,candidate)
++        for kind in ('state','configuration','image'):
++            bad=copy.deepcopy(candidate)
++            if kind=='state':bad['diagnostics']['terminal_state_sha256']='different'
++            elif kind=='configuration':bad['generation_configuration']='different'
++            else:bad['artifacts']['final.png']='different'
++            with self.assertRaises(AssertionError):assert_same_recovery_sample(original,bad)
+--- a/studies/tt_cea/validate.py
++++ b/studies/tt_cea/validate.py
+@@ -14,6 +14,7 @@
+     job=os.environ.get('SLURM_JOB_ID','local');out=ROOT/'validation-attempts'/job
+     out.mkdir(parents=True,exist_ok=False);snapshot=study_hashes();commands=[]
+     runs=[['python','-m','compileall','-q','studies/tt_cea'],['git','diff','--check'],
++          ['python','-m','studies.tt_cea.metadata'],
+           ['python','-m','unittest','discover','-s','studies/tt_cea/tests','-v']]
+     if not development:runs += [['python','-m','unittest','discover','-s',d,'-v'] for d in ('tests','studies/gwtf_erp4k','studies/gwtf_underwater')]
+     passed=True
+@@ -33,6 +34,9 @@
+         job=job,seconds=time.perf_counter()-started,python=sys.version,environment=dict(slurm_job=job,OMP_NUM_THREADS=os.environ.get('OMP_NUM_THREADS')))
+     atomic(out/'result.json',result)
+     if result['passed']:
++        from studies.tt_cea.metadata import certify_metadata_revision
++        result['metadata_only_compatibility']=certify_metadata_revision()
++        atomic(out/'result.json',result)
+         verify_preservation();atomic(ROOT/'validation.json',result)
+         print('VALIDATION PASSED',flush=True)
+     elif not passed:raise SystemExit(1)
