@@ -1,0 +1,635 @@
+Implement and validate GRADIENT-DOMAIN BLENDING ONLY for DiffPano.
+
+Repository: GesusMist/diffpano
+Relevant branch: no_sphere
+
+Work in the current local checkout. Inspect its branch, revision, worktree,
+and any repository instructions before editing. Preserve uncommitted work.
+Do not reset, delete, or overwrite unrelated changes.
+
+This is an implementation-and-validation task, not merely a design proposal.
+Proceed through the tests and bounded pilot described below when the existing
+environment and compute allocation permit it.
+
+======================================================================
+1. OBJECTIVE AND STRICT SCOPE
+======================================================================
+
+We currently fuse inverse-projected predicted-clean RGB views into an ERP
+canvas using weighted RGB averaging.
+
+We want to test whether reconstructing the consensus image from a gradient
+guidance field can preserve local details better than RGB averaging, without
+introducing unacceptable color drift, ghosting, or panorama discontinuities.
+
+Implement three selectable experimental modes:
+
+  rgb
+      Exact existing weighted-RGB fusion baseline.
+
+  poisson_mean
+      Weighted-average source gradients, followed by a color-anchored
+      screened-Poisson reconstruction. This is a CONTROL.
+
+  poisson_select
+      Gradients selected from a geometrically reliable source view,
+      followed by the same screened-Poisson reconstruction.
+      This is the main detail-preservation candidate.
+
+Important:
+- Gradient-domain blending here means spatial image derivatives.
+- It does NOT mean backpropagating a loss through the diffusion model.
+- It does NOT mean modifying model weights, latent guidance, noise warping,
+  or the denoiser.
+- Do not promise that either variant will improve the results.
+
+Keep blending at EVERY existing denoising interval. Do not implement
+intermittent blending, early-only blending, or independent late denoising.
+Those belong to a separate future task.
+
+Do not change:
+- GWTF/shared-noise initialization;
+- native noisy-state semantics;
+- current-state interpolation;
+- local identity-preserving VAE residual correction;
+- model checkpoints, revisions, precision, or conditioning;
+- scheduler timesteps, sigma schedule, step count, or guidance;
+- camera poses, count, ordering, FOV, or prompt routing;
+- ERP/view resolution;
+- projection interpolation or spatial confidence weights;
+- historical RGB, DPA, LPW, CEA, and SphereDiff experiments;
+- existing metric definitions.
+
+Do not introduce a persistent spherical/ERP latent representation.
+Do not introduce sharpening filters or call them gradient-domain fusion.
+
+======================================================================
+2. TRACE THE ACTUAL BENCHMARK PATH BEFORE EDITING
+======================================================================
+
+Inspect the current local equivalents of:
+
+  studies/all_prompts/runtime.py
+  studies/all_prompts/audit.py
+  studies/tt_cea/pipeline.py
+  studies/tt_cea/canvas.py
+  studies/gwtf_noise/
+  diffpano/fusion.py
+  diffpano/bridge_factorial.py
+  diffpano/current_state_transition.py
+  diffpano/projection.py
+  diffpano/warp.py
+
+The checked public implementation uses:
+
+  ordinary_run(...)
+      -> ExperimentalPipeline.advance_interval(...)
+      -> predict_clean_and_endpoint(...)
+      -> decode predicted-clean native state to RGB, when applicable
+      -> inverse-project and accumulate
+      -> finalize the RGB canvas
+      -> sample perspective views
+      -> encode and apply the existing local VAE residual
+      -> interpolate_from_current_state(...)
+
+Verify this against the local checkout and record the actual functions.
+
+Do not assume that erp_pipeline.py or erp_x0_pipeline.py is the active
+benchmark implementation merely because it is described in the README.
+
+Record:
+- the semantic meaning of the fusion input;
+- its shape, dtype, and numerical range;
+- the exact baseline fusion reducer and weights;
+- where the per-interval and terminal fusion calls occur;
+- the baseline initialization, camera, conditioning, and schedule hashes.
+
+The current benchmark baseline is expected to use standard warping,
+weighted_average, and spherediff_center weights, with the existing
+identity-preserving bridge. Resolve the actual configuration from benchmark
+provenance instead of recreating it from remembered defaults.
+
+If the local implementation differs, adapt to its verified equivalent.
+Do not silently switch to a different pipeline.
+
+======================================================================
+3. IMPLEMENT THE ERP GRADIENT-FUSION OPERATOR
+======================================================================
+
+Keep the implementation model-independent.
+
+Prefer:
+- one focused reusable implementation module, for example
+  diffpano/gradient_fusion.py;
+- focused tests;
+- a small study-local integration/runner following repository conventions.
+
+Do not duplicate the denoising loop or restructure the repository.
+
+Preserve the original CanvasOperator and its historical B0C0D1 guards.
+Use a study-local operator wrapper/subclass or a narrow explicit injection
+point whose default delegates to the original implementation unchanged.
+
+In particular:
+- do not globally replace RGBFusionAccumulator;
+- do not weaken historical validation so arbitrary configurations pass;
+- keep the baseline fusion config separate from gradient-study settings;
+- unsupported domains/modes must fail explicitly rather than silently
+  becoming RGB averaging.
+
+For this task, support ERP. Do not implement CEA gradient blending yet.
+
+3.1 Construct the RGB reference
+
+Let v_i(p) be a view's already inverse-projected RGB value at ERP pixel p,
+m_i(p) its validity mask, and a_i(p) its effective baseline fusion weight.
+
+Compute the reference image R with the EXACT existing RGB accumulator.
+
+Do not substitute an unweighted average.
+Do not alter the existing handling of positive but very small center weights.
+Do not clamp valid weight denominators in a way that darkens the reference.
+
+The rgb experimental mode must directly delegate to the original path,
+without extra random draws or changes in floating-point reduction order.
+
+3.2 Define ERP graph edges
+
+Use forward finite differences on the common ERP grid:
+
+  horizontal: p -> pixel immediately to the right, wrapping modulo W;
+  vertical:   p -> pixel immediately below, only within the image.
+
+For edge e = (p,q):
+
+  D_e I = I(q) - I(p)
+
+Important boundaries:
+- horizontal wrap is a normal adjacent-pixel edge;
+- do not force the first and last columns to have identical RGB values;
+- do not connect the top row to the bottom row;
+- do not zero-pad a derivative stencil across a missing image boundary;
+- do not use a 2D periodic FFT that accidentally treats ERP as a torus.
+
+This first implementation is an ERP-grid gradient objective, NOT a
+rotation-invariant spherical-gradient objective. Document that limitation.
+Do not silently add latitude weighting or a spherical Laplacian.
+
+Use pixel-unit differences consistently and document the convention.
+
+3.3 Compute gradients from individual valid contributions
+
+For each view and edge, compute:
+
+  d_i(e) = v_i(q) - v_i(p)
+
+only when BOTH endpoints are valid in THAT SAME VIEW.
+
+Use an edge-confidence weight such as:
+
+  s_i(e) = min(a_i(p), a_i(q))
+
+with s_i(e) = 0 when either endpoint is invalid.
+
+Never:
+- differentiate mask boundaries as though they were image edges;
+- subtract values from two different source views to form one source gradient;
+- include invalid zero-filled pixels;
+- allow NaN values outside valid support to propagate via "0 * NaN".
+
+Validate finite values on valid support and use safe masking.
+
+Compute gradients AFTER inverse projection for this implementation.
+Do not warp native perspective gradients without the required coordinate
+transformation.
+
+3.4 poisson_mean guidance
+
+For each supported edge:
+
+  g_mean(e) = sum_i s_i(e) d_i(e) / sum_i s_i(e)
+
+Use positive-weight normalization without an arbitrary large denominator
+floor. Handle the zero-support case explicitly.
+
+This is a control, not an assumed improvement:
+with spatially constant weights, averaging gradients commutes with averaging
+images. Do not claim that gradient averaging alone necessarily preserves
+more detail.
+
+3.5 poisson_select guidance
+
+For each supported edge, select:
+
+  i*(e) = argmax_i s_i(e)
+  g_select(e) = d_i*(e)
+
+Requirements:
+- select using existing smooth GEOMETRIC confidence, not raw gradient magnitude;
+- use a stable camera ID for deterministic tie-breaking;
+- use the SAME source for all RGB channels of an edge;
+- derive each selected difference from that source's two endpoint values;
+- do not first build a hard RGB mosaic and then differentiate it;
+- do not introduce random or camera-iteration-order-dependent ownership.
+
+With fixed cameras and masks, ownership should be geometry-driven and
+consistent across denoising steps. Cache geometry-only data where practical.
+
+Save or summarize owner-map boundaries. Source selection may introduce
+inconsistent guidance near ownership transitions, so inspect this failure
+mode rather than assuming it is solved by Poisson reconstruction.
+
+3.6 Reconstruct the image
+
+Use the same reconstruction objective for both gradient variants:
+
+  E(I) =
+      lambda_color * sum_p ||I(p) - R(p)||^2
+      + sum_e M(e) ||D_e I - g(e)||^2
+
+where:
+- lambda_color > 0;
+- M(e) = 1 when at least one valid same-view source gradient exists;
+- M(e) = 0 otherwise.
+
+Use binary edge support for the first experiment. Do not use raw summed
+center weights in the reconstruction penalty, since that would introduce
+another confidence-scale/camera-density effect.
+
+For missing gradient support, omit the edge penalty.
+Do not replace missing guidance by a zero-gradient constraint.
+
+Implement the equivalent correction solve, I = R + u:
+
+  A u = b
+
+  A = lambda_color * Identity + D^T M D
+  b = D^T M (g - D R)
+
+This makes the RGB reference explicit and gives an exact zero-correction
+case when g = D R.
+
+Derive D^T from the implemented discrete edge operator.
+Do not guess divergence signs or boundary terms.
+
+Start with:
+  lambda_color = 0.1
+  solver = matrix-free preconditioned conjugate gradient
+  preconditioner = Jacobi
+  max_iterations = 200
+  relative_tolerance = 1e-5
+  absolute_tolerance = 1e-7
+
+These are initial experimental defaults, not established optimal values.
+
+Use FP32 accumulation and production solving, outside mixed-precision
+autocast. Use a float64 reference solve for tiny correctness tests.
+
+Do not clamp I during the evolving generation.
+Preserve existing preview/final image conversion behavior.
+
+Use a true-residual stopping check:
+  ||A u - b|| <= absolute_tolerance + relative_tolerance * ||b||
+
+Handle the zero-right-hand-side case without division by zero.
+
+Record convergence, iterations, initial/final true residual, objective,
+correction magnitude, and solve time.
+
+An unconverged or nonfinite solve must fail the experimental run clearly.
+Do not silently use RGB fallback and report it as successful gradient fusion.
+
+3.7 Preserve streaming memory behavior
+
+Do not store all 89 full-resolution warped ERP images.
+
+Accumulate only the statistics needed for:
+- the exact RGB reference;
+- gradient numerator/denominator, or selected gradients and owner IDs;
+- edge support;
+- solver workspaces and diagnostics.
+
+Keep peak memory O(B*C*H*W) with respect to camera count.
+
+Do not use a dense production matrix or a CPU transfer of full-resolution
+arrays on every solver iteration.
+
+======================================================================
+4. INTEGRATE WITHOUT CHANGING THE TRAJECTORY LOGIC
+======================================================================
+
+Use the selected experimental operator at the existing clean-RGB consensus
+points. Keep every denoising interval and the local state bridge unchanged.
+
+Apply the selected fusion mode at terminal RGB assembly as well, and record
+the terminal fusion mode separately in metadata.
+
+At terminal assembly, also save the ordinary RGB reference R from the SAME
+terminal contributions when practical. This requires no additional
+denoiser or VAE calls because R is already part of the new operator.
+
+Label that image clearly:
+  "RGB terminal assembly of gradient-run terminal states"
+
+It is NOT an independent baseline trajectory.
+
+Retain existing finite-value and full-coverage checks. In particular, do
+not turn uncovered pixels into silently synthesized or black-filled content.
+
+For the generic accumulator's partial-coverage unit tests, preserve the
+explicit keep-previous/reference policy. In benchmark generation, preserve
+the stricter existing coverage requirements.
+
+Verify that gradient fusion does not change:
+- denoiser call counts;
+- VAE encode/decode counts;
+- initialization hashes;
+- prepared schedule;
+- camera and conditioning hashes;
+- current-state reconstruction checks.
+
+Any optional extra VAE round-trip diagnostics must run separately and must
+not be included in generation timing or silently alter the main call counts.
+
+======================================================================
+5. CORRECTNESS TESTS BEFORE REAL GENERATION
+======================================================================
+
+Add automated tests that require no model downloads.
+
+At minimum:
+
+A. Baseline regression
+   rgb mode reproduces the unmodified accumulator and pipeline behavior.
+   Existing tests continue to pass.
+
+B. Adjoint and system tests
+   Numerically verify:
+     <D x, y> = <x, D^T y>
+   Check symmetry and positive definiteness of A for lambda_color > 0.
+   Compare PCG against an explicitly assembled tiny float64 system.
+
+C. Identity
+   When g = D R, the correction is zero and output equals R.
+   Identical valid source images reconstruct themselves.
+   Test a single source and constant images.
+
+D. Mask safety
+   Invalid source borders do not create artificial gradients.
+   Missing edge support does not impose a zero-gradient constraint.
+   Invalid-region NaNs do not leak into valid results.
+   Nonfinite valid inputs raise a clear error.
+
+E. ERP boundaries
+   Horizontal wrap edges work correctly.
+   Top and bottom are never connected.
+   A smooth horizontally periodic pattern has no artificial seam introduced.
+
+F. Determinism and invariance
+   Reordering cameras changes results by no more than declared numerical
+   tolerance, with stable owner tie-breaking.
+   Duplicating the complete contribution set preserves the result.
+   Uniformly scaling positive confidence weights preserves guidance.
+   Test very small positive center weights.
+
+G. Color behavior
+   Adding the same RGB offset to all sources shifts the result accordingly.
+   Measure mean-color drift and out-of-range values before display conversion.
+
+H. Solver failure handling
+   Nonconvergence is recorded as failure, not silently accepted.
+   Test zero RHS and a deliberately insufficient iteration budget.
+
+I. Backend-neutral integration
+   Use lightweight mock predictions/states to verify that only RGB fusion
+   changes, while current-state transitions and bridge hooks remain intact.
+
+Include image-based synthetic tests with known target images:
+- thin lines and periodic textures;
+- smooth color changes;
+- controlled view disagreement or small misalignment;
+- complementary sharp/blurred source regions.
+
+For known targets, measure reconstruction and gradient error, not just
+gradient magnitude. Document where selection produces duplicated edges,
+halos, or other failures.
+
+Do not require the new method to win every synthetic example.
+Numerical correctness and empirical superiority are different questions.
+
+======================================================================
+6. OFFLINE REPLAY AND BLUR DIAGNOSTICS
+======================================================================
+
+Before launching the complete pilot, obtain one audited baseline SANA/ERP/
+Old89 run for the exact existing ruins prompt.
+
+Reuse cached data if equivalent raw diagnostic data already exists.
+Otherwise, run one instrumented baseline that also counts as the pilot's
+baseline case.
+
+Capture selected early, middle, and late intervals, for example executed
+steps 1, 10, and 20 of a 20-step run.
+
+Inspect:
+1. native decoded perspective clean predictions;
+2. their warped ERP contributions;
+3. the RGB reference and gradient-fused canvases;
+4. the perspective crops sampled from the resulting canvases.
+
+Use existing diagnostic hooks or a narrow study-only callback.
+Do not duplicate or rewrite the denoising loop.
+
+Cache sufficient statistics for replaying both gradient variants from the
+EXACT SAME input proposals. Avoid caching N full ERP contributions.
+
+Keep diagnostics bounded:
+- selected views/crops for visual inspection;
+- consolidated, lossless sufficient-statistic snapshots;
+- an estimated disk footprint;
+- no automatic dump of every tensor at every step.
+
+Replay:
+  lambda_color in {0.01, 0.1, 1.0}
+
+This is an OFFLINE operator study, not a generation sweep.
+
+Use lambda_color=0.1 for the initial full pilot unless the offline tests
+identify a concrete numerical/scaling problem. Document any change before
+launching, and freeze one shared lambda for both gradient variants.
+Do not tune separately per prompt.
+
+Compare:
+- target reconstruction error where ground truth exists;
+- gradient reconstruction error;
+- texture attenuation;
+- color correction magnitude;
+- halos and double edges;
+- wrap-boundary behavior;
+- solver convergence and overhead.
+
+Use the same fixed crops and display scaling for all methods.
+Higher edge energy alone is not evidence of better detail.
+
+======================================================================
+7. BOUNDED REAL-MODEL PILOT
+======================================================================
+
+Run only this initial matrix:
+
+  Backend:     SANA
+  Projection:  ERP
+  Cameras:     exact benchmark Old89
+  Steps:       20
+  Seed:        0
+  Prompts:     exact existing ruins, underwater, firework prompt files
+  Modes:       rgb, poisson_mean, poisson_select
+
+This is 9 logical outputs total, with exact cached baselines reused where
+valid. The instrumented ruins baseline from the previous section counts
+toward these 9 cases.
+
+Use the existing benchmark's:
+- checkpoint and revision;
+- local image sizes;
+- conditioning and directional prompt assignment;
+- GWTF initialization;
+- camera poses and spatial weights;
+- scheduler and bridge;
+- precision and runtime settings.
+
+Do not generate new prompt wording.
+Do not replace Old89 with freshly sampled poses.
+
+Verify identical initialization hashes across the three modes for each
+matched case.
+
+Do not automatically launch:
+- the full 21-prompt sweep;
+- FLUX, SD3.5, or PixelDiT generation;
+- CEA experiments;
+- camera-layout/count experiments;
+- fusion-schedule experiments;
+- a full-generation lambda sweep.
+
+The reusable operator should remain backend-neutral so those follow-ups
+are easy later, but they are outside this initial compute budget.
+
+Before submission:
+- run the required tests and a numerical smoke test;
+- inspect existing jobs and avoid duplicate submission;
+- use the established environment, partition, account, and launch conventions;
+- cap concurrent generation jobs conservatively;
+- leave unrelated running jobs untouched.
+
+If existing compute/checkpoints are unavailable, finish the code and tests,
+create validated runnable configurations/commands, and report the concrete
+blocker. Do not claim that generation was completed or submitted.
+
+======================================================================
+8. EVALUATE WITHOUT CHANGING THE METRICS
+======================================================================
+
+Reuse the existing frozen evaluator.
+
+For each mode report, on the same three prompts:
+- DS;
+- CS;
+- IS computed over the matched collection;
+- existing Seam-SSIM and Seam-Sobel as supplementary diagnostics;
+- generation-only time;
+- projection/fusion/solver time;
+- peak allocated memory;
+- denoiser and VAE call counts;
+- solver convergence and iteration statistics.
+
+Do not implement the separate DS/IS audit, FID expansion, or FAED recovery
+tasks in this change.
+
+Important:
+- Do not compare three-prompt new results against 21-prompt baseline means.
+- Recompute/retrieve the baseline on those exact three prompt IDs.
+- IS is collection-level; do not invent per-image IS or average arbitrary
+  per-image values.
+- Clearly distinguish paired per-prompt metric changes from collection scores.
+- Treat n=3 as descriptive only.
+- Do not claim generalization or statistical significance.
+
+Include matched visual comparisons of:
+- final ERP images;
+- fixed perspective views;
+- the same detail crops;
+- wrap-boundary crops;
+- selected intermediate steps;
+- gradient-selected ownership boundaries where relevant.
+
+Separate:
+  "single-fusion comparison on identical proposals"
+from:
+  "complete generation trajectories with different fusion operators."
+
+An apparent sharpness gain must be checked against noise, ringing,
+duplicated edges, color drift, and semantic disagreement.
+
+======================================================================
+9. OUTPUTS, PROVENANCE, AND REPORT
+======================================================================
+
+Keep study outputs isolated from historical benchmark folders.
+
+Each generation should retain:
+- final image;
+- bounded intermediate previews;
+- exact config and source revision;
+- prompt, camera, schedule, and initialization hashes;
+- fusion mode, guidance rule, lambda, boundary convention, and solver settings;
+- stage timings, memory, call counts, and convergence status.
+
+Do not overwrite old results or alter the frozen evaluator's caches.
+
+Produce one compact study report containing:
+1. verified baseline path and integration point;
+2. implemented objective and discrete boundary conditions;
+3. guidance definitions and their intended differences;
+4. files changed and test results;
+5. offline replay results;
+6. the matched three-prompt pilot table;
+7. visual successes and failure cases;
+8. runtime/memory overhead;
+9. a conclusion: promising, inconclusive, or worse, with supporting evidence;
+10. exact commands for reproducing tests, replay, pilot, and evaluation.
+
+Include the conceptual caveat:
+weighted-average gradients may reproduce averaging behavior, while
+confidence-selected gradients can retain a source's details but may introduce
+ownership-transition artifacts. Poisson reconstruction does not guarantee
+that inconsistent source content becomes geometrically correct.
+
+Do not report success merely because the code runs or DS decreases.
+Do not conceal unfavorable results.
+
+======================================================================
+10. EXECUTION ORDER
+======================================================================
+
+Execute in this order:
+
+  inspect and freeze baseline
+  -> implement operator and isolated integration
+  -> run correctness/regression tests
+  -> run bounded offline diagnostics and solver profiling
+  -> launch only the 9-case SANA pilot
+  -> evaluate completed matched cases
+  -> produce report and reproduction commands
+
+If a numerical or integration test fails, fix it before launching the pilot.
+If a queued job has not finished, report its actual state and identifier.
+
+At the end, summarize:
+- what was implemented;
+- which tests passed;
+- which cases completed, are queued/running, or are blocked;
+- where the results and report are;
+- what the evidence says about detail preservation versus artifacts and cost.
+
+Do not stop after writing a plan, and do not expand into the other weekly tasks.
