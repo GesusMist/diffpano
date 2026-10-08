@@ -87,3 +87,33 @@ Use python3 -m studies.gradient_blending.extension_status for current progress.
 Intermediate previews remain bounded to executed steps1/10/20, with full final
 ERP and fixed-view/detail comparisons for all three prompts. No new full RGB
 trajectory is generated solely to provide intermediate baseline diagnostics.
+
+Explicit FLUX remaining-scene extension (2026-10-07)
+--------------------------------------------------
+The user requested the remaining 17 FLUX prompts. There are 21 local prompt
+files: three completed pilot scenes, 17 remaining scenes and native_control.
+The control file is excluded to match the requested 17. This scope is selected
+only by DIFFPANO_GRADIENT_BACKEND=flux and DIFFPANO_GRADIENT_SUITE=flux-scenes20;
+the default pilot scope and other backend settings remain unchanged.
+
+Outputs: outputs/10.7gradient-blending-flux/seed0-v1
+Exact new prompt/mode pairs and exclusion are recorded in manifest.json.
+The three existing FLUX prompt directories are immutable links into the pilot.
+Seventeen additional RGB controls are audited and reused. Generate only the
+34 gradient trajectories, with two GPUs at most. Use the identical FLUX20-step
+schedule, seed0, 89 saved 80-degree cameras, GWTF, ERP4096x2048, local1024x1024,
+identity-residual bridge and lambda0.1. The numerical operator is unchanged.
+
+  sbatch studies/gradient_blending/prepare_scenes.slurm
+  # Once the preflight completes successfully:
+  DIFFPANO_GRADIENT_BACKEND=flux DIFFPANO_GRADIENT_SUITE=flux-scenes20 python3 -m studies.gradient_blending.launch_scenes
+
+The launcher also queues frozen-metric evaluation, figures/report, completion
+audit and status refreshes. Evaluation covers all20 scenes and reports the new17
+and original3 collections separately. IS uses one full collection split, never
+an average of per-image IS. The original pilot metric values are a regression
+check for dynamic collection accounting. All previous pilot outputs/reports
+are hash-preserved. New code is frozen before any generation starts.
+
+Current status:
+  DIFFPANO_GRADIENT_BACKEND=flux DIFFPANO_GRADIENT_SUITE=flux-scenes20 python3 -m studies.gradient_blending.scenes_status

@@ -6,6 +6,18 @@ from PIL import Image
 from studies.gradient_blending.common import *
 
 
+def collection_summary(prompts,rows,features):
+    from studies.panorama_metrics.numerics import inception_score
+    result={}
+    for mode in MODES:
+        selected=[r for r in rows if r['mode']==mode and r['prompt'] in prompts]
+        assert len(selected)==len(prompts) and {r['prompt'] for r in selected}==set(prompts)
+        logits=np.concatenate([features[(prompt,mode)]['logits'] for prompt in prompts])
+        result[mode]=dict(prompts=list(prompts),panorama_count=len(prompts),view_count=len(logits),
+            IS=inception_score(logits),
+            **{name:float(np.mean([r['metrics'][name] for r in selected])) for name in ['DS','CS','Seam-SSIM','Seam-Sobel']})
+    return result
+
 def main():
     import torch,cv2
     from studies.panorama_metrics.features import Extractor,save_features
@@ -18,7 +30,7 @@ def main():
     with (ROOT/'outputs/metrics-evaluation/seed0-v1/per_image_metrics.csv').open() as stream:
         historical=list(csv.DictReader(stream))
     ex=Extractor();assert ex.inception is not None and ex.clip is not None
-    directory=OUT/'evaluation';directory.mkdir(exist_ok=True);rows=[];features_by_mode={m:[] for m in MODES}
+    directory=OUT/'evaluation';directory.mkdir(exist_ok=True);rows=[];features_by_case={}
     for prompt in PROMPTS:
         for mode in MODES:
             folder=OUT/'cases'/prompt/mode
@@ -47,23 +59,22 @@ def main():
                 errors={k:abs(scores[k]-float(reference[k])) for k in ['DS','CS','Seam-SSIM','Seam-Sobel']}
                 assert max(errors.values())<1e-4,('Frozen evaluator mismatch',BACKEND,prompt,errors)
                 row['absolute_difference_from_frozen']=errors
-            rows.append(row);features_by_mode[mode].append(features)
+            rows.append(row);features_by_case[(prompt,mode)]=features
             write(directory/(prompt+'-'+mode+'.json'),row)
             print('METRICS',prompt,mode,scores,flush=True)
-    collections={}
-    for mode in MODES:
-        selected=[r for r in rows if r['mode']==mode]
-        collections[mode]=dict(prompts=list(PROMPTS),panorama_count=3,view_count=24,
-            IS=inception_score(np.concatenate([f['logits'] for f in features_by_mode[mode]])),
-            **{name:float(np.mean([r['metrics'][name] for r in selected])) for name in ['DS','CS','Seam-SSIM','Seam-Sobel']})
+    collections=collection_summary(PROMPTS,rows,features_by_case)
+    collection_groups={}
+    if SUITE=='flux-scenes20':
+        collection_groups=dict(new_17=collection_summary(NEW_FLUX_PROMPTS,rows,features_by_case),
+                               pilot_3=collection_summary(PILOT_PROMPTS,rows,features_by_case))
     paired=[]
     for prompt in PROMPTS:
         base=next(r for r in rows if r['prompt']==prompt and r['mode']=='rgb')
         for mode in MODES[1:]:
             value=next(r for r in rows if r['prompt']==prompt and r['mode']==mode)
             paired.append(dict(prompt=prompt,mode=mode,deltas={k:value['metrics'][k]-base['metrics'][k] for k in ['DS','CS','Seam-SSIM','Seam-Sobel']}))
-    write(directory/'summary.json',dict(rows=rows,collections=collections,paired=paired,
-        interpretation='n=3 descriptive only; IS is one full matched collection score over 24 dependent views, not a per-image average',
+    write(directory/'summary.json',dict(rows=rows,collections=collections,collection_groups=collection_groups,paired=paired,
+        interpretation='n=%d descriptive only; IS is one full matched collection score over %d dependent views, not a per-image average'%(len(PROMPTS),collections['rgb']['view_count']),
         frozen_evaluator_hashes={k:v for k,v in read(BASE_OUT/'preservation.json')['hashes'].items() if k.startswith('studies/panorama_metrics/')},
         job=os.environ['SLURM_JOB_ID']))
     preserved()

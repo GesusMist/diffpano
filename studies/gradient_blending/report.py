@@ -9,7 +9,7 @@ def main():
     steps=baseline['config']['generation']['num_inference_steps']
     calls=expected_counts(BACKEND,steps)
     lines=['GRADIENT-DOMAIN BLENDING: '+BACKEND.upper()+' / ERP / Old89 / seed 0 / %d steps'%steps,
-        '', 'Conclusion: inconclusive pending visual review. This three-prompt pilot is descriptive only.',
+        '', 'Conclusion: inconclusive pending visual review. This %d-prompt study is descriptive only.'%len(PROMPTS),
         '', 'IMPLEMENTATION AND BASELINE',
         'Active path: '+' -> '.join(baseline['path']),
         'StudyPipeline inherits the original loop, bridge, current-state interpolation, terminal decoding and full-coverage checks.',
@@ -36,13 +36,16 @@ def main():
         'Instrumented SANA ruins RGB trajectory captures steps 1,10,20 and views 7,22,59,75. Lossless sufficient statistics replay both variants at lambda 0.01,0.1,1.0.',
         '18 single-fusion solves: '+str(sum(r['diagnostics']['converged'] for r in replay['records']))+' converged. Pilot lambda fixed to 0.1. Full details: offline/replay.json.',
         'These compare identical input proposals and do not feed back into the captured baseline trajectory.',
-        '', 'MATCHED PILOT (per-prompt metrics; no per-image IS)',
+        '', 'MATCHED STUDY (per-prompt metrics; no per-image IS)',
         'prompt | mode | DS | CS | Seam-SSIM | Seam-Sobel | generation seconds | solver seconds | peak allocated GiB']
     for row in evaluation['rows']:
         lines.append(' | '.join([row['prompt'],row['mode']]+[number(row['metrics'][k]) for k in ['DS','CS','Seam-SSIM','Seam-Sobel']]+
                               [number(row.get(k)) for k in ['generation_seconds','solver_seconds','peak_allocated_gib']]))
-    lines+=['','COLLECTION SCORES (exact same three prompts / 24 dependent horizontal views)','mode | DS mean | CS mean | IS (one full collection split)']
+    lines+=['','COLLECTION SCORES (exact same %d prompts / %d dependent horizontal views)'%(len(PROMPTS),evaluation['collections']['rgb']['view_count']),'mode | DS mean | CS mean | IS (one full collection split)']
     for mode,row in evaluation['collections'].items():lines.append(' | '.join([mode,number(row['DS']),number(row['CS']),number(row['IS'])]))
+    for group,modes in evaluation.get('collection_groups',{}).items():
+        lines+=['','SUBSET COLLECTION: '+group,'mode | DS mean | CS mean | IS (one full collection split)']
+        for mode,row in modes.items():lines.append(' | '.join([mode,number(row['DS']),number(row['CS']),number(row['IS'])]))
     lines+=['','KNOWN-TARGET SYNTHETICS','case | mode | reconstruction MSE | gradient MSE | texture std / target std']
     for case in read(GATES/'synthetic/metrics.json')['cases']:
         for mode,m in case['metrics'].items():
@@ -65,7 +68,7 @@ def main():
         'Weighted-average gradients can reproduce averaging behavior. Confidence selection can retain source detail but introduce ownership-transition artifacts.',
         'Poisson reconstruction cannot guarantee inconsistent source content becomes geometrically correct. Higher edge energy or lower DS alone is not evidence of success.',
         'Known-target reconstruction and gradient errors, color corrections, output range, and solver objective/residuals are retained even when unfavorable.',
-        'Frozen evaluator definitions and historical caches were not changed; n=3 does not establish generalization or significance.',
+        'Frozen evaluator definitions and historical caches were not changed; %d prompts at one seed do not establish generalization or significance.'%len(PROMPTS),
         '', 'REPRODUCTION',
         'sbatch studies/gradient_blending/validate.slurm',
         'sbatch studies/gradient_blending/gpu.slurm studies.gradient_blending.gpu_smoke',
@@ -76,7 +79,8 @@ def main():
         'sbatch studies/gradient_blending/figures.slurm',
         'python -m studies.gradient_blending.report',
         'PixelDiT/SD3.5 extension: sbatch studies/gradient_blending/prepare_extension.slurm; then python3 -m studies.gradient_blending.launch_extension',
-        'For per-backend evaluation/figures/report, set DIFFPANO_GRADIENT_BACKEND to '+BACKEND+'.',
+        'For per-backend evaluation/figures/report, set DIFFPANO_GRADIENT_BACKEND to '+BACKEND+' and DIFFPANO_GRADIENT_SUITE to '+SUITE+'.',
+        'FLUX scene extension: sbatch studies/gradient_blending/prepare_scenes.slurm; then DIFFPANO_GRADIENT_BACKEND=flux DIFFPANO_GRADIENT_SUITE=flux-scenes20 python3 -m studies.gradient_blending.launch_scenes',
         '', 'Changed/new implementation files: diffpano/gradient_fusion.py and studies/gradient_blending/. All 519 pre-existing preserved files are byte-identical.']
     (OUT/'report.txt').write_text('\n'.join(lines)+'\n')
     preserved()

@@ -35,6 +35,11 @@ def run(prompt,mode,instrument=False):
         assert extension['passed'] and extension['source_hashes']==sources
         assert backend_gate['passed'] and backend_gate['source_hashes']==sources
         assert backend_gate['baseline_sha256']==sha(OUT/'baseline.json')
+    if SUITE=='flux-scenes20':
+        scene_gate=read(OUT/'validation.json')
+        assert scene_gate['passed'] and scene_gate['source_hashes']==sources
+        assert scene_gate['baseline_sha256']==sha(OUT/'baseline.json')
+        assert tuple(scene_gate['prompts'])==PROMPTS
     folder=OUT/'cases'/prompt/mode;folder.mkdir(parents=True,exist_ok=True)
     lock=(folder/'lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     if (folder/'status.json').exists() and read(folder/'status.json')['state']=='complete':
@@ -85,7 +90,7 @@ def run(prompt,mode,instrument=False):
             group=dict(cameras=cameras,ids=ids,conditions=conditions,slots=slots)
             states,initialization,initialization_audit=initialize(b,BACKEND,group,old)
             assert initialization['initial_local_sha256']==baseline['initialization']['initial_local_sha256']
-            config_record=dict(backend=BACKEND,offline_replay_backend='sana',configuration=c.to_dict(),fusion=asdict(settings),terminal_fusion_mode=mode,
+            config_record=dict(backend=BACKEND,suite=SUITE,offline_replay_backend='sana',configuration=c.to_dict(),fusion=asdict(settings),terminal_fusion_mode=mode,
                                prompt=prompt_info,provenance=provenance,initialization=initialization,
                                initialization_audit=initialization_audit,source_hashes=sources,source_revision=baseline['source_revision'],
                                camera_ids=ids,camera_geometry_sha256=provenance['camera_geometry_sha256'],

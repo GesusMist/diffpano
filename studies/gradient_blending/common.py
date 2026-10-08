@@ -4,15 +4,27 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from studies.all_prompts.common import safe, prompt_record
+from studies.all_prompts.common import safe, prompt_record, EXPECTED_PROMPTS
 ROOT=Path('/home/shig/diffpano')
 BASE_OUT=ROOT/'outputs/10.6gradient-blending/seed0-v1'
 BACKEND=os.environ.get('DIFFPANO_GRADIENT_BACKEND','sana')
 BACKENDS=('sana','flux','pixeldit','sd35')
 if BACKEND not in BACKENDS:raise ValueError('Unsupported gradient-study backend: '+BACKEND)
-OUT=BASE_OUT if BACKEND=='sana' else BASE_OUT/BACKEND
 GATES=BASE_OUT
-PROMPTS=('ruins','underwater','firework')
+PILOT_PROMPTS=('ruins','underwater','firework')
+FLUX_SCENE_PROMPTS=tuple(p for p in EXPECTED_PROMPTS if p!='native_control')
+NEW_FLUX_PROMPTS=tuple(p for p in FLUX_SCENE_PROMPTS if p not in PILOT_PROMPTS)
+SUITE=os.environ.get('DIFFPANO_GRADIENT_SUITE','pilot')
+
+def suite_context(backend,suite):
+    if backend not in BACKENDS:raise ValueError('Unsupported backend: '+backend)
+    if suite=='pilot':return (BASE_OUT if backend=='sana' else BASE_OUT/backend),PILOT_PROMPTS
+    if suite=='flux-scenes20':
+        if backend!='flux':raise ValueError('The expanded scene study is authorized for FLUX only')
+        return ROOT/'outputs/10.7gradient-blending-flux/seed0-v1',FLUX_SCENE_PROMPTS
+    raise ValueError('Unknown gradient study: '+suite)
+
+OUT,PROMPTS=suite_context(BACKEND,SUITE)
 MODES=('rgb','poisson_mean','poisson_select')
 
 def expected_counts(backend,steps,camera_count=89):
@@ -45,6 +57,14 @@ def preserved():
     assert subprocess.check_output(['git','branch','--show-current'],cwd=ROOT).decode().strip()==record['branch']=='no_sphere'
     for p,h in record['hashes'].items():assert sha(ROOT/p)==h,'Historical source changed: '+p
     return record
+
+def scene_rows():
+    return [dict(index=i,prompt=prompt,mode=mode) for i,(prompt,mode) in
+            enumerate((p,m) for p in NEW_FLUX_PROMPTS for m in MODES[1:])]
+
+def preserve_prior_results():
+    for path,expected in read(OUT/'prior-results-preservation.json').items():
+        assert sha(path)==expected,'Pilot artifact changed: '+path
 
 def baseline_audit():
     from studies.all_prompts.audit import configuration,audit_cache
