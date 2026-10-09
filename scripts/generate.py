@@ -71,6 +71,9 @@ def _configure_denoiser(config: ExperimentConfig, denoiser) -> None:
 
 
 def _generate_with_selected_global_pipeline(config, denoiser, diagnostics):
+    if config.global_pipeline.mode in {"erp_local_dense_consensus", "erp_bridge_factorial"}:
+        from diffpano.dense_generation import generate_dense
+        return generate_dense(config,denoiser)
     if config.global_pipeline.mode == "erp_local_current_consensus":
         from diffpano.erp_local_consensus import generate_erp_local_current_state
         return generate_erp_local_current_state(config, denoiser)
@@ -104,7 +107,7 @@ def _generate_with_selected_global_pipeline(config, denoiser, diagnostics):
 
 def run(config: ExperimentConfig) -> Path:
     config.validate()
-    if config.global_pipeline.mode == "erp_local_dense_consensus":
+    if config.global_pipeline.mode == "erp_local_dense_consensus" and config.global_pipeline.refinement.last_fraction == 0:
         from scripts.dense_erp_experiment import run_config
         return run_config(config)
     started = time.perf_counter()
@@ -168,8 +171,13 @@ def main() -> None:
         description="Generate DiffPano with ERP RGB, planar RGB, or planar native-state sampling."
     )
     parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--refinement-last-fraction",type=float,default=None,help="Fraction of original intervals sampled independently in native state")
     args = parser.parse_args()
-    run(load_experiment_config(args.config))
+    config=load_experiment_config(args.config)
+    if args.refinement_last_fraction is not None:
+        from diffpano.refinement import RefinementConfig
+        config.global_pipeline.refinement=RefinementConfig(args.refinement_last_fraction)
+    run(config)
 
 
 if __name__ == "__main__":

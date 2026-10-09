@@ -1,5 +1,6 @@
 """Planar Jacobi consensus in clean RGB with step-local native endpoints."""
 import time
+from diffpano.refinement import cutoff, continue_native, NativeRefinement, tail_step_records, resolved_refinement
 from dataclasses import asdict, dataclass, field
 from copy import deepcopy
 
@@ -33,9 +34,10 @@ class PlanarImpliedEndpointConsensusPipeline:
     the selected RGB fusion of decoded terminal local states, after the complete
     final reconstruction (including DDIM's actual terminal alpha).
     """
-    def __init__(self, *, native_config, backend, patch_order=None, pixel_native=False, bridge=None, residual_correction=False, fusion_config=None, transition_mode="preserve_prefusion_endpoint", flow_transition=True, roundtrip_diagnostics=True):
+    def __init__(self, *, native_config, backend, patch_order=None, pixel_native=False, bridge=None, residual_correction=False, fusion_config=None, transition_mode="preserve_prefusion_endpoint", flow_transition=True, roundtrip_diagnostics=True, refinement_config=None):
         if not isinstance(backend, EndpointBackend):
             raise TypeError('Backend must implement validated endpoint prediction')
+        self.refinement_config=refinement_config
         self.backend = backend
         if transition_mode not in {'preserve_prefusion_endpoint', 'preserve_current_state'}:
             raise ValueError('Unknown consensus transition')
@@ -107,9 +109,13 @@ class PlanarImpliedEndpointConsensusPipeline:
         condition_hash = conditioning_digest(conditioning)
         timesteps = backend.timesteps.clone()
         records, evaluations = [], 0
-        transition_records = []
+        transition_records = [];fused=None
         scheduler = getattr(getattr(backend, 'pipeline', None), 'scheduler', None)
         for index, timestep in enumerate(timesteps):
+            if index == cutoff(len(timesteps),self.refinement_config):
+                states,tail=continue_native(backend,states,self.native_layout.patches,[conditioning]*count,index,order=self.patch_order)
+                evaluations+=count*len(tail.records);records.extend(tail_step_records(tail,planar=True));self.refinement_tail=tail
+                break
             started = time.perf_counter()
             endpoints, clean_rgb = [None]*count, [None]*count
             # Predict all patches from frozen source states, before any fusion.
@@ -209,7 +215,7 @@ class PlanarImpliedEndpointConsensusPipeline:
         if not bool(torch.isfinite(final_rgb).all()):
             raise ValueError('Non-finite decoded terminal image')
         return ImpliedConsensusResult(canvas_rgb=final_rgb, steps=records, local_states=states, fused_clean_rgb=fused, transition_diagnostics=transition_records,
-            audit=dict(guided_predictions=evaluations, expected_guided_predictions=count*len(timesteps),
+            audit=dict(refinement=resolved_refinement(timesteps,self.refinement_config),guided_predictions=evaluations, expected_guided_predictions=count*len(timesteps),
                        diagnostic_extra_denoiser_evaluations=0, synchronous=True, endpoint_lifetime='one timestep',
                        global_native_state_persisted=False, conditioning_sha256=condition_hash, bridge_enabled=self.bridge is not None,
                        training_free_residual_correction=self.residual_correction,
@@ -226,6 +232,7 @@ def generate_planar_implied_endpoint_consensus(config, backend, *, diagnostics_w
         native_height=n.canvas_height, native_width=n.canvas_width,
         generator=torch.Generator(device=backend.device).manual_seed(config.experiment.seed))
     pipeline = PlanarImpliedEndpointConsensusPipeline(native_config=n, backend=backend,
+        refinement_config=config.global_pipeline.refinement,
         pixel_native=config.model.pipeline == 'pixeldit', fusion_config=config.fusion,
         transition_mode=config.consensus_transition.mode, flow_transition=config.model.pipeline != 'sd2',
         residual_correction=(config.consensus_transition.mode == 'preserve_current_state' and config.model.pipeline != 'pixeldit'

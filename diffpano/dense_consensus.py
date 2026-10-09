@@ -6,6 +6,7 @@ hosted on CPU for diagnostics; no predictions or per-view artifacts are saved.
 import hashlib
 import json
 import time
+from diffpano.refinement import cutoff, continue_native, NativeRefinement, tail_step_records, resolved_refinement
 from dataclasses import dataclass
 import torch
 from diffpano.conditioning import camera_prompt_indices
@@ -30,6 +31,7 @@ class ScalarAggregate:
 
 
 def compact_series(steps):
+    if not steps:return {}
     result = {}
     for key in steps[0]:
         values = [s[key] for s in steps]
@@ -76,11 +78,12 @@ def snapshot_schedule(num_steps):
 
 class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
     """The same two-pass Jacobi algorithm for either fixed-camera/prompt policy."""
-    def __init__(self, *, backend, cameras, erp_size, warp_operator, flow_transition=True, view_order=None):
+    def __init__(self, *, backend, cameras, erp_size, warp_operator, flow_transition=True, view_order=None, refinement_config=None):
+        self.refinement_config=refinement_config
         # K's constructor and its strict guards remain unchanged. L/M still use it.
         if warp_operator.fusion_config.mode == 'average':
             super().__init__(backend=backend,cameras=cameras,erp_size=erp_size,
-                warp_operator=warp_operator,flow_transition=flow_transition,view_order=view_order)
+                warp_operator=warp_operator,flow_transition=flow_transition,view_order=view_order,refinement_config=refinement_config)
         else:
             f = warp_operator.fusion_config
             if (f.mode, f.weight_mode) not in {('detail_preserving_average', 'uniform'), ('weighted_average', 'spherediff_center')}:
@@ -166,11 +169,18 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
         timesteps = self.backend.timesteps.clone()
         scheduler = getattr(getattr(self.backend,'pipeline',None),'scheduler',None)
         before = getattr(self.backend,'guided_prediction_count',0)
-        totals = {}; step_summaries = []
+        totals = {}; step_summaries = [];phase_records=[];tail=None
         last_clean = None; audit_seconds = 0.
         for step,timestep in enumerate(timesteps):
             if camera_digest(self.cameras) != self.camera_sha256:
                 raise AssertionError('Camera slots changed during trajectory')
+            if step == cutoff(len(timesteps),self.refinement_config):
+                states,tail=continue_native(self.backend,states,self.cameras,conditionings,step,order=self.view_order)
+                self.refinement_tail=tail;phase_records.extend(tail.records)
+                totals['independent_native']=sum(r['stage_seconds']['independent_native'] for r in tail.records)
+                if progress is not None:
+                    for r in tail.records:progress(r['k'],len(timesteps),r)
+                break
             timings = {}; acc = self._accumulator(batch)
             originals = [None]*count; native_cleans = [None]*count; local_residuals = [None]*count; coefficients = None
             # All denoiser predictions see frozen states; no next state yet exists.
@@ -258,6 +268,7 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
             del fused,acc,originals,native_cleans,local_residuals
             for name in ('last_model_prediction','last_clean_prediction'):
                 if hasattr(self.backend,name):setattr(self.backend,name,None)
+            phase_records.append(dict(k=step,phase='coupled',fusion=step+1))
             if progress is not None:progress(step,len(timesteps),step_summaries[-1])
         # Terminal local states, rather than the last clean consensus, define output.
         acc = self._accumulator(batch)
@@ -274,13 +285,14 @@ class DenseERPLocalCurrentStatePipeline(ERPLocalCurrentStatePipeline):
         calls = self.backend.guided_prediction_count-before
         if calls != count*len(timesteps):raise AssertionError('Unexpected denoiser count')
         stage_record = {}
-        if stage_audit is not None:
+        if stage_audit is not None and tail is None:
             started_audit = time.perf_counter()
             stage_record = stage_audit.finish(last_clean, final.erp_rgb, self.cameras, self.operator, coefficients)
             audit_seconds += time.perf_counter()-started_audit
             stage_record['diagnostic_seconds'] = audit_seconds
         return DenseConsensusResult(final.erp_rgb,compact_series(step_summaries),totals,
-            dict(stage_audit=stage_record, guided_predictions=calls,expected_guided_predictions=count*len(timesteps),extra_denoiser_calls=0,
+            dict(stage_audit=stage_record, refinement=resolved_refinement(timesteps,self.refinement_config),phase_records=phase_records,
+                 refinement_transition=tail.transition if tail else None, guided_predictions=calls,expected_guided_predictions=count*len(timesteps),extra_denoiser_calls=0,
                  camera_sha256=self.camera_sha256,cameras_fixed=True,conditioning_fixed=True,
                  conditioning_sha256=hashlib.sha256(''.join(condition_hashes).encode()).hexdigest(),
                  initial_local_sha256=initial_hash,initialization='one CPU Gaussian stream in fixed camera order',

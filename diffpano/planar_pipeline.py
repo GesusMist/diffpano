@@ -1,6 +1,7 @@
 """Synchronous diffusion over a rectangular RGB canvas and exact square crops."""
 
 import time
+from diffpano.refinement import cutoff, planar_canvas_tail
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -86,6 +87,7 @@ class PlanarRGBPipeline(_TimedPlanarPipeline):
         measure_performance: bool = False,
         patch_order: Optional[Sequence[int]] = None,
         overlap_disagreement: bool = False,
+        refinement_config=None,
     ):
         if patch_batch_size < 1:
             raise ValueError("patch_batch_size must be positive")
@@ -97,6 +99,7 @@ class PlanarRGBPipeline(_TimedPlanarPipeline):
         self.measure_performance = measure_performance
         self.patch_order = patch_order
         self.overlap_disagreement = overlap_disagreement
+        self.refinement_config = refinement_config
 
     @torch.no_grad()
     def run(
@@ -121,6 +124,10 @@ class PlanarRGBPipeline(_TimedPlanarPipeline):
             layout = build_planar_patch_layout_for_step(
                 self.planar_config, step_index
             )
+            if step_index == cutoff(len(self.backend.timesteps),self.refinement_config):
+                canvas_rgb,tail_records=planar_canvas_tail(self,source,prepared_conditioning,layout,step_index)
+                records.extend(tail_records)
+                break
             patches = self._ordered_patches(layout, self.patch_order)
             accumulator = PlanarFusionAccumulator(source, self.fusion_config)
             overlap = OverlapDisagreement(layout) if self.overlap_disagreement else None
@@ -254,6 +261,7 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
         seed: int = 0,
         patch_order: Optional[Sequence[int]] = None,
         overlap_disagreement: bool = False,
+        refinement_config=None,
     ):
         if patch_batch_size < 1:
             raise ValueError("patch_batch_size must be positive")
@@ -271,6 +279,7 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
         self.seed = seed
         self.patch_order = patch_order
         self.overlap_disagreement = overlap_disagreement
+        self.refinement_config = refinement_config
 
     @torch.no_grad()
     def _step(
@@ -489,6 +498,10 @@ class PlanarX0ConsensusPipeline(_TimedPlanarPipeline):
                 raise ValueError(
                     "fixed per-patch noise requires an unchanged planar layout"
                 )
+            if step_index == cutoff(len(timesteps),self.refinement_config):
+                clean_canvas,tail_records=planar_canvas_tail(self,clean_canvas,prepared_conditioning,step_layout,step_index,noise_bank=noise_bank,batch_size=batch_size)
+                records.extend(tail_records)
+                break
             clean_canvas, record = self._step(
                 step_index=step_index,
                 timestep=timestep,
@@ -619,6 +632,7 @@ def generate_planar_rgb(
         patch_batch_size=config.performance.view_batch_size,
         diagnostics_writer=diagnostics_writer,
         measure_performance=config.debug.measure_performance,
+        refinement_config=config.global_pipeline.refinement,
         overlap_disagreement=config.debug.overlap_disagreement,
     )
     return pipeline.run(initial, prepared)
@@ -640,6 +654,7 @@ def generate_planar_x0_consensus(
         patch_batch_size=config.performance.view_batch_size,
         diagnostics_writer=diagnostics_writer,
         measure_performance=config.debug.measure_performance,
+        refinement_config=config.global_pipeline.refinement,
         seed=config.experiment.seed,
         overlap_disagreement=config.debug.overlap_disagreement,
     )

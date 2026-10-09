@@ -1,6 +1,7 @@
 """Synchronous global denoising whose only persistent state is ERP RGB."""
 
 import time
+from diffpano.refinement import cutoff, erp_canvas_tail
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -49,6 +50,7 @@ class ERPRGBPipeline:
         view_batch_size: int = 1,
         diagnostics_writer: Optional[Any] = None,
         measure_performance: bool = False,
+        refinement_config=None,
     ):
         if view_batch_size < 1:
             raise ValueError("view_batch_size must be positive")
@@ -59,6 +61,7 @@ class ERPRGBPipeline:
         self.view_batch_size = view_batch_size
         self.diagnostics_writer = diagnostics_writer
         self.measure_performance = measure_performance
+        self.refinement_config = refinement_config
 
     def _sync(self) -> None:
         if self.measure_performance and self.view_denoiser.device.type == "cuda":
@@ -101,6 +104,10 @@ class ERPRGBPipeline:
                 "camera_projection_preparation",
                 lambda: self.camera_sampler.sample(step_index, len(timesteps)),
             )
+            if step_index == cutoff(len(timesteps),self.refinement_config):
+                erp_rgb,tail_records=erp_canvas_tail(self,erp_source,prepared_conditioning,cameras,step_index)
+                step_records.extend(tail_records)
+                break
             if self.diagnostics_writer is not None:
                 self.diagnostics_writer.on_cameras(step_index, cameras)
             accumulator_factory = getattr(
@@ -269,5 +276,6 @@ def generate_erp_rgb(
         view_batch_size=config.performance.view_batch_size,
         diagnostics_writer=diagnostics_writer,
         measure_performance=config.debug.measure_performance,
+        refinement_config=config.global_pipeline.refinement,
     )
     return pipeline.run(initial, prepared)

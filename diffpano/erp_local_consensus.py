@@ -5,6 +5,7 @@ No ERP latent field, VAE residual, or fixed-noise reconstruction is used.
 import hashlib
 import json
 import time
+from diffpano.refinement import cutoff, continue_native, NativeRefinement, tail_step_records, resolved_refinement
 from dataclasses import asdict, dataclass, field
 
 import torch
@@ -75,12 +76,13 @@ class ERPLocalConsensusResult:
 
 
 class ERPLocalCurrentStatePipeline:
-    def __init__(self,*,backend,cameras,erp_size,warp_operator,flow_transition=True,view_order=None):
+    def __init__(self,*,backend,cameras,erp_size,warp_operator,flow_transition=True,view_order=None,refinement_config=None):
         if type(warp_operator) is not StandardWarpOperator:
             raise ValueError('K requires the existing StandardWarpOperator exactly')
         f=warp_operator.fusion_config
         if f.mode!='average' or f.weight_mode!='uniform' or warp_operator.warp_config.mode!='standard':
             raise ValueError('K requires standard warp and average/uniform RGB fusion')
+        self.refinement_config=refinement_config
         self.backend=backend;self.cameras=tuple(cameras);self.erp_size=tuple(erp_size)
         if not self.cameras:raise ValueError('K needs fixed camera slots')
         self.camera_sha256=camera_digest(self.cameras)
@@ -124,11 +126,16 @@ class ERPLocalCurrentStatePipeline:
             if tuple(state.shape)!=shape:raise ValueError('K state is not a local native camera tensor')
         timesteps=self.backend.timesteps.clone();condition_hash=conditioning_digest(conditioning)
         before=self.backend.guided_prediction_count if hasattr(self.backend,'guided_prediction_count') else 0
-        records=[];patch_records=[];camera_hashes=[]
+        records=[];patch_records=[];camera_hashes=[];final_consensus=None
         scheduler=getattr(getattr(self.backend,'pipeline',None),'scheduler',None)
         for index,timestep in enumerate(timesteps):
             camera_hashes.append(camera_digest(self.cameras))
             if camera_hashes[-1]!=self.camera_sha256:raise AssertionError('Camera slots changed during trajectory')
+            if index == cutoff(len(timesteps),self.refinement_config):
+                states,tail=continue_native(self.backend,states,self.cameras,[conditioning]*count,index,order=self.view_order)
+                records.extend(tail_step_records(tail));self.refinement_tail=tail
+                camera_hashes.extend([self.camera_sha256]*(len(tail.records)-1))
+                break
             timings={};pairs=[None]*count;views=[None]*count
             # Freeze all source states until every next state is constructed.
             for i in self.view_order:
@@ -164,7 +171,7 @@ class ERPLocalCurrentStatePipeline:
             records.append(StepDiagnostics(index,float(timestep),count,coverage['coverage_percent'],coverage['multi_contributor_percent'],
                 float(fused.accumulated_weight.min()),float(fused.accumulated_weight.max()),float(fused.accumulated_weight.mean()),timings,stats))
             if snapshot_callback is not None:snapshot_callback(index,fused.erp_rgb)
-            if index==len(timesteps)-1:final_consensus=fused.erp_rgb
+            final_consensus=fused.erp_rgb
             states=next_states
             del pairs,views,cleans,fused,overlaps,pair
             for name in ('last_model_prediction','last_clean_prediction'):
@@ -177,7 +184,7 @@ class ERPLocalCurrentStatePipeline:
         actual=self.backend.guided_prediction_count-before
         if actual!=count*len(timesteps):raise AssertionError('Unexpected K denoiser count')
         return ERPLocalConsensusResult(final.erp_rgb,records,states,final_views,final_consensus,final.contributor_count,pairwise,patch_records,
-            dict(experiment='K',guided_predictions=actual,expected_guided_predictions=count*len(timesteps),extra_denoiser_calls=0,
+            dict(experiment='K',refinement=resolved_refinement(timesteps,self.refinement_config),guided_predictions=actual,expected_guided_predictions=count*len(timesteps),extra_denoiser_calls=0,
                 synchronous=True,camera_sha256=self.camera_sha256,camera_hashes_per_step=camera_hashes,
                 conditioning_sha256=condition_hash,persistent_state='local native noisy tensors only',
                 erp_state='transient clean RGB consensus only',global_native_state_persisted=False,
@@ -191,7 +198,7 @@ def generate_erp_local_current_state(config,backend,**kwargs):
     operator=StandardWarpOperator(config.warp,config.fusion)
     geometry_preflight(cameras,(config.erp.height,config.erp.width),operator,backend.device)
     pipeline=ERPLocalCurrentStatePipeline(backend=backend,cameras=cameras,erp_size=(config.erp.height,config.erp.width),
-        warp_operator=operator,flow_transition=config.model.pipeline!='sd2')
+        warp_operator=operator,flow_transition=config.model.pipeline!='sd2',refinement_config=config.global_pipeline.refinement)
     local=pipeline.initialize_local_states(config.experiment.seed,config.generation.batch_size)
     cond=backend.conditioning_for_prompt_indices(prepared,[8],batch_size=config.generation.batch_size)
     return pipeline.run(local,cond)

@@ -106,7 +106,7 @@ def build_dense_pipeline(config, backend):
         raise AssertionError('N/O must use L geometry, never M')
     op = (LaplacianPyramidWarpOperator(config.warp,config.fusion,cache,periodic_reconstruction=True)
           if config.dense_consensus.experiment=='O' else StandardWarpOperator(config.warp,config.fusion,cache))
-    pipe = DenseERPLocalCurrentStatePipeline(backend=backend,cameras=cameras,erp_size=(config.erp.height,config.erp.width),warp_operator=op,flow_transition=config.model.pipeline!='sd2')
+    pipe = DenseERPLocalCurrentStatePipeline(backend=backend,cameras=cameras,erp_size=(config.erp.height,config.erp.width),warp_operator=op,flow_transition=config.model.pipeline!='sd2',refinement_config=config.global_pipeline.refinement)
     return pipe,geometry,minimum
 
 

@@ -2,6 +2,7 @@
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
+from diffpano.refinement import RefinementConfig
 
 
 # The canonical planar experiment geometry keeps each model invocation at the
@@ -66,6 +67,7 @@ class CleanConsensusConfig:
 class GlobalPipelineConfig:
     mode: str = "erp_rgb_state"
     clean_consensus: CleanConsensusConfig = field(default_factory=CleanConsensusConfig)
+    refinement: RefinementConfig = field(default_factory=RefinementConfig)
 
 
 @dataclass
@@ -255,6 +257,7 @@ class ExperimentConfig:
     dense_consensus: Optional[DenseConsensusConfig] = None
 
     def validate(self) -> None:
+        self.global_pipeline.refinement.__post_init__()
         factorial = self.global_pipeline.mode == "erp_bridge_factorial"
         if factorial:
             from diffpano.bridge_factorial import validate_factorial_config
@@ -478,6 +481,9 @@ class ExperimentConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
+        # An omitted refinement field has always meant zero independent intervals.
+        if self.global_pipeline.refinement.last_fraction == 0:
+            del data["global_pipeline"]["refinement"]
         if self.dense_consensus is None:
             del data["dense_consensus"]
         # Keep historical G/H snapshots exactly reproducible. The absent field
@@ -528,7 +534,7 @@ def load_experiment_config(path: str) -> ExperimentConfig:
             GlobalPipelineConfig,
             data.get("global_pipeline"),
             "global_pipeline",
-            nested={"clean_consensus": CleanConsensusConfig},
+            nested={"clean_consensus": CleanConsensusConfig, "refinement": RefinementConfig},
         ),
         prompt=_construct(PromptConfig, data.get("prompt"), "prompt"),
         generation=_construct(GenerationConfig, data.get("generation"), "generation"),

@@ -107,7 +107,8 @@ def make_operator(c):
 
 class BridgeFactorialPipeline(DenseERPLocalCurrentStatePipeline):
     """Reuse the validated Jacobi loop with local residual hooks only."""
-    def __init__(self, *, backend, cameras, erp_size, warp_operator, backend_name, view_order=None):
+    def __init__(self, *, backend, cameras, erp_size, warp_operator, backend_name, view_order=None, refinement_config=None):
+        self.refinement_config=refinement_config
         f=warp_operator.fusion_config
         if f.mode not in ('weighted_average','detail_preserving_average') or f.weight_mode not in ('uniform','spherediff_center'):
             raise ValueError('Invalid factorial reducer/weight combination')

@@ -20,10 +20,21 @@ class GradientSettings:
     max_iterations: int = 200
     relative_tolerance: float = 1e-5
     absolute_tolerance: float = 1e-7
+    reference_mode: str = 'screened'
+    coarse_rows: int = 16
+    coarse_cols: int = 32
+    coarse_eta: float = 0.1
+    constrained_max_iterations: int = 400
 
     def __post_init__(self):
-        if self.mode not in ('rgb', 'poisson_mean', 'poisson_select'):
+        if self.mode not in ('rgb', 'poisson_mean', 'poisson_select', 'poisson_max'):
             raise ValueError('Unsupported gradient fusion mode: ' + self.mode)
+        if self.reference_mode not in ('screened', 'global_mean', 'single_pixel', 'coarse_color'):
+            raise ValueError('Unsupported Poisson reference mode')
+        if any(isinstance(x, bool) or not isinstance(x, int) or x < 1 for x in (self.coarse_rows, self.coarse_cols, self.constrained_max_iterations)):
+            raise ValueError('Positive coarse dimensions and constrained iteration budget required')
+        if not math.isfinite(self.coarse_eta) or self.coarse_eta <= 0:
+            raise ValueError('Positive finite coarse eta required')
         if not math.isfinite(self.lambda_color) or self.lambda_color <= 0:
             raise ValueError('lambda_color must be finite and positive')
         if isinstance(self.max_iterations, bool) or not isinstance(self.max_iterations, int) or self.max_iterations < 0:
@@ -74,7 +85,7 @@ def _sync(device):
 
 
 @torch.no_grad()
-def reconstruct(reference, guidance, support, settings, *, dtype=torch.float32):
+def _reconstruct_screened(reference, guidance, support, settings, *, dtype=torch.float32):
     """Solve (lambda I + D^T M D) u = D^T M (g - D R), I = R+u.
 
     Float64 is an explicit tiny-test/reference option. Production uses FP32,
@@ -188,12 +199,12 @@ class GuidanceAccumulator:
     Geometric ownership is independent of RGB; the study wrapper caches its map.
     """
     def __init__(self, reference, mode):
-        if mode not in ('poisson_mean', 'poisson_select', 'both'):
+        if mode not in ('poisson_mean', 'poisson_select', 'poisson_max', 'both'):
             raise ValueError('Unsupported guidance mode')
         self.mode = mode
         shapes = [reference.shape, (*reference.shape[:-2], reference.shape[-2]-1, reference.shape[-1])]
         self.den = [torch.zeros((s[0],1,*s[-2:]), device=reference.device, dtype=torch.float32) for s in shapes]
-        self.num = [torch.zeros(s, device=reference.device, dtype=torch.float32) for s in shapes] if mode != 'poisson_select' else None
+        self.num = [torch.zeros(s, device=reference.device, dtype=torch.float32) for s in shapes] if mode in ('poisson_mean', 'both') else None
         self.best = [torch.zeros_like(d) for d in self.den] if mode != 'poisson_mean' else None
         self.selected = [torch.zeros(s, device=reference.device, dtype=torch.float32) for s in shapes] if self.best is not None else None
         self.owners = [torch.full_like(d, torch.iinfo(torch.int32).max, dtype=torch.int32) for d in self.den] if self.best is not None else None
@@ -220,17 +231,18 @@ class GuidanceAccumulator:
             self.den[axis].add_(s)
             if self.num is not None:self.num[axis].add_(s*d)
             if self.best is not None:
-                choose = (s > 0) & ((s > self.best[axis]) | ((s == self.best[axis]) & (camera_id < self.owners[axis])))
+                rank = d.square().sum(1, keepdim=True) if self.mode == 'poisson_max' else s
+                choose = (s > 0) & ((rank > self.best[axis]) | ((rank == self.best[axis]) & (camera_id < self.owners[axis])))
                 self.selected[axis] = torch.where(choose, d, self.selected[axis])
                 self.owners[axis] = torch.where(choose, camera_id, self.owners[axis])
-                self.best[axis] = torch.maximum(self.best[axis], s)
+                self.best[axis] = torch.maximum(self.best[axis], rank)
 
     def guidance(self, mode=None):
         mode = mode or self.mode
         support = tuple(d > 0 for d in self.den)
         if mode == 'poisson_mean' and self.num is not None:
             return tuple(n / torch.where(m,d,torch.ones_like(d)) for n,d,m in zip(self.num,self.den,support)), support
-        if mode == 'poisson_select' and self.selected is not None:
+        if mode in ('poisson_select', 'poisson_max') and self.selected is not None:
             return tuple(self.selected), support
         raise ValueError('Requested guidance was not accumulated')
 
@@ -275,3 +287,15 @@ class GradientFusionAccumulator:
         rgb, self.diagnostics = reconstruct(self.reference, guidance, support, self.settings)
         from dataclasses import replace
         return replace(baseline, erp_rgb=rgb)
+
+
+@torch.no_grad()
+def reconstruct(reference, guidance, support, settings, *, dtype=torch.float32, anchor=None, connectivity=None):
+    """Dispatch independent guidance and reference choices; legacy screened math is unchanged."""
+    if settings.reference_mode == 'screened':
+        image,diagnostics=_reconstruct_screened(reference, guidance, support, settings, dtype=dtype)
+        color=float(settings.lambda_color*(image-reference.to(dtype)).square().sum())
+        diagnostics.update(reference_mode='screened',objective_color=color,objective_gradient=diagnostics['objective']-color)
+        return image,diagnostics
+    from diffpano.poisson_reference import reconstruct_constrained
+    return reconstruct_constrained(reference, guidance, support, settings, dtype=dtype, anchor=anchor, connectivity=connectivity)

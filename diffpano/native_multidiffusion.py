@@ -1,6 +1,7 @@
 """Exact native-state planar MultiDiffusion with ordinary first-order sampling."""
 
 import time
+from diffpano.refinement import cutoff, continue_native, NativeRefinement, tail_step_records, resolved_refinement
 from dataclasses import dataclass
 
 import torch
@@ -54,7 +55,8 @@ def prepare_native_backend(config, backend):
 
 
 class NativeMultiDiffusionPipeline:
-    def __init__(self, *, native_config, backend, overlap_disagreement=False, patch_order=None, clean_rgb_overlap_disagreement=False):
+    def __init__(self, *, native_config, backend, overlap_disagreement=False, patch_order=None, clean_rgb_overlap_disagreement=False, refinement_config=None):
+        self.refinement_config=refinement_config
         self.config = native_config
         self.backend = backend
         self.overlap_disagreement = overlap_disagreement
@@ -78,6 +80,14 @@ class NativeMultiDiffusionPipeline:
         conditioning = self.backend.conditioning_for_prompt_indices(
             prepared_conditioning, [8], batch_size=state.shape[0])
         for index, timestep in enumerate(self.backend.timesteps):
+            if index == cutoff(len(self.backend.timesteps),self.refinement_config):
+                local=[extract_planar_patch(state,p).clone() for p in self.patches]
+                local,tail=continue_native(self.backend,local,self.patches,[conditioning]*len(local),index,
+                    identities=[p.index for p in self.patches])
+                accumulator=NativePlanarFusionAccumulator(state)
+                for value,patch in zip(local,self.patches):accumulator.accumulate(value,patch)
+                state=accumulator.finalize();records.extend(tail_step_records(tail,planar=True));self.refinement_tail=tail
+                break
             started = time.perf_counter()
             accumulator = NativePlanarFusionAccumulator(state)
             overlap = OverlapDisagreement(self.layout) if self.overlap_disagreement else None
@@ -130,4 +140,5 @@ def generate_planar_native_multidiffusion(config, backend, *, diagnostics_writer
         batch_size=config.generation.batch_size, native_height=geometry.canvas_height,
         native_width=geometry.canvas_width, generator=generator)
     return NativeMultiDiffusionPipeline(native_config=geometry, backend=backend,
+        refinement_config=config.global_pipeline.refinement,
         overlap_disagreement=config.debug.overlap_disagreement).run(initial, prepared)

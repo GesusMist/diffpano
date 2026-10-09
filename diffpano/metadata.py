@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from diffpano.refinement import resolved_refinement
 
 
 def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output_file: str) -> str:
@@ -47,6 +48,7 @@ def save_run_metadata(path: str, config: Any, denoiser: Any, result: Any, output
         } if config.global_pipeline.mode in {"native_multidiffusion", "implied_endpoint_consensus", "erp_local_current_consensus"} else None),
         "canvas_mode": config.canvas.mode,
         "global_pipeline_mode": config.global_pipeline.mode,
+        "refinement": resolved_refinement(denoiser.timesteps,config.global_pipeline.refinement),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "output_file": str(Path(output_file).resolve()),
         "experiment": asdict(config.experiment),

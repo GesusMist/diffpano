@@ -1,6 +1,7 @@
 """Synchronous panorama generation with a persistent predicted-clean ERP canvas."""
 
 import time
+from diffpano.refinement import cutoff, erp_canvas_tail
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -40,6 +41,7 @@ class ERPX0ConsensusPipeline:
         diagnostics_writer: Optional[Any] = None,
         measure_performance: bool = False,
         seed: int = 0,
+        refinement_config=None,
     ):
         if view_batch_size < 1:
             raise ValueError("view_batch_size must be positive")
@@ -54,6 +56,7 @@ class ERPX0ConsensusPipeline:
         self.diagnostics_writer = diagnostics_writer
         self.measure_performance = measure_performance
         self.seed = seed
+        self.refinement_config = refinement_config
 
     def _sync(self) -> None:
         if self.measure_performance and self.backend.device.type == "cuda":
@@ -304,34 +307,19 @@ class ERPX0ConsensusPipeline:
             seed=self.seed,
         )
         records: List[StepDiagnostics] = []
-        clean_erp, record = self._step(
-            step_index=0,
-            timestep=timesteps[0],
-            cameras=cameras0,
-            noise_bank=noise_bank,
-            prepared_conditioning=prepared_conditioning,
-            batch_size=batch_size,
-            erp_size=(erp_height, erp_width),
-            clean_source=None,
-        )
-        records.append(record)
-        for step_index, timestep in enumerate(timesteps[1:], start=1):
-            clean_source = clean_erp
-            cameras = self.camera_sampler.sample(step_index, len(timesteps))
+        clean_erp = None
+        for step_index,timestep in enumerate(timesteps):
+            cameras = cameras0 if step_index == 0 else self.camera_sampler.sample(step_index,len(timesteps))
             if len(cameras) != noise_bank.num_cameras:
-                raise ValueError(
-                    "camera_index noise binding requires a stable camera-slot count"
-                )
-            clean_erp, record = self._step(
-                step_index=step_index,
-                timestep=timestep,
-                cameras=cameras,
-                noise_bank=noise_bank,
-                prepared_conditioning=prepared_conditioning,
-                batch_size=batch_size,
-                erp_size=(erp_height, erp_width),
-                clean_source=clean_source,
-            )
+                raise ValueError('camera_index noise binding requires a stable camera-slot count')
+            if step_index == cutoff(len(timesteps),self.refinement_config):
+                clean_erp,tail_records=erp_canvas_tail(self,clean_erp,prepared_conditioning,cameras,step_index,
+                    noise_bank=noise_bank,batch_size=batch_size,size=(erp_height,erp_width))
+                records.extend(tail_records)
+                break
+            clean_erp,record=self._step(step_index=step_index,timestep=timestep,cameras=cameras,
+                noise_bank=noise_bank,prepared_conditioning=prepared_conditioning,batch_size=batch_size,
+                erp_size=(erp_height,erp_width),clean_source=clean_erp)
             records.append(record)
         return ERPX0GenerationResult(
             erp_rgb=clean_erp,
@@ -381,6 +369,7 @@ def generate_erp_x0_consensus(
         diagnostics_writer=diagnostics_writer,
         measure_performance=config.debug.measure_performance,
         seed=config.experiment.seed,
+        refinement_config=config.global_pipeline.refinement,
     )
     return pipeline.run(
         prepared,

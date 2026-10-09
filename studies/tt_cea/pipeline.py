@@ -8,6 +8,7 @@ import time
 from dataclasses import asdict
 import torch
 from diffpano.bridge_factorial import BridgeFactorialPipeline
+from diffpano.refinement import NativeRefinement, cutoff, fraction_of
 from diffpano.current_state_transition import interpolate_from_current_state
 from diffpano.erp_local_consensus import camera_digest
 from diffpano.erp_noise_initialization import states_digest
@@ -20,6 +21,7 @@ from studies.tt_cea.canvas import CanvasOperator,CanvasSpec
 class ExperimentalPipeline:
     def __init__(self,backend,cameras,config,projection='erp',*,size=(2048,4096)):
         self.backend=backend;self.cameras=tuple(cameras);self.camera_sha256=camera_digest(cameras)
+        self.refinement_config=getattr(getattr(config,"global_pipeline",None),"refinement",None);self.refinement_tail=None
         self.name=config.model.pipeline;self.pixel=self.name=='pixeldit';self.flow=self.name!='sd2'
         self.canvas=CanvasOperator(CanvasSpec(projection,*size),config.warp,config.fusion,backend.device)
         self.bridge=BridgeFactorialPipeline(backend=backend,cameras=cameras,erp_size=size,
@@ -36,6 +38,11 @@ class ExperimentalPipeline:
         op=canvas_operator or self.canvas;b=self.backend
         if len(states)!=len(self.cameras) or len(conditionings)!=len(states):raise ValueError('One state/conditioning per view required')
         if camera_digest(self.cameras)!=self.camera_sha256:raise AssertionError('Camera mutation')
+        if interval.k >= cutoff(len(b.timesteps),self.refinement_config):
+            if pass_kind != 'initial':raise ValueError('Independent refinement cannot replay a denoising interval')
+            if self.refinement_tail is None:
+                self.refinement_tail=NativeRefinement(b,self.cameras,conditionings,interval.k)
+            return self.refinement_tail.step(states,interval.k,geometry=self.cameras,conditions=conditionings)
         timings={};acc=op.make_accumulator(states[0].shape[0]);residuals=[None]*len(states)
         scheduler=getattr(getattr(b,'pipeline',None),'scheduler',None)
         before=b.guided_prediction_count if hasattr(b,'guided_prediction_count') else 0
@@ -98,6 +105,8 @@ class ExperimentalPipeline:
         return final,erp,timings
     @torch.no_grad()
     def run(self,states,conditionings,intervals,*,time_travel=False,progress=None):
+        if time_travel and fraction_of(self.refinement_config):
+            raise ValueError('Time travel with independent refinement is not an established combination')
         states=[s.detach().cpu().clone().float() for s in states]
         snapshot=self.backend.timesteps.clone();initial_hash=states_digest(states)
         cond=[conditioning_digest(c) for c in conditionings]

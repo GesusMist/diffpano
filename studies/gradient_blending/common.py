@@ -27,12 +27,14 @@ def suite_context(backend,suite):
 OUT,PROMPTS=suite_context(BACKEND,SUITE)
 MODES=('rgb','poisson_mean','poisson_select')
 
-def expected_counts(backend,steps,camera_count=89):
+def expected_counts(backend,steps,camera_count=89,last_fraction=0.0):
+    from diffpano.refinement import independent_count
     if backend not in BACKENDS:raise ValueError('Unsupported backend: '+backend)
     if not isinstance(steps,int) or steps<1:raise ValueError('Positive integer step count required')
     predictions=camera_count*steps
-    return dict(denoiser=predictions,encode=0 if backend=='pixeldit' else 2*predictions,
-                decode=0 if backend=='pixeldit' else predictions+camera_count,initialize=0)
+    coupled=camera_count*(steps-independent_count(steps,last_fraction))
+    return dict(denoiser=predictions,encode=0 if backend=='pixeldit' else 2*coupled,
+                decode=0 if backend=='pixeldit' else coupled+camera_count,initialize=0)
 
 def sha(path):
     h=hashlib.sha256()

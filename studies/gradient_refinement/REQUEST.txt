@@ -1,0 +1,415 @@
+Implement and execute the DiffPano Poisson-reference / gradient-selection / final-refinement study described below.
+
+Repository: [GesusMist/diffpano](https://github.com/GesusMist/diffpano)  
+Branch: `no_sphere`  
+Inspected revision: `616d8ec15abb2e4578e97b71d2fc40ee7a9f5e18` (“gradient blending FLUX all”).
+
+Work in the existing checkout, historically `/home/shig/diffpano`. Inspect its current state and applicable repository instructions before editing. Preserve unrelated work. Use the current branch and record the actual implementation revision; do not reset it to the inspected revision.
+
+This is an **implementation AND experiment-execution task**. Complete the code, targeted validation, manifest, prior-result reuse audit, missing-run submission, and result/report workflow.
+
+The current request extends the historical `studies/gradient_blending/REQUEST.txt` scope: FLUX, new reference modes, max-gradient guidance, and optional independent final denoising are now requested. Preserve historical results and provenance while making the necessary implementation changes.
+
+## 1. Exact experiment scope
+
+Create exactly this Cartesian product:
+
+- Backend: **FLUX only** for full generation in this study.
+- Reference mode: `screened`, `global_mean`, `single_pixel`, `coarse_color`.
+- Gradient mode: `poisson_select`, `poisson_max`.
+- Prompt ID: `air_balloons`, `underwater`, `ruins`, `firework`.
+- Final-refinement fraction: `0.0`, `0.10`.
+- Seed: the existing matched seed `0`.
+
+**Total: 4 × 2 × 4 × 2 = 64 logical cases.**
+
+Existing `screened + poisson_select + refinement 0.0` results should fill four slots if their local artifacts pass the reuse audit. Then generate exactly **60 missing cases**. If a candidate is missing or incompatible, regenerate that slot and report the reason.
+
+Do not expand the matrix with extra seeds, models, prompts, coarse settings, mean-gradient runs, or max-plus-mean variants.
+
+Preserve existing `poisson_mean` and RGB functionality/results. They are not additional factors in this matrix. Existing cached images may appear as clearly labeled auxiliary comparisons without new generation.
+
+## 2. Read the actual previous study and inherit its baseline
+
+Inspect these integration points:
+
+- `diffpano/gradient_fusion.py`
+- `diffpano/config.py`
+- `studies/gradient_blending/{common.py,operator.py,run.py,prepare_scenes.py,finish_scenes.py,reuse.py}`
+- `studies/all_prompts/{audit.py,runtime.py}`
+- `studies/tt_cea/{pipeline.py,schedule.py,runtime.py}`
+- `diffpano/bridge_factorial.py`
+- `diffpano/pipelines/{base.py,native_state.py,__init__.py}`
+- `scripts/generate.py` and the active global-pipeline implementations.
+
+The previous gradient experiments use:
+
+`studies.gradient_blending.run → StudyPipeline → ExperimentalPipeline → ordinary_run`
+
+Do not accidentally replace that trajectory with the unrelated default `config.yaml` pipeline.
+
+Inherit the actual resolved configuration and runtime provenance from the previous FLUX gradient study. Its expected fixed settings are:
+
+- 20 original denoising intervals, seed 0.
+- Saved, ordered Old89 camera bank, 89 views, 80×80-degree FOV.
+- Fixed cameras; no rotation or time travel.
+- Perspective RGB resolution 1024×1024.
+- ERP resolution 2048 high × 4096 wide.
+- Existing GWTF initialization, matching initial local-state hashes.
+- Existing `preserve_current_state` transition and local identity-preserving VAE residual bridge.
+- Standard warp: bilinear perspective-to-ERP, nearest ERP-to-perspective.
+- Existing `weighted_average` RGB reference, `spherediff_center` weights, temperature 0.1.
+- Screened Poisson `lambda_color=0.1`; existing defaults are PCG 200 iterations, `rtol=1e-5`, `atol=1e-7`.
+
+Resolve checkpoint, revision, precision, guidance, scheduler, conditioning, and all remaining parameters from proven prior-run configuration. Do not overwrite them using generic defaults or a merely “expected checkpoint” audit table.
+
+Use the exact existing five-line prompt files:
+
+- `prompts/air_balloons.txt`
+- `prompts/underwater.txt`
+- `prompts/ruins.txt`
+- `prompts/firework.txt`
+
+Keep singular `firework`. Preserve original/effective prompt handling, directional assignment, and hashes.
+
+## 3. Keep gradient construction and reference constraints separate
+
+Maintain independent configuration fields for:
+
+- Gradient source selection.
+- Reconstruction reference mode.
+- General final-refinement fraction.
+
+The existing `GradientSettings.mode` values and old configs must remain valid. Add `poisson_max` without changing `poisson_select` or `poisson_mean` semantics. Add a `reference_mode` field with `screened` as the backward-compatible default.
+
+Expose the refinement option through normal public configuration/CLI plumbing, outside the Poisson module; for example `global_pipeline.refinement.last_fraction`, default `0.0`. Use one authoritative setting and record its resolved behavior.
+
+This study retains the current ERP pixel-unit forward-difference operator: horizontal differences wrap; vertical differences have H−1 edges with open boundaries.
+
+Keep the same valid same-source endpoint test and binary edge support M. Do not introduce spherical area weighting, another gradient coordinate system, new warp interpolation, or an RGB clamp inside the evolving trajectory.
+
+At **each executed fusion**, define R as the ordinary weighted-RGB fusion of that fusion’s current view proposals. Construct g from those same proposals. At terminal fusion, use the final independently denoised proposals for R, g, and any source-pixel anchor.
+
+R is not a cached final image from an independent historical run.
+
+Let:
+
+`Egrad(I) = sum_e M(e) * ||D_e I - g(e)||_2^2`.
+
+## 4. Four precise reference modes
+
+### A. `screened` — current behavior
+
+Minimize:
+
+`Egrad(I) + 0.1 * sum_p ||I(p) - R(p)||_2^2`.
+
+Keep the established implementation and default numerical behavior for backward compatibility. Do not silently change its objective, boundary handling, or normalization while adding other modes.
+
+### B. `global_mean` — only three global RGB constraints
+
+Minimize `Egrad(I)`, subject to:
+
+`mu(I) = mu(R)`,
+
+independently for each image and RGB channel.
+
+`mu` is the ordinary arithmetic mean over ERP pixels, matching the current discrete formulation. This constrains three numbers per image; it is not a per-pixel attraction to R.
+
+Use explicit nullspace handling. On a connected supported-edge graph, solve for a zero-mean least-squares reconstruction J and return:
+
+`I = J + mu(R)`.
+
+Do not approximate pure Poisson by retaining a small positive screening coefficient.
+
+### C. `single_pixel` — one source-patch center reference
+
+Minimize `Egrad(I)`, subject to:
+
+`I(p0) = c0`.
+
+Use a deterministic source patch, not a fresh random choice at each step. For this fixed-camera study, select the camera whose optical axis is closest to yaw 0, pitch 0; break ties by stable camera ID and retain that ID throughout the run. Expose an explicit override if useful, but do not sweep it.
+
+Find a valid ERP pixel p0 corresponding to the center of that patch. Obtain c0 from that **same source’s floating-point prediction at that same ERP ray**, using the existing projection/sampling convention. A nearby ERP pixel sampled from the source’s warped contribution avoids mismatching an exact source-center color with a different ERP ray.
+
+Do not take c0 from R, a PNG, an initial noisy image, or another view.
+
+Use the current clean proposal’s c0 at each coupled fusion and the terminal proposal’s c0 at final fusion. Fix the source identity and geometric selection rule, not the RGB value across denoising.
+
+For a connected graph, use the same zero-mean gradient-only solution J and return:
+
+`I = J + c0 - J(p0)`.
+
+Record camera ID, source/ERP coordinates, current c0, output anchor error, and any deterministic mapping fallback. If this anchor option is used with dynamic geometry later, preserve a reproducible source-selection rule and map the actual current camera; never change the camera schedule just to maintain an anchor.
+
+For identical proposals and g, `global_mean` and `single_pixel` must yield identical gradients before clipping, differing only by a constant RGB offset. Their complete generation trajectories can diverge after subsequent nonlinear model/encoder operations, so both remain separate experiments.
+
+### D. `coarse_color` — only coarse spatial color guidance
+
+Use a fixed **16×32 grid of nonoverlapping ERP blocks**. At 2048×4096, each block is 128×128 pixels. Let `B_b(X)` be the mean RGB of block b and `n_b` its pixel count.
+
+Minimize:
+
+`Egrad(I) + eta * sum_b n_b * ||B_b(I - R)||_2^2`,
+
+with `eta=0.1`.
+
+Also enforce `mu(I)=mu(R)` explicitly for a stable common convention; this is compatible with the weighted coarse penalty.
+
+There must be no additional full-resolution `||I-R||^2` penalty in this mode. Within-block zero-mean changes are unpenalized by the color term. The `n_b` factor is intentional: it prevents the same numeric coefficient becoming negligible merely because the coarse image contains fewer pixels.
+
+Expose coarse grid dimensions and eta, but freeze them to **16×32 and 0.1** for all cases in this study. Document these as initial ablation choices, not tuned optimum values.
+
+Implement B and its true weighted adjoint. Arbitrary bilinear upsampling is not the adjoint of block averaging. Use exact nonoverlapping partitions, or validate divisibility for the selected configuration. Do not replace this with an invertible full-resolution blur equality.
+
+## 5. Solver correctness and cost
+
+The current solver rejects nonpositive `lambda_color` and assumes a screened positive-definite system. Merely allowing `lambda_color=0` is insufficient.
+
+Implement proper constrained/projected Poisson solves. For `global_mean` and `single_pixel`, handle the constant nullspace explicitly, including after preconditioning.
+
+Verify full pixel coverage and connectivity of the supported-edge graph for these study runs. Cache geometric checks only when the geometry/support is unchanged. Pixel coverage alone does not prove edge connectivity.
+
+If the graph is disconnected, report components/uncovered regions and fail the affected case clearly. Do not silently add extra anchors, invented edges, RGB screening, or substitute RGB fusion.
+
+Measure convergence against the actual normal equations/constrained system and check anchor errors. An inconsistent guidance field need not have zero gradient residual even when its least-squares solution is correct.
+
+Use FP32 production arithmetic outside autocast and a tiny FP64 reference solve for validation. Keep the original screened path reproducible.
+
+Pure Poisson can need a different iteration budget or preconditioner: choose and document a bounded solver strategy from small numerical checks and a representative resolution check, rather than assuming 200 iterations is sufficient or imposing an arbitrarily huge GPU loop.
+
+A spectral acceleration is acceptable only where it exactly represents the same full-support periodic-horizontal/open-vertical operator; masked support must still be handled correctly. Do not introduce a ridge term to improve conditioning.
+
+Record convergence, true residual, tolerance, iteration count, solver type, objective components, anchor error, mean drift, correction size, raw value range, out-of-range fraction, and solve time. Report failure rather than marking an unconverged output complete.
+
+## 6. Two gradient modes
+
+### `poisson_select`
+
+Preserve the existing rule exactly. For an oriented ERP edge e=(p,q), use the existing edge confidence `s_i(e)`, currently based on the minimum endpoint confidence.
+
+Select the valid source with largest `s_i(e)`, with the existing stable-ID tie break, and copy its signed RGB difference.
+
+### `poisson_max`
+
+For each oriented ERP edge, compute:
+
+`d_i(e) = V_i(q) - V_i(p)`,
+
+**after the same perspective-to-ERP RGB warp** used by the existing implementation.
+
+Among sources valid at both endpoints under the existing support rule, select:
+
+`i* = argmax_i ||d_i(e)||_2`,
+
+where the norm is over the three RGB channels.
+
+Set `g(e)=d_i*(e)`, copying the entire signed RGB vector. Apply this independently to the existing horizontal and vertical edge fields.
+
+Do not:
+
+- Take componentwise numeric maxima.
+- Drop gradient signs or select RGB channels from different views.
+- Multiply the magnitude ranking by geometric confidence.
+- Add a new confidence gate beyond the existing validity/support rule.
+- Add mean guidance or contrast amplification.
+- Attempt to derive source-wise max from already-aggregated mean/select fields.
+
+Use stable camera-ID tie handling, including ties at zero magnitude. Keep streaming O(BCHW) statistics instead of retaining all warped ERP views.
+
+Inspect `StudyCanvas.owner_cache`: its “ownership never changes” assertion is valid for current fixed-geometry confidence selection, but not max-gradient selection. Scope geometric caching/assertions to `poisson_select`. Max ownership must be recomputed from current proposals at every fusion.
+
+Extend capture/replay metadata only as needed without changing old modes.
+
+## 7. General last-fraction independent refinement
+
+Implement this as a reusable pipeline feature, independent of gradient fusion. A shared module such as `diffpano/refinement.py` is reasonable; it must not depend on `studies/gradient_blending` or require a Poisson mode.
+
+Let N be the number of original prepared denoising intervals and f the configured fraction:
+
+- `n=0` if `f=0`.
+- `n=min(N, max(1, ceil(f*N)))` if `f>0`.
+
+Validate `0 <= f <= 1`.
+
+For this FLUX study:
+
+`N=20, f=0.10, n=2`.
+
+Use ordinary coupled processing for one-based steps **1–18**, then independent native denoising for steps **19–20**, followed by one terminal fusion.
+
+Count intervals, not raw timestep values, sigma magnitude, elapsed time, or model-call batching. Keep the full original N-step schedule; this is not an 18-step generation or an additional two-step img2img pass.
+
+At transition:
+
+- Freeze the active camera/patch geometry, stable identities, and conditioning.
+- Preserve every view’s **current noisy native state** at the correct original scheduler time.
+- If local native states already exist, use them directly.
+- If the pipeline stores a global noisy canvas or clean consensus plus bound noise, construct the native state once exactly as its ordinary next-step preparation would, then retain it.
+- Do not switch to a fresh schedule, restart noise, or substitute a predicted-clean state for the required noisy state.
+
+For each final independent interval:
+
+- Advance each retained native state once using its backend’s original sampler and timestep.
+- Do no intermediate decode, view-to-canvas projection, fusion/Poisson solve, canvas-to-view sampling, synchronized encode, or local VAE-residual re-encode.
+- Do not reconstruct/re-noise each step from a shared RGB consensus.
+- Carry the updated state forward for the same frozen view.
+
+After the last original interval:
+
+- Perform one terminal assembly.
+- For this gradient study, decode final native views once, project to ERP, and fuse using that row’s actual gradient mode **and** reference mode.
+- Recompute final R, g, support, and anchor from those terminal views.
+- Do not hardcode RGB averaging, add another denoising pass, or perform another warp-back/encode after the final output.
+
+Use the existing backend-native stepping semantics. Current adapters enforce first-order solvers; retain their timestep lookup/reset conventions. Prevent a shared mutable cursor from advancing once per camera.
+
+Do not double denoiser evaluations by calling both clean-prediction and native-step paths. If a genuinely history-dependent scheduler is introduced, its history must belong to the appropriate local trajectory.
+
+## 8. Support every active backend and pipeline
+
+Full generation in the 64-case study is FLUX only, but implement and test refinement across the currently supported backend/pipeline combinations.
+
+Registered backends:
+
+`flux`, `sana`, `sd2`, `sd35`, `pixeldit`.
+
+Active global modes:
+
+- `erp_rgb_state`
+- `erp_x0_consensus`
+- `native_multidiffusion`
+- `implied_endpoint_consensus`
+- `erp_local_current_consensus`
+- `erp_local_dense_consensus`
+- `erp_bridge_factorial`
+
+Include their ERP/planar implementations where currently valid, the normal `scripts/generate.py` dispatch, and the actual `ExperimentalPipeline/StudyPipeline` execution path.
+
+Adding the feature only to a study subclass is insufficient. Do not expand previously unsupported backend/pipeline combinations just to form a full cross-product.
+
+Respect each persistent representation:
+
+- Local native-state modes: retain existing local tensors.
+- RGB canvas modes: sample/crop and encode once at the transition.
+- Clean-consensus modes: prepare noisy native states once using the existing clean source and bound noise.
+- Native MultiDiffusion: crop the current native canvas once and skip its inter-view native averaging during the tail.
+- PixelDiT: retain native RGB pixel states; no VAE calls.
+
+For other pipelines, retain their established terminal assembly contract, including native-space final fusion if that is how the pipeline already assembles output. The requested Poisson study uses final local decode followed by its selected RGB-domain fusion. Do not introduce a second terminal-representation ablation.
+
+Refinement must work with ordinary RGB fusion and other already-supported fusion methods as well as Poisson. Dynamic camera/patch schedules freeze at transition. Disabled refinement must preserve the existing path.
+
+## 9. Update operation counts and progress honestly
+
+The current study performs **two encodes per view per coupled interval**: one for the local VAE residual and one for the fused view. Skip both in the independent tail.
+
+For this exact FLUX study, within the existing counted generation region:
+
+| Operation | Refinement off | Refinement 0.10 |
+|---|---:|---:|
+| Denoiser | 1,780 | 1,780 |
+| Encode | 3,560 | 3,204 |
+| Decode | 1,869 | 1,691 |
+| Fusion stages | 21 | 19 |
+
+The enabled case has 18 coupled fusions and one terminal fuse. There are still 20 denoising updates per view. PixelDiT remains at zero VAE encode/decode calls.
+
+Update hardcoded `expected_counts`, N+1 fusion assertions, and report logic. Separate setup/diagnostic work from generation counters, and do not hide unexpected operations.
+
+The existing progress callback reads `p.canvas.records[-1]`. During an independent interval there is no new canvas fusion. Emit `phase="independent_refinement"` and `fusion=null`, rather than attributing the previous fusion record to the current step.
+
+Record total/coupled/independent intervals and the transition timestep.
+
+Do not decode or fuse intermediate tail snapshots just to satisfy old diagnostic code. Use native-state statistics there.
+
+## 10. Manifest, reuse, and resumable execution
+
+Prefer a distinct suite such as `studies/gradient_refinement` and a new output root:
+
+`outputs/10.8gradient-refinement-flux/seed0-v1`.
+
+Use a case key/path containing backend, seed, prompt, reference mode, gradient mode, and refinement fraction. Save the complete resolved configuration and a semantic configuration hash. Metric/cache keys must include every relevant factor too.
+
+Audit these four historical candidate directories:
+
+`outputs/10.7gradient-blending-flux/seed0-v1/cases/<prompt>/poisson_select/`
+
+For `ruins`, `underwater`, and `firework`, the prompt directories may be immutable links to:
+
+`outputs/10.6gradient-blending/seed0-v1/flux/cases/`
+
+Check completion status, image and metadata hashes, original/effective prompt and conditioning hashes, checkpoint/revision, generation configuration, camera geometry/order, schedule, initial native-state hash, bridge, `lambda_color=0.1`, successful solves, 20 steps, original call counts, terminal mode, and refinement disabled.
+
+Do not count `poisson_mean`, ordinary RGB, `terminal-rgb-reference.png`, incompatible step counts, or incomplete artifacts as the four baselines. GitHub tracks the scripts, not the generated outputs: local evidence determines reuse.
+
+Record `reused_from` and historical provenance in the new manifest without writing into historical directories or their symlink targets.
+
+Implementation changes invalidate historical code-hash gates. Create fresh validation records for the new implementation; keep historical gates/manifests/source attribution intact. Demonstrate disabled-path compatibility instead of rewriting old hashes or broadly weakening validation.
+
+Provide dry-run inventory and resumable launch/status commands. Use atomic statuses, per-case locks, exact cache matching, and active-job detection to avoid duplicate submissions. Completed valid slots are reused; failed/incomplete slots are retried explicitly.
+
+Use the established Slurm environment and resource conventions. Retain the existing maximum of **two concurrent generation GPU jobs**. Estimate an appropriate wall limit from prior logs and representative new-solver timing; do not assume the old limit is sufficient.
+
+After numerical/integration validation, submit only missing cases and dependent evaluation/figures/completion reporting. Continue preparing reports while jobs run. Distinguish submitted, pending, running, failed, reused, and completed states accurately.
+
+## 11. Targeted validation before the expensive sweep
+
+Use small numerical tests and backend mocks/direct-continuation checks where possible. Do not launch additional full panorama sweeps for other backends.
+
+Required checks:
+
+- Existing screened/select and refinement-disabled paths retain prior behavior; legacy configs load.
+- Identical source predictions reconstruct the same image for all requested reference/gradient modes, within numerical tolerance.
+- Max selection copies a whole signed RGB vector, rejects invalid endpoints, and handles deterministic ties, zero gradients, and changing ownership.
+- Pure global and pixel anchors give equal gradients for fixed g, with the expected constant offset.
+- Global/pixel constraints and coarse operator/adjoint are numerically correct.
+- A tiny dense FP64 reference validates the constrained solves, including periodic longitude, open latitude, and a clearly reported disconnected graph.
+- Coarse guidance penalizes coarse-mean discrepancies but not within-block zero-mean perturbations.
+- Cutoff arithmetic gives n=2 for N=20 and n=3 for N=28.
+- Tail-enabled/disabled runs match through the transition for the same factors and initial state.
+- Retained native-state continuation matches direct backend sampling from that state and original timestep.
+- View ordering does not corrupt state identity or scheduler position.
+- Dynamic geometry freezes correctly.
+- All existing valid pipeline families route through the shared option; ordinary RGB works independently of Poisson.
+- Instrumentation proves unchanged denoising count, no synchronization/VAE work inside the tail, and exactly one terminal assembly.
+- The manifest contains exactly 64 unique logical slots, with four expected reuse candidates and no cache collisions.
+
+Use one bounded representative GPU validation if needed to establish solver feasibility and adapter integration. Reuse a valid in-matrix production case when it meets the frozen settings. Do not silently lower resolution, steps, or solver accuracy for production.
+
+## 12. Outputs and final report
+
+For each generated case retain:
+
+- Display `final.png` and the unclamped final floating-point ERP.
+- Resolved config, source revision/hashes, prompt/camera/schedule/initialization provenance.
+- Status and artifact hashes.
+- Per-interval phase records, fusion/anchor diagnostics, operation counts.
+- Generation/solver/VAE/projection timings and peak GPU memory.
+- The terminal RGB reference, correctly labeled as this run’s assembly reference rather than an independent baseline.
+
+Produce matched contact sheets and fixed perspective/detail crops:
+
+- Four reference modes under the same prompt, gradient, and refinement setting.
+- Select versus max under the same remaining factors.
+- Refinement off versus on under the same remaining factors.
+
+Use common exposure/display conversion and identical crop geometry. Inspect seam continuity, duplicated edges, noise/contrast amplification, broad color drift, and retained detail together.
+
+Reuse the established per-image/panorama metrics and implementations where available; use new factor-aware result/cache paths. Report per-prompt paired results, runtimes, and a four-prompt aggregate.
+
+Four prompts are a small ablation: do not promote FID/IS or dependent rendered views into strong distribution-level evidence. Existing frozen metrics may be descriptive if correctly labeled; new metric research is not required.
+
+Finish with:
+
+1. Changed files and concise behavior explanation.
+2. Exact mathematical definitions and fixed defaults.
+3. Validation results, including actual operation counts.
+4. The 64-row manifest and audited reuse/new-generation counts.
+5. Job IDs and current status if still running; exact completed counts when finished.
+6. Result/contact-sheet/report locations and resume/status commands.
+7. Observed outcomes and concrete failures, clearly distinguished from hypotheses.
+
+The desired outcome is an implemented, generally available independent-final-refinement feature plus this exact reproducible FLUX ablation, with the four prior results reused wherever verified.
+
+Reference for the refinement idea: [LF-MultiDiffusion, Section 3.4 and Algorithm 1](https://arxiv.org/html/2609.01997v1). The 10% cutoff and Poisson terminal fusion above are the requested DiffPano adaptation.

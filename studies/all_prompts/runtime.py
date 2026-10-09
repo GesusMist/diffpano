@@ -3,6 +3,7 @@ import time
 import torch
 from diffpano.erp_noise_initialization import states_digest
 from diffpano.trajectory import conditioning_digest
+from diffpano.refinement import resolved_refinement
 from studies.all_prompts.common import emit
 
 @torch.no_grad()
@@ -21,6 +22,8 @@ def ordinary_run(pipeline,states,conditions,intervals,progress=None):
     terminal_hash=states_digest(states)
     native,erp,terminal=pipeline.terminal(states)
     return native,erp,dict(initial_state_sha256=initial_hash,terminal_state_sha256=terminal_hash,
+        refinement=resolved_refinement(b.timesteps,getattr(pipeline,"refinement_config",None)),
+        refinement_transition=pipeline.refinement_tail.transition if getattr(pipeline,"refinement_tail",None) else None,
         guided_predictions=b.guided_prediction_count-calls_before,time_travel_enabled=False,
         backward_calls=0,replay_count=0,original_noise_reinjections=0,additional_denoising_cycles=0,
         original_noise_bank_retained=False,terminal_seconds=terminal,
