@@ -71,7 +71,13 @@ class StudyCanvas(CanvasOperator):
                         source_x=(gx+1)*camera.width/2-.5,source_y=(gy+1)*camera.height/2-.5,
                         selection='closest valid ERP ray to source optical axis; stable ERP row-major tie',fallback=False)
                 a=self.anchor_geometry
-                acc['anchor']=dict(a,color=contribution.rgb[...,a['erp_y'],a['erp_x']].clone())
+                acc['anchor']=dict(a,location_selection_camera_id=self.ids[camera],
+                    source_type=self.settings.single_pixel_source,
+                    anchor_semantics_version=self.settings.anchor_semantics_version,
+                    anchor_location_policy=self.settings.anchor_location_policy,stage=self.stage)
+                if self.settings.single_pixel_source == 'legacy_source_patch':
+                    acc['anchor']['color']=contribution.rgb[...,a['erp_y'],a['erp_x']].clone()
+                # ERP-source mode retains geometry only while contributions arrive.
             if self.settings.mode == 'rgb' and self.device.type == 'cuda':torch.cuda.synchronize(self.device)
             started = time.perf_counter()
             acc['gradient'].accumulate(contribution,self.ids[camera])
@@ -86,6 +92,14 @@ class StudyCanvas(CanvasOperator):
         finalization_start = time.perf_counter()
         reference = super().finalize(acc)
         self.last_reference = reference.rgb
+        if self.settings.mode != 'rgb' and self.settings.reference_mode == 'single_pixel':
+            if 'anchor' not in acc:raise ValueError('Anchor location-selection camera did not contribute')
+            if self.settings.single_pixel_source == 'fused_rgb_erp':
+                a=acc['anchor']
+                a['color']=reference.rgb[...,a['erp_y'],a['erp_x']].clone()
+                a['color_provenance']='current completed weighted_average RGB ERP; all view contributions'
+            else:
+                acc['anchor']['color_provenance']='legacy selected source contribution at p0'
         record = dict(stage=self.stage,mode=self.settings.mode,reference_mode=self.settings.reference_mode,terminal=self.stage=='terminal')
         result = reference
         statistics = acc.get('gradient')

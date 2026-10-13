@@ -25,8 +25,29 @@ class GradientSettings:
     coarse_cols: int = 32
     coarse_eta: float = 0.1
     constrained_max_iterations: int = 400
+    single_pixel_source: str = 'fused_rgb_erp'
+
+    @property
+    def anchor_semantics_version(self):
+        return 2 if self.single_pixel_source == 'fused_rgb_erp' else 1
+
+    @property
+    def anchor_location_policy(self):
+        return 'existing_patch_center_erp_mapping'
+
+    @classmethod
+    def from_record(cls, record):
+        # Missing source fields belong to historical patch-source schema v1.
+        values = dict(record)
+        values.setdefault('single_pixel_source', 'legacy_source_patch')
+        return cls(**values)
+
+    def matches_record(self, record):
+        return self == type(self).from_record(record)
 
     def __post_init__(self):
+        if self.single_pixel_source not in ('fused_rgb_erp', 'legacy_source_patch'):
+            raise ValueError('Unknown single-pixel color source')
         if self.mode not in ('rgb', 'poisson_mean', 'poisson_select', 'poisson_max'):
             raise ValueError('Unsupported gradient fusion mode: ' + self.mode)
         if self.reference_mode not in ('screened', 'global_mean', 'single_pixel', 'coarse_color'):

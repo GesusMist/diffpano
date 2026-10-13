@@ -10,7 +10,7 @@ class PoissonTests(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(20);self.x=torch.randn(1,3,4,8,dtype=torch.float64)
         self.support=(torch.ones(1,1,4,8,dtype=torch.bool),torch.ones(1,1,3,8,dtype=torch.bool))
-    def settings(self,r):return GradientSettings('poisson_select',reference_mode=r,coarse_rows=2,coarse_cols=2,relative_tolerance=1e-10,absolute_tolerance=1e-11)
+    def settings(self,r):return GradientSettings('poisson_select',reference_mode=r,single_pixel_source='legacy_source_patch',coarse_rows=2,coarse_cols=2,relative_tolerance=1e-10,absolute_tolerance=1e-11)
     def anchor(self,color=None):return dict(erp_y=2,erp_x=3,color=self.x[...,2,3] if color is None else color,camera_id=4)
     def test_identical_sources_and_constraints(self):
         for mode in ('poisson_select','poisson_max'):
@@ -83,7 +83,7 @@ class PoissonTests(unittest.TestCase):
         from studies.gradient_blending.operator import StudyPipeline
         from studies.tt_cea.schedule import prepare_interval_table
         from studies.all_prompts.runtime import ordinary_run
-        h=PipelineTests();b=IndependentMock();settings=GradientSettings('poisson_max',reference_mode='single_pixel')
+        h=PipelineTests();b=IndependentMock();settings=GradientSettings('poisson_max',reference_mode='single_pixel',single_pixel_source='legacy_source_patch')
         p=StudyPipeline(b,h.cams(),config(),settings,list(range(89)),size=(8,16))
         _,out,_=ordinary_run(p,h.initial(),[{'offset':torch.tensor(.1)}]*89,prepare_interval_table(b))
         anchors=[r['anchor'] for r in p.canvas.records]

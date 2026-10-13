@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
 #SBATCH --time=02:00:00
-#SBATCH --output=outputs/10.8gradient-refinement-flux/seed0-v1/%x-%j.out
+#SBATCH --output=outputs/10.8gradient-refinement-flux/seed0-v1/logs/evaluation/%x-%j.out
 set -euo pipefail
 cd /home/shig/diffpano
 exec bash studies/panorama_metrics/environment.sh -m studies.gradient_refinement.evaluate

@@ -50,7 +50,7 @@ def run(index,retry=False):
             table=benchmark_schedule(b,c)
             bank=b.prepare_prompt_conditioning(load_directional_prompts(str(prompt_path)),_negative_prompt(c))
             conditions,slots=prepare_camera_conditioning(b,bank,cameras,c.dense_consensus.prompt_assignment,1);del bank
-            settings=GradientSettings(**row['semantic']['fusion']);assert asdict(settings)==row['semantic']['fusion']
+            settings=GradientSettings.from_record(row['semantic']['fusion']);assert settings.matches_record(row['semantic']['fusion'])
             p=StudyPipeline(b,cameras,c,settings,ids)
             provenance,audit=runtime_audit(c,b,p,conditions,slots,old)
             assert set(audit['differences'])<={'conditioning_sha256'},audit['differences']

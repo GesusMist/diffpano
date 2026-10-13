@@ -137,12 +137,21 @@ def reconstruct_constrained(reference,guidance,support,settings,*,dtype=torch.fl
             raise GradientSolveError('Constrained gradient reconstruction failed: '+diag['failure'],diag)
         if mode=='global_mean':image=solution+ref.mean((-2,-1),keepdim=True)
         elif mode=='single_pixel':
-            if anchor is None:raise ValueError('single_pixel requires a current source-prediction anchor')
+            if anchor is None:raise ValueError('single_pixel requires a current color anchor')
             y,x=anchor['erp_y'],anchor['erp_x'];color=anchor['color'].to(device=device,dtype=dtype).reshape(ref.shape[0],3,1,1)
             if not (0<=y<ref.shape[-2] and 0<=x<ref.shape[-1]) or not bool(torch.isfinite(color).all()):raise ValueError('Invalid source anchor')
+            source=settings.single_pixel_source
+            if anchor.get('source_type',source)!=source:raise ValueError('Anchor source disagrees with settings')
+            if source=='fused_rgb_erp' and not torch.equal(color,ref[...,y:y+1,x:x+1]):
+                raise ValueError('Fused-ERP anchor must use this fusion reference at p0')
             image=solution+color-solution[...,y:y+1,x:x+1]
             diag['anchor']={k:v for k,v in anchor.items() if k!='color'}
-            diag['anchor'].update(c0=color.flatten().tolist(),error=float((image[...,y:y+1,x:x+1]-color).abs().max()))
+            diag['anchor'].update(c0=color.flatten().tolist(),c0_per_item_rgb=color[...,0,0].tolist(),
+                error=float((image[...,y:y+1,x:x+1]-color).abs().max()),
+                channel_errors=(image[...,y:y+1,x:x+1]-color).abs()[...,0,0].tolist(),
+                source_type=source,anchor_semantics_version=settings.anchor_semantics_version,
+                anchor_location_policy=settings.anchor_location_policy,
+                location_selection_camera_id=anchor.get('location_selection_camera_id',anchor.get('camera_id')))
         elif mode=='coarse_color':image=ref+solution
         else:raise ValueError('Unknown constrained reference mode')
         if not bool(torch.isfinite(image).all()):raise GradientSolveError('Nonfinite output',diag)

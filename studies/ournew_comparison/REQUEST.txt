@@ -1,0 +1,460 @@
+Implement the updated single-pixel Poisson anchor and execute the exact 28-case FLUX comparison below.
+
+Repository: GesusMist/diffpano
+Branch: no_sphere
+Inspected revision: ca4e754957fb3d809db2aa86ed714f44d4dafdbd
+Commit message: "poisson max and global mean, 4 new prompts"
+
+Work in the existing checkout, historically /home/shig/diffpano. Read applicable repository instructions, inspect the current revision/worktree and running jobs, and preserve unrelated work. Do not reset the branch or overwrite historical results.
+
+This is an implementation-and-execution request: implement the anchor update, prepare and validate the new suite, submit only its missing generation cases, and arrange evaluation/reporting. Do not stop after writing a plan. Do not claim queued jobs have completed.
+
+1. EXACT SCOPE: FOUR NEW PROMPTS, SEVEN VARIANTS EACH
+
+Use exactly these existing files, preserving their contents and five directional lines:
+  prompts/ournew/bamboo_grove.txt
+  prompts/ournew/lantern_market.txt
+  prompts/ournew/sailboat_marina.txt
+  prompts/ournew/tiled_courtyard.txt
+
+For EACH prompt, generate these seven variants:
+
+  A. spherediff_official
+     Original SphereDiff algorithm, official camera layout and spherical
+     representation, FLUX, matched 20-step configuration.
+
+  B. diffpano_old89_rgb
+     DiffPano ERP, saved Old89 camera distribution, existing weighted RGB fusion.
+
+  C. diffpano_uniform89_rgb
+     DiffPano ERP, canonical Fibonacci89 phase=0 camera distribution,
+     the SAME existing weighted RGB fusion as B.
+
+  D. diffpano_uniform89_select_coarse_color
+     Same geometry and trajectory setup as C;
+     poisson_select, reference_mode=coarse_color.
+
+  E. diffpano_uniform89_select_global_mean
+     Same as C; poisson_select, reference_mode=global_mean.
+
+  F. diffpano_uniform89_select_screened
+     Same as C; poisson_select, reference_mode=screened.
+
+  G. diffpano_uniform89_select_single_pixel_erp
+     Same as C; poisson_select, reference_mode=single_pixel,
+     anchor RGB taken from the CURRENT weighted-average RGB ERP, as defined below.
+
+Total: 4 x 7 = 28 logical outputs:
+  4 SphereDiff + 8 DiffPano RGB + 16 DiffPano Poisson.
+
+This is NOT a Cartesian product between both layouts and all reference modes.
+Poisson variants use Uniform89 ONLY. Do not add Old89 Poisson, poisson_mean,
+poisson_max, random cameras, CEA, other backends, extra seeds or other prompts.
+
+Fix seed=0 and 20 denoising intervals for all runs. Use the previous matched
+20-step SphereDiff control rather than its original default 28-step recipe;
+label this explicitly as official SphereDiff with matched step count.
+
+Final independent refinement is NOT a factor in this batch:
+  last_fraction=0.0 explicitly for every DiffPano row.
+Do not inherit 0.10 from the previous 64-case study. Keep the implemented feature
+available, but disabled here. Do not enable time travel or camera rotation.
+
+2. READ THE EXISTING PATHS; REUSE THE VERIFIED IMPLEMENTATIONS
+
+Inspect the current equivalents of:
+  studies/gradient_blending/operator.py
+  studies/gradient_refinement/{run.py,common.py,prepare.py,evaluate.py}
+  studies/gradient_refinement_retry/{README.txt,run.py,prepare.py}
+  diffpano/{gradient_fusion.py,poisson_reference.py,refinement.py}
+  studies/camera_patching/{cameras.py,runtime.py,coverage.py,common.py}
+  studies/all_prompts/{audit.py,common.py,runtime.py}
+  studies/tt_cea/{pipeline.py,canvas.py,runtime.py}
+  studies/original_spherediff/
+  studies/flux_step_controls/runtime.py
+  diffpano/{conditioning.py,dense_consensus.py,gwtf_noise_initialization.py}
+
+The existing gradient study uses StudyPipeline / ExperimentalPipeline and
+ordinary_run. Preserve this clean-consensus trajectory, its current-state
+transition, and its local identity-preserving VAE residual bridge.
+
+Add a narrowly scoped suite, for example studies/ournew_comparison, reusing the
+existing operators, camera generators, backend adapters and audited official
+SphereDiff loader. Do not create a second independent denoising implementation.
+Small adapters are appropriate where historical study wrappers hardcode their
+prompt inventories, camera hashes or paths; do not weaken unrelated safeguards.
+
+3. CHANGE SINGLE_PIXEL COLOR SOURCE, NOT ITS MATHEMATICAL CONSTRAINT
+
+Current behavior:
+  c0 = selected_source_contribution.rgb[..., y0, x0]
+  minimize Egrad(I), subject to I(y0,x0)=c0.
+
+Requested new behavior:
+  R = exact existing weighted-RGB fusion of ALL current view contributions
+  c0 = R[..., y0, x0]
+  minimize Egrad(I), subject to I(y0,x0)=c0.
+
+Here R is the current pre-Poisson average, NOT the Poisson output, not a previous
+iteration's canvas, not a saved image from another run, and not an unfinished
+partial accumulator. "Average" means the established weighted_average with
+spherediff_center weights, not a newly introduced uniform/unweighted average.
+
+Keep the existing deterministic LOCATION rule to isolate the color-source change:
+- Pick the camera with optical axis closest to yaw=0, pitch=0; stable ID breaks ties.
+- Choose the valid ERP pixel whose source sampling coordinate is closest to that
+  camera's optical center, with the existing deterministic tie rule.
+- Fix this geometry for the run. All Uniform89 rows use the same frozen camera bank.
+- The camera is now used only to choose p0; it must NOT supply the anchor RGB.
+
+In StudyCanvas.accumulate(), retain/cache only the required anchor geometry for
+the new source mode. Resolve the COLOR in finalize(), AFTER super().finalize(acc)
+has produced reference.rgb from all contributions. Pass a clone of
+reference.rgb[..., y0, x0] to reconstruct(). Never read it while contributions
+are still arriving.
+
+For the connected-grid zero-mean gradient solution J, retain:
+  I = J + R[..., y0:y0+1, x0:x0+1] - J[..., y0:y0+1, x0:x0+1].
+
+Apply separately per batch item and RGB channel. The result must match all three
+reference channel values at p0 within the existing numerical tolerance.
+This remains a ONE-PIXEL constraint, not a global-mean or full-image constraint.
+
+Recompute c0 at every coupled fusion and the final terminal fusion from that
+fusion's own current proposals. Cache the location, not its RGB across steps.
+Keep the terminal fusion mode/reference mode identical to the row's active mode.
+
+Make the new source explicit in settings/CLI and provenance, for example:
+  reference_mode: single_pixel
+  single_pixel_source: fused_rgb_erp
+  anchor_semantics_version: 2
+  anchor_location_policy: existing_patch_center_erp_mapping
+
+The ordinary current single_pixel entry path should expose/use the requested
+fused-ERP behavior. Preserve source-patch anchoring under an explicit legacy
+option where needed to reproduce old experiments. Do not silently reinterpret
+historical metadata lacking the new field; historical schema/version must retain
+its recorded patch-source semantics. Update legacy-run adapters explicitly if
+needed, rather than modifying historical manifests.
+
+Record location, location-selection camera ID, source type, c0, constraint error,
+and stage. Distinguish location-selection camera from color provenance.
+
+4. KEEP OTHER REFERENCE AND GRADIENT DEFINITIONS UNCHANGED
+
+Let Egrad(I)=sum_e M(e)||D_e I-g(e)||^2.
+
+  screened:
+    Egrad(I) + 0.1 * sum_p ||I(p)-R(p)||^2.
+
+  global_mean:
+    Egrad(I), constrained by mean_hw(I)=mean_hw(R), independently per image
+    and RGB channel. No full-resolution RGB ridge.
+
+  coarse_color:
+    Egrad(I) + 0.1 * sum_b n_b ||B_b(I-R)||^2,
+    using the existing 16x32 nonoverlapping block means and per-channel mean
+    constraint. Preserve the actual block-weighted operator and its adjoint.
+
+  updated single_pixel:
+    Egrad(I), constrained by I(p0)=R(p0).
+
+For all Poisson rows, use only current poisson_select:
+  d_i(e)=V_i(q)-V_i(p), computed after projection into ERP;
+  s_i(e)=min(a_i(p),a_i(q)), with valid same-source endpoints;
+  select the largest geometric edge confidence, stable camera-ID ties;
+  copy the whole signed RGB gradient vector from that source.
+
+Do not switch to maximum-gradient magnitude or average gradients. Keep binary
+edge support, pixel-unit differences, horizontal periodicity, open vertical
+boundaries, FP32 production arithmetic and no clamp during the evolving trajectory.
+
+Retain connectivity, finite-value, residual and reference-constraint checks.
+Use the existing validated screened and constrained solvers, not a rewrite.
+
+Numerical policy must be explicit and frozen before submission. The repository
+records five coarse_color retries using rtol=1e-4 instead of 1e-5. Inspect their
+local validation and completion evidence. For this new suite, use a consistent
+prospective policy: all four coarse_color rows use rtol=1e-4, and the other
+Poisson rows use the existing rtol=1e-5; all keep atol=1e-7, screened cap=200 and
+constrained cap=400 unless the checked local implementation has a documented
+newer validated policy. Validate and record the resolved policy, including this
+mode-specific tolerance difference. Do not tune tolerance per prompt or accept
+failed final-output checks. If local evidence is missing, validate before launch;
+do not claim a prior retry succeeded merely because its script exists.
+
+5. OLD89 AND UNIFORM89 MUST BE REAL, DISTINCT CAMERA BANKS
+
+Old89:
+  Reuse the exact saved ordered Old89 camera bank from the matched FLUX baseline.
+
+Uniform89:
+  Reuse studies.camera_patching.cameras.fibonacci_camera_cover(view,89,phase=0.0),
+  or the exact saved bank generated by it. Verify the poses against that canonical
+  implementation. Preserve ordering, roll=0, raster/FOV and stable identity.
+
+Uniform here means Fibonacci CAMERA DISTRIBUTION. It does NOT mean uniform
+fusion weights. All six DiffPano variants keep spherediff_center weighting and
+the same weighted-RGB reference reducer.
+
+Use 89 cameras, 80x80-degree FOV, 1024x1024 perspective RGB, and 2048x4096 ERP.
+All five Uniform89 variants per prompt (RGB plus four Poisson modes) must share
+exactly the same geometry hash, view order, prompt routing, schedule and initial
+native-state tensors.
+
+Do not retain Old89 poses while merely changing a metadata label. Do not pass
+Fibonacci poses to original SphereDiff.
+
+Important integration detail: the existing camera-layout study uses string
+noise-slot labels, whereas GuidanceAccumulator requires stable integer IDs.
+Preserve the intended noise-slot labeling and maintain an explicit stable
+integer mapping for gradient ownership. Do not substitute integer IDs into
+initialization without checking whether that changes its random stream.
+
+Changing layout legitimately changes projection geometry, directional prompt
+assignments and warped initial local noise. Freeze and verify those quantities
+WITHIN each layout; do not demand that Uniform89 local-state hashes equal Old89.
+Use the existing layout-aware GWTF initialization path for the actual cameras,
+not an Old89 initializer with relabeled views.
+
+Validate full pixel coverage and supported-edge connectivity at the actual ERP
+resolution for both camera banks. Cache geometry-only checks correctly. On a
+failure, report the defect; do not silently fill holes, add cameras, rotate the
+layout or weaken the validity gate.
+
+6. PRESERVE TRAJECTORY AND PROMPT FAIRNESS
+
+For DiffPano inherit the resolved, audited prior FLUX configuration, including:
+  checkpoint/revision/weight hashes, precision, guidance, negative conditioning,
+  scheduler and 20-step coefficients, GWTF noise rules, native scaling,
+  preserve_current_state transition and identity-preserving VAE bridge,
+  bilinear perspective-to-ERP and nearest ERP-to-perspective warps,
+  existing fusion temperature 0.1, output conversion and native geometry.
+
+Use seed=0, batch size=1, no time travel/rotation/refinement. Do not silently load
+a different model revision or set geometry from the default config.yaml.
+
+Read prompt files by their FULL paths under prompts/ournew. Existing
+all_prompts.common.effective_prompt(name) hardcodes prompts/<name>.txt, and the
+historical inventory expects 21 root-level files. Add a path-aware suite loader
+using prompt_record() or equivalent byte-preserving logic. Do not edit the
+historical 21-prompt whitelist, copy new prompts over old files, or flatten the
+five lines into one global sentence.
+
+All four new files currently have five directional lines. Preserve bytes, order,
+original/effective hashes and native prompt expansion. Use the actual camera
+pitch/direction to recompute routing for Fibonacci poses; do not reuse Old89
+routing by camera index. Record pose-to-prompt assignments for each layout.
+
+Within each prompt's Uniform89 group, all five runs must begin with identical
+conditioning hashes and initial native states. Geometry/conditioning changes
+versus Old89 must be narrowly authorized and recorded by the audit, rather than
+bypassing the audit. Equal seeds across algorithms do not imply identical noise.
+
+7. ORIGINAL SPHEREDIFF BASELINE
+
+Use the existing audited original SphereDiff FLUX loader/implementation and
+20-step control, particularly original_spec()/original() in
+studies/flux_step_controls/runtime.py as the reference route. Do NOT call its
+DiffPano path: that function intentionally constructs the old 28-step DiffPano
+control and is not this suite's target.
+
+Retain original SphereDiff's spherical representation, official cameras, native
+initialization, latent fusion, output assembly and model guidance. Match step
+count to 20 and use a fresh seed-0 generator for each new prompt. Pass the exact
+new directional prompt file through the official prompt_txt_path interface.
+
+Do not add our Poisson fusion, Fibonacci layout, RGB bridge, GWTF initialization
+or independent-refinement feature to SphereDiff. Minimal path-aware adapters
+and noninvasive instrumentation are acceptable; preserve official numerical code.
+
+Verify the checkpoint weights against the established matched FLUX comparison.
+Reuse identical model weights where that is already the validated baseline;
+record actual identifiers/revisions/hashes. Do not hide a weight mismatch behind
+matching model names, nor claim equal step counts imply equal compute.
+
+Preserve legitimate original native patch/resolution/scheduler differences,
+recording them rather than forcing DiffPano's native internals on SphereDiff.
+Keep final output 4096x2048. Label the baseline as official SphereDiff with 20
+steps, not as an untouched 28-step default run.
+
+8. ACCOUNTING, STORAGE, AND HISTORICAL PRESERVATION
+
+Create an isolated suite/output root, for example:
+  studies/ournew_comparison/
+  outputs/ournew-flux28/seed0-v1/
+
+The old 64 results use different prompts/layouts and patch-source anchoring.
+They do not fill slots in this new matrix and must not be edited, relabeled or
+rerun as part of this request. Preserve prior outputs, retry records, manifests,
+metrics, symlink targets and provenance.
+
+Build exactly 28 unique manifest rows before launch. Each semantic key must
+include full prompt path/content hash, method, backend/checkpoint, camera layout
+and geometry, gradient/reference modes, single-pixel source/version/location,
+refinement setting, solver settings, seed and schedule.
+
+Reuse only an independently verified EXACT match to one of these new 28 rows.
+Never reuse by basename, image existence, reference_mode alone, or a matching
+prompt from another folder. Otherwise this is 28 new complete trajectories.
+
+Keep atomic status/result writes, per-case locks, --dry-run, status and explicit
+retry commands. Skip completed valid rows and avoid duplicate active jobs.
+Freeze source fingerprints before starting production; new code needs new gates.
+Do not rewrite old validation hashes to make changed code appear unchanged.
+
+For every no-refinement DiffPano trajectory, expect in the counted generation
+region: 1780 denoiser calls, 3560 VAE encodes, 1869 VAE decodes, and 21 fusion
+stages (20 intervals plus terminal assembly). RGB rows have no Poisson solves;
+Poisson rows have 21. Verify these against actual instrumented behavior rather
+than merely printing expected counts. Keep setup/diagnostic work separate.
+
+Measure SphereDiff counts through its existing audited path instead of applying
+DiffPano's encode/decode assumptions to it.
+
+Use existing Slurm/environment/checkpoint conventions, at most TWO generation
+GPU jobs concurrently across this suite, and account for unrelated active jobs.
+Estimate wall limits from completed prior runs and new-solver smoke profiling.
+Do not launch unbounded arrays or silently reduce resolution/steps to fit limits.
+
+9. TEST BEFORE FULL SUBMISSION
+
+Required focused tests:
+
+A. New anchor source correctness:
+   Use overlapping synthetic contributions where the selected patch's RGB at p0
+   differs from the all-view weighted average. Assert c0=R(p0), NOT that patch's
+   color. Alter another patch's contribution at p0 while keeping the selected
+   patch fixed; assert the new c0 follows the changed average.
+
+B. Finalization order:
+   Ensure anchor color is read only after all views contribute. Reordering views
+   preserves the reference/anchor within the declared reduction tolerance.
+
+C. Three-channel and temporal behavior:
+   Each reconstructed channel at p0 matches its own reference value. Fixed
+   geometry retains p0 while current c0 updates per fusion, including terminal.
+
+D. Pure-Poisson invariant:
+   For fixed g, global_mean and updated single_pixel differ only by a constant
+   RGB offset, without forcing their full trajectories to be identical.
+
+E. Legacy/regression:
+   Explicit legacy patch-source mode reproduces prior semantics. Screened,
+   global_mean, coarse_color, poisson_select and ordinary RGB remain unchanged
+   apart from the declared coarse tolerance policy. Disabled refinement stays
+   disabled. Old metadata is not reinterpreted as ERP-source anchoring.
+
+F. Geometry/routing/initialization:
+   Exactly 89 poses; old and Fibonacci hashes are distinct; the five uniform
+   cases share pose order, routing and starting states. Verify string noise-slot
+   to integer owner-ID mapping, coverage and connected support.
+
+G. Prompt/suite/SphereDiff:
+   Exactly the four full paths, five lines each, correct hashes, seven variants
+   each and 28 total. No 28-step SphereDiff, Old89 Poisson, max-gradient or tail
+   configuration accidentally enters. Verify official source provenance.
+
+Run tiny CPU/mocked tests and a bounded GPU smoke. A necessary full generation
+smoke should be one of the 28 actual cases and count toward the suite when valid.
+Do not add full-resolution extra prompt sweeps just for validation. Convergence
+failures remain explicit; no silent RGB fallback or per-prompt parameter tuning.
+
+10. EXECUTE, EVALUATE AND REPORT
+
+After gates pass, submit only missing rows and dependent evaluation/figures.
+Prepare aggregation/reporting while generation runs. If compute or checkpoint
+access is blocked, finish runnable artifacts and report the exact blocker and
+actual submission state; do not claim execution that did not happen.
+
+Save per case:
+  final.png; unclamped FP32 final ERP for DiffPano;
+  that DiffPano run's pre-Poisson terminal RGB reference, labeled correctly;
+  resolved config, semantic/source hashes, prompts, poses/routing/noise provenance;
+  counts, timing, memory, solver/anchor diagnostics and status/artifact hashes.
+Preserve unclamped official output only if already exposed noninvasively; do not
+present a PNG converted back to floats as an original unclamped SphereDiff tensor.
+
+MANDATORY DS / CS / IS EVALUATION -- IMPLEMENT AND EXECUTE
+
+Run DS, CS and IS evaluation for this exact 28-output suite, including original
+SphereDiff and every DiffPano variant. Writing an evaluation script or showing
+commands alone is not completion. Submit/run the evaluator using the established
+frozen evaluation environment and record its actual status.
+
+Reuse the existing verified metric implementations, checkpoints, preprocessing,
+panorama-to-view extraction, directional text-assignment rules and IS split
+protocol. Do not redefine DS, substitute a new CLIP/Inception model, or alter
+metric normalization. Use the exact prompts/ournew files and their preserved
+five directional lines for CS through the existing prompt-matching protocol.
+
+Score final.png for each case using the same input/display conversion protocol
+across methods. Do not score terminal-rgb-reference.png instead, or compare
+unclamped float inputs for one method against PNG inputs for another.
+
+Compute and retain:
+- DS and CS for all 28 individual final panoramas.
+- Mean DS and mean CS for each of the seven variants over the same four prompts.
+- One collection-level IS for each variant's matched four-prompt collection,
+  using the frozen view/split protocol. Do not compute or average per-image IS,
+  pool different variants together, or average old collection IS values.
+
+Save under the NEW suite's evaluation directory:
+- per_image_scores.csv: 28 manifest rows, with case ID, full prompt path/hash,
+  method, layout, gradient/reference/anchor source, image hash, completion and
+  scoring status, DS and CS. Missing scores remain null, never zero.
+- summary_scores.csv: seven variant rows with completed/scored panorama counts,
+  matched prompt IDs, mean DS, mean CS and collection IS.
+- metrics.json and metric_protocol.json: raw results, aggregate membership,
+  evaluator/checkpoint/preprocessing fingerprints, effective view counts and
+  any errors, so the reported scores can be reproduced.
+
+Provide a seven-row Markdown AND LaTeX table in the report:
+  Method / configuration | N panoramas | DS down | CS up | IS up
+Each final comparison row must contain the exact same four prompt IDs and N=4.
+Also provide per-prompt DS/CS comparisons. Keep IS at collection level.
+
+Evaluation may cache completed images while generation continues, but label any
+partial summaries provisional. Refresh after missing cases/retries finish. Do
+not present an incomplete variant as directly matched to a four-prompt variant,
+or mix these new results with old 20/21-prompt aggregates.
+
+Cache keys must include the final image hash, prompt hash, metric protocol and
+full configuration identity, including fused-ERP single-pixel anchor semantics.
+Do not write into historical evaluator caches or reuse stale patch-anchor scores.
+
+Arrange evaluation and reporting dependencies after generation/retries. Report
+metric failures separately from generation failures, and resume only missing or
+stale scoring work. Missing checkpoints/environment access are explicit blockers;
+never invent scores or silently switch evaluators.
+
+The final completion audit requires 28 valid generation results, 28 DS scores,
+28 CS scores and seven valid matched collection IS scores. If any are absent,
+report the exact pending/failed/blocked counts instead of declaring completion.
+
+These are descriptive four-prompt ablations, not significance or population-level
+quality claims. Optional existing seam metrics may be reported separately, but
+must not replace DS/CS/IS. Do not expand the task into new FID/FAED/Distort-FID
+implementation or checkpoint-recovery work. Evaluation adds no generation cases:
+the authorized generation matrix remains exactly 28.
+
+Produce one seven-column final-image comparison per prompt and fixed perspective/
+detail crops with common exposure/scale and identical viewing directions. Include
+views that reveal seams and the actual fine structures described in the prompts,
+not only crops favorable to one method. No per-method contrast normalization.
+
+The report must separate these comparisons:
+  SphereDiff versus DiffPano Old89 RGB: algorithm comparison at matched steps.
+  Old89 RGB versus Uniform89 RGB: camera-layout comparison, noting changed noise
+    transport/overlap and directional prompt assignment.
+  Uniform89 RGB versus the four Uniform89 Poisson variants: blending/reference
+    comparison on fixed geometry and initial states.
+
+Do not claim that new ERP-anchor quality improvements are isolated from the old
+patch-anchor method: old results used different prompts/layouts, and this suite
+contains no matched patch-anchor control. No additional control run is authorized.
+
+Finish with changed files, anchor semantics, actual validation results, the 28-row
+manifest, reused/new/completed/failed/pending counts, job IDs, result/report paths,
+and exact resume/status commands. Report evidence and limitations without claiming
+success merely because the solver converges or one metric improves.
