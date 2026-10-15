@@ -21,7 +21,7 @@ def main():
         if row['method']=='diffpano':
             c,cameras,owners,slots,settings,geometry,old=resolved(row)
             if row['layout'] not in locations:locations[row['layout']]=anchor_location(cameras,owners)
-            semantic=dict(prompt=info,configuration=asdict(c),geometry=geometry,solver=asdict(settings),
+            semantic=dict(prompt=info,configuration=asdict(c),geometry=geometry,solver=settings.to_record(),
                 anchor=dict(source=settings.single_pixel_source,semantics_version=settings.anchor_semantics_version,location_policy=settings.anchor_location_policy,location=locations[row['layout']]) if row['reference_mode']=='single_pixel' else None,
                 schedule=old['prepared_schedule'],initializer='layout-aware GWTF with preserved camera noise-slot labels',
                 model=dict(id=c.model.id,revision=c.model.revision,weight_audit_sha256=sha(ROOT/'outputs/metrics-evaluation/seed0-v1/checkpoint_weight_audit.json')))

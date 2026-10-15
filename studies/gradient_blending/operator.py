@@ -2,7 +2,7 @@
 from dataclasses import replace
 import math
 from diffpano.poisson_reference import ConnectivityCache
-from diffpano.projection import perspective_to_erp_grid
+from diffpano.projection import perspective_to_erp_grid, ERPContribution
 import time
 import torch
 from diffpano.gradient_fusion import GuidanceAccumulator, reconstruct
@@ -44,11 +44,11 @@ class StudyCanvas(CanvasOperator):
     def make_accumulator(self,batch_size):
         acc = super().make_accumulator(batch_size)
         capture = self.observer is not None and self.observer.capture_statistics and self.stage in (1,10,20)
-        mode = 'both' if capture and self.settings.mode != 'poisson_max' else self.settings.mode
+        mode = 'both' if capture and self.settings.mode not in ('poisson_max','poisson_mean_max') else self.settings.mode
         if mode != 'rgb':
             if self.device.type == 'cuda':torch.cuda.synchronize(self.device)
             started = time.perf_counter()
-            acc['gradient'] = GuidanceAccumulator(acc['main'].previous, mode)
+            acc['gradient'] = GuidanceAccumulator(acc['main'].previous, mode, self.settings.gradient_mix_alpha)
             if self.settings.mode == 'rgb':
                 if self.device.type == 'cuda':torch.cuda.synchronize(self.device)
                 self.diagnostic_seconds += time.perf_counter()-started
@@ -59,7 +59,10 @@ class StudyCanvas(CanvasOperator):
             return super().accumulate(acc,perspective_rgb,camera)
         with torch.autocast(device_type=self.device.type, enabled=False):
             contribution = self.standard.perspective_to_erp(perspective_rgb,camera,(self.spec.height,self.spec.width))
-            acc['main'].accumulate(contribution)
+            valid = contribution.valid_mask.bool()
+            safe = ERPContribution(torch.where(valid,contribution.rgb,0.),contribution.valid_mask,
+                torch.where(valid,contribution.weight,0.))
+            acc['main'].accumulate(safe)
             if self.settings.reference_mode == 'single_pixel' and camera == self.anchor_camera:
                 if self.anchor_geometry is None:
                     grid,valid=perspective_to_erp_grid(camera,self.spec.height,self.spec.width,device=self.device,cache=self.standard.cache)
@@ -112,7 +115,7 @@ class StudyCanvas(CanvasOperator):
             result = replace(reference,rgb=rgb)
             record.update(diagnostics)
             record['owner_boundaries'] = statistics.owner_summary()
-        if statistics is not None and statistics.owners is not None and self.settings.mode != 'poisson_max':
+        if statistics is not None and statistics.owners is not None and statistics.selection_kind == 'confidence':
             if self.owner_cache is None:
                 # Constant-size geometry cache; compare ownership on every observed interval.
                 self.owner_cache = tuple(owner.clone() for owner in statistics.owners)

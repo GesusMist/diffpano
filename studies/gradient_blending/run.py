@@ -90,7 +90,7 @@ def run(prompt,mode,instrument=False):
             group=dict(cameras=cameras,ids=ids,conditions=conditions,slots=slots)
             states,initialization,initialization_audit=initialize(b,BACKEND,group,old)
             assert initialization['initial_local_sha256']==baseline['initialization']['initial_local_sha256']
-            config_record=dict(backend=BACKEND,suite=SUITE,offline_replay_backend='sana',configuration=c.to_dict(),fusion=asdict(settings),terminal_fusion_mode=mode,
+            config_record=dict(backend=BACKEND,suite=SUITE,offline_replay_backend='sana',configuration=c.to_dict(),fusion=settings.to_record(),terminal_fusion_mode=mode,
                                prompt=prompt_info,provenance=provenance,initialization=initialization,
                                initialization_audit=initialization_audit,source_hashes=sources,source_revision=baseline['source_revision'],
                                camera_ids=ids,camera_geometry_sha256=provenance['camera_geometry_sha256'],

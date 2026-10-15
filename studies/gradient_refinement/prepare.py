@@ -65,7 +65,7 @@ def main():
         expected,evidence,h=conditioning_evidence(historical['cached_cases'][row['prompt']])
         c.global_pipeline.refinement=RefinementConfig(row['last_fraction'])
         settings=GradientSettings(row['gradient_mode'],reference_mode=row['reference_mode'])
-        semantic=dict(configuration=asdict(c),fusion=asdict(settings),prompt=info,conditioning_sha256=expected,
+        semantic=dict(configuration=asdict(c),fusion=settings.to_record(),prompt=info,conditioning_sha256=expected,
             camera_ids=ids,camera_geometry_sha256=old['camera_geometry_sha256'],camera_sha256=old['camera_sha256'],
             schedule=old['prepared_schedule'],initial_native_sha256=old['initialization']['initial_local_sha256'],
             initializer='GWTF',steps=20,backend='flux',seed=0)

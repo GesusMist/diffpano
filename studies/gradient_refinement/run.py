@@ -54,7 +54,7 @@ def run(index,retry=False):
             assert initialization_audit['calls']==dict(denoiser=0,encode=0,decode=0,initialize=89)
             plan=resolved_refinement(b.timesteps,c.global_pipeline.refinement)
             config_record=dict(case={k:v for k,v in row.items() if k!='semantic'},semantic_sha256=row['semantic_sha256'],configuration=asdict(c),
-                backend='flux',prompt=prompt_info,fusion=asdict(settings),reference_mode=row['reference_mode'],refinement=plan,
+                backend='flux',prompt=prompt_info,fusion=settings.to_record(),reference_mode=row['reference_mode'],refinement=plan,
                 terminal_fusion_mode=row['gradient_mode'],terminal_reference_mode=row['reference_mode'],
                 provenance=safe(provenance),initialization=safe(initialization),initialization_audit=safe(initialization_audit),
                 source_hashes=sources,implementation_revision=manifest['implementation_revision'],

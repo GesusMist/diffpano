@@ -4,7 +4,8 @@ D uses pixel-unit forward differences: x wraps in longitude; y has H-1 edges.
 This is not a rotation-invariant spherical objective. No latitude reweighting,
 clamping, latent processing, autograd guidance, or missing-edge constraints.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+import numbers
 import math
 import time
 from typing import Optional
@@ -26,6 +27,14 @@ class GradientSettings:
     coarse_eta: float = 0.1
     constrained_max_iterations: int = 400
     single_pixel_source: str = 'fused_rgb_erp'
+    # None is the historical (not mixed) schema. New mixed runs default to 0.5.
+    gradient_mix_alpha: Optional[float] = None
+
+    def to_record(self):
+        values = asdict(self)
+        if self.gradient_mix_alpha is None:
+            values.pop('gradient_mix_alpha')
+        return values
 
     @property
     def anchor_semantics_version(self):
@@ -46,9 +55,15 @@ class GradientSettings:
         return self == type(self).from_record(record)
 
     def __post_init__(self):
+        if self.mode == 'poisson_mean_max':
+            alpha = 0.5 if self.gradient_mix_alpha is None else self.gradient_mix_alpha
+            validate_mix_alpha(alpha)
+            object.__setattr__(self, 'gradient_mix_alpha', float(alpha))
+        elif self.gradient_mix_alpha is not None:
+            raise ValueError('gradient_mix_alpha requires poisson_mean_max mode')
         if self.single_pixel_source not in ('fused_rgb_erp', 'legacy_source_patch'):
             raise ValueError('Unknown single-pixel color source')
-        if self.mode not in ('rgb', 'poisson_mean', 'poisson_select', 'poisson_max'):
+        if self.mode not in ('rgb', 'poisson_mean', 'poisson_select', 'poisson_max', 'poisson_mean_max'):
             raise ValueError('Unsupported gradient fusion mode: ' + self.mode)
         if self.reference_mode not in ('screened', 'global_mean', 'single_pixel', 'coarse_color'):
             raise ValueError('Unsupported Poisson reference mode')
@@ -62,6 +77,11 @@ class GradientSettings:
             raise ValueError('max_iterations must be a nonnegative integer')
         if any(not math.isfinite(v) or v < 0 for v in (self.relative_tolerance, self.absolute_tolerance)):
             raise ValueError('Solver tolerances must be finite and nonnegative')
+
+
+def validate_mix_alpha(alpha):
+    if isinstance(alpha, bool) or not isinstance(alpha, numbers.Real) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
+        raise ValueError('gradient_mix_alpha must be a finite scalar in [0,1]')
 
 
 class GradientSolveError(RuntimeError):
@@ -217,21 +237,34 @@ class GuidanceAccumulator:
     """O(BCHW) streaming statistics. Stable integer IDs define tie order.
 
     `both` stores enough information for offline replay, without storing views.
-    Geometric ownership is independent of RGB; the study wrapper caches its map.
+    `poisson_mean_max` stores mean and magnitude-max statistics from one pass.
+    Only confidence-selected ownership is independent of RGB.
     """
-    def __init__(self, reference, mode):
-        if mode not in ('poisson_mean', 'poisson_select', 'poisson_max', 'both'):
+    def __init__(self, reference, mode, gradient_mix_alpha=None):
+        if mode not in ('poisson_mean', 'poisson_select', 'poisson_max', 'poisson_mean_max', 'both'):
             raise ValueError('Unsupported guidance mode')
         self.mode = mode
+        self.gradient_mix_alpha = None
+        if mode == 'poisson_mean_max':
+            alpha = 0.5 if gradient_mix_alpha is None else gradient_mix_alpha
+            validate_mix_alpha(alpha)
+            self.gradient_mix_alpha = float(alpha)
+        elif gradient_mix_alpha is not None:
+            raise ValueError('gradient_mix_alpha requires poisson_mean_max mode')
+        self.selection_kind = 'magnitude_max' if mode in ('poisson_max', 'poisson_mean_max') else 'confidence'
         shapes = [reference.shape, (*reference.shape[:-2], reference.shape[-2]-1, reference.shape[-1])]
         self.den = [torch.zeros((s[0],1,*s[-2:]), device=reference.device, dtype=torch.float32) for s in shapes]
-        self.num = [torch.zeros(s, device=reference.device, dtype=torch.float32) for s in shapes] if mode in ('poisson_mean', 'both') else None
+        self.num = [torch.zeros(s, device=reference.device, dtype=torch.float32) for s in shapes] if mode in ('poisson_mean', 'poisson_mean_max', 'both') else None
         self.best = [torch.zeros_like(d) for d in self.den] if mode != 'poisson_mean' else None
         self.selected = [torch.zeros(s, device=reference.device, dtype=torch.float32) for s in shapes] if self.best is not None else None
         self.owners = [torch.full_like(d, torch.iinfo(torch.int32).max, dtype=torch.int32) for d in self.den] if self.best is not None else None
 
     @torch.no_grad()
     def accumulate(self, contribution, camera_id):
+        with torch.autocast(device_type=self.den[0].device.type, enabled=False):
+            self._accumulate(contribution, camera_id)
+
+    def _accumulate(self, contribution, camera_id):
         if isinstance(camera_id, bool) or not isinstance(camera_id, int) or not 0 <= camera_id < torch.iinfo(torch.int32).max:
             raise ValueError('Stable nonnegative integer camera ID required')
         rgb, mask, weight = contribution.rgb.float(), contribution.valid_mask.float(), contribution.weight.float()
@@ -252,7 +285,7 @@ class GuidanceAccumulator:
             self.den[axis].add_(s)
             if self.num is not None:self.num[axis].add_(s*d)
             if self.best is not None:
-                rank = d.square().sum(1, keepdim=True) if self.mode == 'poisson_max' else s
+                rank = d.square().sum(1, keepdim=True) if self.selection_kind == 'magnitude_max' else s
                 choose = (s > 0) & ((rank > self.best[axis]) | ((rank == self.best[axis]) & (camera_id < self.owners[axis])))
                 self.selected[axis] = torch.where(choose, d, self.selected[axis])
                 self.owners[axis] = torch.where(choose, camera_id, self.owners[axis])
@@ -261,9 +294,19 @@ class GuidanceAccumulator:
     def guidance(self, mode=None):
         mode = mode or self.mode
         support = tuple(d > 0 for d in self.den)
+        if mode == 'poisson_mean_max' and self.mode == mode:
+            with torch.autocast(device_type=self.den[0].device.type, enabled=False):
+                mean, _ = self.guidance('poisson_mean')
+                alpha = self.gradient_mix_alpha
+                # Exact endpoint behavior, including subnormal positive confidences.
+                if alpha == 0:return mean, support
+                if alpha == 1:return tuple(self.selected), support
+                return tuple((1-alpha)*m + alpha*x for m,x in zip(mean,self.selected)), support
         if mode == 'poisson_mean' and self.num is not None:
             return tuple(n / torch.where(m,d,torch.ones_like(d)) for n,d,m in zip(self.num,self.den,support)), support
         if mode in ('poisson_select', 'poisson_max') and self.selected is not None:
+            if self.mode == 'poisson_mean_max' and mode != 'poisson_max':
+                raise ValueError('Confidence selection was not accumulated in mean-max mode')
             return tuple(self.selected), support
         raise ValueError('Requested guidance was not accumulated')
 
@@ -285,7 +328,7 @@ class GradientFusionAccumulator:
             raise ValueError('Gradient fusion requires the weighted_average keep_previous reference')
         self.settings = settings
         self.reference_accumulator = RGBFusionAccumulator(previous, fusion_config)
-        self.statistics = None if settings.mode == 'rgb' else GuidanceAccumulator(previous, settings.mode)
+        self.statistics = None if settings.mode == 'rgb' else GuidanceAccumulator(previous, settings.mode, settings.gradient_mix_alpha)
         self.reference = None
         self.diagnostics = None
 
@@ -317,6 +360,11 @@ def reconstruct(reference, guidance, support, settings, *, dtype=torch.float32, 
         image,diagnostics=_reconstruct_screened(reference, guidance, support, settings, dtype=dtype)
         color=float(settings.lambda_color*(image-reference.to(dtype)).square().sum())
         diagnostics.update(reference_mode='screened',objective_color=color,objective_gradient=diagnostics['objective']-color)
-        return image,diagnostics
-    from diffpano.poisson_reference import reconstruct_constrained
-    return reconstruct_constrained(reference, guidance, support, settings, dtype=dtype, anchor=anchor, connectivity=connectivity)
+    else:
+        from diffpano.poisson_reference import reconstruct_constrained
+        image,diagnostics = reconstruct_constrained(reference, guidance, support, settings, dtype=dtype, anchor=anchor, connectivity=connectivity)
+    if settings.mode == 'poisson_mean_max':
+        diagnostics.update(gradient_mode=settings.mode,gradient_mix_alpha=settings.gradient_mix_alpha,
+            gradient_mean_coefficient=1-settings.gradient_mix_alpha,gradient_max_coefficient=settings.gradient_mix_alpha,
+            gradient_mix_formula='(1-alpha)*g_mean + alpha*g_max',gradient_mix_semantics_version=1)
+    return image,diagnostics

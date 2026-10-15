@@ -28,7 +28,7 @@ def setup(row,b,table):
     from diffpano.dense_consensus import prepare_camera_conditioning
     c,cameras,owners,noise_slots,settings,geometry,old=resolved(row)
     assert safe(asdict(c))==row['semantic']['configuration']
-    assert safe(geometry)==row['semantic']['geometry'] and asdict(settings)==row['semantic']['solver']
+    assert safe(geometry)==row['semantic']['geometry'] and settings.matches_record(row['semantic']['solver'])
     info,path=prompt(row['prompt']);assert info==row['semantic']['prompt']
     bank=b.prepare_prompt_conditioning(load_directional_prompts(str(path)),_negative_prompt(c))
     conditions,prompt_slots=prepare_camera_conditioning(b,bank,cameras,c.dense_consensus.prompt_assignment,1);del bank
@@ -41,7 +41,7 @@ def setup(row,b,table):
     assert provenance['camera_geometry_sha256']==geometry['angular_sha256']
     assert safe(provenance['prepared_schedule'])==row['semantic']['schedule']
     assert len(table)==len(b.timesteps)==20 and all(not t.eligible for t in table)
-    return p,conditions,noise_slots,dict(provenance=safe(provenance),audit=safe(audit),geometry=geometry,prompt=info,fusion=asdict(settings))
+    return p,conditions,noise_slots,dict(provenance=safe(provenance),audit=safe(audit),geometry=geometry,prompt=info,fusion=settings.to_record())
 
 
 def initial(b,row,p,slots):

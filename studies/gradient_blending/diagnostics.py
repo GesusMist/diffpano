@@ -40,12 +40,20 @@ class Capture:
             for i in self.view_ids:
                 save_rgb(folder/('view-%02d-consensus.png'%i),self.canvas.sample_view(result,self.cameras[i]))
             if self.capture_statistics:
-                assert stats.mode=='both'
-                mean,support=stats.guidance('poisson_mean');selected,_=stats.guidance('poisson_select')
-                snapshot=dict(reference=reference.rgb.detach().cpu(),mean=[v.detach().cpu() for v in mean],
-                    selected=[v.detach().cpu() for v in selected],support=[v.detach().cpu() for v in support],
+                if stats.mode=='both':
+                    mean,support=stats.guidance('poisson_mean');selected,_=stats.guidance('poisson_select')
+                    fields=dict(mean=[v.detach().cpu() for v in mean],selected=[v.detach().cpu() for v in selected])
+                elif stats.mode in ('poisson_mean_max','poisson_max'):
+                    maximum,support=stats.guidance('poisson_max')
+                    fields=dict(maximum=[v.detach().cpu() for v in maximum],selection_kind='magnitude_max')
+                    if stats.mode=='poisson_mean_max':
+                        mean,_=stats.guidance('poisson_mean');mixed,_=stats.guidance()
+                        fields.update(mean=[v.detach().cpu() for v in mean],mixed=[v.detach().cpu() for v in mixed],
+                            gradient_mix_alpha=stats.gradient_mix_alpha,gradient_mix_formula='(1-alpha)*g_mean + alpha*g_max')
+                else:raise ValueError('Unsupported sufficient-statistics capture mode: '+stats.mode)
+                snapshot=dict(reference=reference.rgb.detach().cpu(),support=[v.detach().cpu() for v in support],
                     owners=[v.detach().cpu() for v in stats.owners],selected_views=self.pending,executed_step=stage,
-                    ownership=stats.owner_summary(),display_range=[-1,1],semantics='identical baseline proposals, before feedback')
+                    ownership=stats.owner_summary(),display_range=[-1,1],semantics='identical baseline proposals, before feedback',**fields)
                 path=folder/'sufficient-statistics.pt';torch.save(snapshot,path)
                 self.records.append(dict(step=stage,path=str(path),bytes=path.stat().st_size,sha256=sha(path)))
                 write(self.folder/'snapshot-inventory.json',dict(records=self.records,estimated_uncompressed_gib=2.5,

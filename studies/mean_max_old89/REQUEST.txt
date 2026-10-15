@@ -1,0 +1,370 @@
+Implement and execute the normalized-coefficient mean-max gradient experiment below.
+
+Repository: GesusMist/diffpano
+Branch: no_sphere
+Inspected revision: 57173be7a7e5cc7b22a17f4152ae69057026e6c8
+
+Work in the existing local checkout. Read repository instructions and inspect its
+revision, uncommitted changes, current jobs, and resource availability first.
+Preserve unrelated work and historical results. Do not reset the branch.
+
+This is an implementation-and-execution request, not just a plan. Implement the
+new guidance variant, validate it, prepare exactly 90 logical cases, submit only
+missing cases, and execute the existing DS/CS/IS evaluation and reporting workflow.
+Do not expand into the other weekly experiments.
+
+1. EXACT MATRIX AND PROMPTS
+
+The user supplied ELEVEN original prompt names, despite calling them ten. Keep
+all eleven. Together with four new prompts, there are FIFTEEN prompts:
+
+Original subset, in the requested order:
+  prompts/air_balloons.txt
+  prompts/aurora.txt
+  prompts/blossom.txt
+  prompts/clouds_over_grass.txt
+  prompts/firefly.txt
+  prompts/firework.txt
+  prompts/forest.txt
+  prompts/rock_mountain.txt
+  prompts/ruins.txt
+  prompts/underwater.txt
+  prompts/storm.txt
+
+New subset:
+  prompts/ournew/bamboo_grove.txt
+  prompts/ournew/lantern_market.txt
+  prompts/ournew/sailboat_marina.txt
+  prompts/ournew/tiled_courtyard.txt
+
+Use these exact full paths and their existing text. Preserve directional prompt
+handling, original/effective bytes and hashes. Use path-aware loading; do not
+redirect the four new files to prompts/<basename>.txt or alter historical prompt
+inventories. Missing/malformed inputs must be reported, not replaced or invented.
+
+For each prompt run:
+  reference_mode in {coarse_color, screened}
+  gradient_mix_alpha in {0.25, 0.50, 0.75}
+
+User-facing "lambda_blending" (also written "lamda_blending") means the current
+screened Poisson reference mode; it is NOT an additional mode or parameter sweep.
+
+Fixed for ALL cases:
+  backend = FLUX
+  camera layout = exact saved Old89
+  camera count = 89
+  projection = ERP
+  seed = 0
+  denoising intervals = 20
+  independent final refinement = explicitly disabled (last_fraction=0.0)
+  time travel = disabled
+  camera rotation/dynamic layout = disabled
+
+Total: 15 prompts x 2 reference modes x 3 mixing coefficients = 90 images.
+Each reference/alpha combination has 15 images; each prompt has six images.
+There are 66 images in the original subset and 24 in the new subset.
+
+No Uniform/Fibonacci, random cameras, other backends, additional seeds, single-
+pixel/global-mean reference sweeps, new SphereDiff runs, or single-patch diagnostic
+experiments. Endpoints alpha=0/1 are unit-test cases, not production rows.
+
+2. EXACT NEW GUIDANCE: COEFFICIENT NORMALIZATION ONLY
+
+Suggested canonical mode name: poisson_mean_max.
+Suggested independent parameter: gradient_mix_alpha.
+
+Do not overload fusion.alpha (used by existing RGB/DPA behavior), lambda_color,
+coarse_eta, or diffusion trajectory alpha coefficients.
+
+For each current view prediction i, inverse-project RGB into the common ERP grid
+using the existing warp. Let V_i be that contribution. For each oriented adjacent
+pixel pair e=(p,q):
+
+  d_i(e) = V_i(q) - V_i(p)  [signed RGB vector]
+  a_i(p) = valid_mask_i(p) * existing_center_weight_i(p)
+  s_i(e) = min(a_i(p), a_i(q))
+
+Use the existing same-source endpoint support/validity rule. Invalid endpoints
+must never create gradients or NaNs in valid output.
+
+Accumulate the existing weighted mean gradient:
+
+  g_mean(e) = sum_i s_i(e)*d_i(e) / sum_i s_i(e)
+
+Select the existing magnitude-max gradient:
+
+  i_max(e) = argmax_{i:s_i(e)>0} sum_c d_i,c(e)^2
+  g_max(e) = d_i_max(e)
+
+Use a stable camera-ID tie break. Copy the entire signed RGB vector from the
+selected source, not per-channel maxima. Geometric confidence determines valid
+support and mean weights; it must NOT multiply the max ranking or add a new gate.
+
+Construct:
+
+  g_alpha(e) = (1-alpha)*g_mean(e) + alpha*g_max(e)
+
+Apply separately to existing horizontal and vertical edge fields. Alpha is one
+fixed scalar for the entire run, all pixels, all denoising intervals, and terminal
+fusion. It is the MAX coefficient:
+
+  alpha=0.25 -> 75% mean + 25% max
+  alpha=0.50 -> 50% mean + 50% max
+  alpha=0.75 -> 25% mean + 75% max
+
+"Normalized-coefficient" means these two coefficients sum to one. Do not use
+unnormalized max+alpha*mean, per-edge unit-vector normalization, RMS capping,
+contrast enhancement, per-image energy matching, magnitude rescaling, clipping,
+softmax temperature, or adaptive alpha. Those are different experiments.
+
+Compute both statistics from the SAME current source predictions in one
+streaming pass. This mixes guidance BEFORE the Poisson solve, not two reconstructed
+images, two final PNGs, or outputs of separate model trajectories.
+
+Preserve the exact baseline weighted-RGB reference R, binary edge support M,
+pixel-unit finite differences, periodic longitude and open vertical boundaries.
+Keep accumulators and solves in FP32 outside autocast; FP64 is only for tiny
+numerical reference tests. No clamp during generation. Keep memory O(BCHW) in
+camera count; do not retain 89 full-resolution warped ERP contributions.
+
+3. TWO REFERENCE OBJECTIVES, UNCHANGED EXCEPT FOR g_alpha
+
+Define Egrad(I)=sum_e M(e)*||grad_e(I)-g_alpha(e)||_2^2.
+R is the complete ordinary weighted-RGB fusion of the CURRENT proposals at the
+current fusion stage, not a cached historical image or an unfinished accumulator.
+
+lambda_blending / screened:
+  minimize Egrad(I) + lambda_color*sum_p ||I(p)-R(p)||_2^2
+  lambda_color = 0.1
+
+coarse_color:
+  minimize Egrad(I) + coarse_eta*sum_b n_b*||B_b(I)-B_b(R)||_2^2
+  subject to avg_hw(I)=avg_hw(R) separately per image and RGB channel
+  coarse_eta = 0.1
+  coarse grid = 16 rows x 32 columns of nonoverlapping blocks
+  B_b is block-average RGB; n_b is the number of pixels in block b.
+
+Use the existing solvers and true operator/adjoint. Do not add a full-resolution
+RGB penalty to coarse_color or otherwise modify the objectives.
+
+Inherit the latest validated numerical policy consistently across prompts:
+  screened: rtol=1e-5, atol=1e-7, max_iterations=200
+  coarse_color: rtol=1e-4, atol=1e-7, constrained_max_iterations=400
+
+Record this mode-specific tolerance difference. Check the local checkout for any
+newer explicitly validated policy before freezing the manifest; do not silently
+change it. No per-prompt tolerance tuning or relaxed success criteria.
+Unconverged/nonfinite output remains failed, never successful RGB fallback.
+
+4. INTEGRATE WITH CURRENT CODE, NOT A NEW DENOISING LOOP
+
+Inspect and reuse:
+  diffpano/gradient_fusion.py
+  diffpano/poisson_reference.py
+  studies/gradient_blending/{operator.py,run.py,common.py}
+  studies/gradient_refinement/
+  studies/ournew_comparison/{configuration.py,runtime.py,common.py,evaluate.py}
+  studies/all_prompts/{audit.py,common.py,runtime.py}
+  studies/tt_cea/pipeline.py
+
+Add a focused suite such as studies/mean_max_old89. Retain the existing
+StudyPipeline/ExperimentalPipeline -> ordinary_run path and current-state,
+identity-preserving VAE bridge. Make the new guidance setting reusable rather
+than hardcoding it solely in a launch script.
+
+IMPORTANT current implementation traps to address explicitly:
+
+- GuidanceAccumulator currently ranks by magnitude only when mode=='poisson_max';
+  a new mode must not fall through to geometric-confidence ranking.
+- The current 'both' capture mode collects mean and CONFIDENCE-selected gradients,
+  not mean and max. It cannot supply the new mixture unchanged.
+- StudyCanvas.make_accumulator() can replace modes with 'both' during capture.
+  Ensure diagnostics do not silently change the actual guidance or lose max stats.
+- StudyCanvas's fixed-owner assertion currently excludes poisson_max only.
+  Mixed guidance's MAX component also has image-dependent ownership. Scope fixed-
+  geometry ownership checks to the appropriate confidence-selected modes; do not
+  impose them on max/mean-max or remove safeguards indiscriminately.
+- Add alpha to settings validation, public/study configuration, source records,
+  semantic identities, progress and terminal diagnostics. Do not silently accept
+  a requested alpha without passing it to the active operator.
+
+Preserve rgb, poisson_mean, poisson_select, poisson_max and old reference behavior.
+Maintain compatibility with historical metadata; new defaults must not relabel
+old cases as mixed-gradient results. Use explicit serialization/version handling
+where strict previous hashes/settings comparisons require it.
+
+Every intermediate fusion AND the final terminal fusion must use that row's
+exact alpha and reference mode. Record terminal settings and verify them.
+
+5. FIX GEOMETRY, NOISE AND ALL NON-ABLATION VARIABLES
+
+Inherit the actual prior FLUX20 Old89 model/configuration, not generic config.yaml
+or a Uniform89 configuration with a changed label:
+
+  ordered saved Old89 cameras, 80 x 80 degree FOV
+  perspective RGB = 1024 x 1024
+  ERP = 2048 high x 4096 wide
+  native latent geometry = existing FLUX setting
+  existing spherediff_center weights and temperature 0.1
+  existing standard warp/interpolation choices
+  existing checkpoint/revision, precision, guidance/negative conditioning
+  existing 20-step scheduler and endpoint/current-state reconstruction
+  existing GWTF initialization and native scaling
+  existing local identity-preserving VAE residual correction
+
+All six variants of a prompt must have identical camera, conditioning, schedule
+and initial-native-state hashes. Initial state differences between variants are a
+failure, not an acceptable consequence of changing alpha.
+
+Preserve Old89 noise-slot identities and deterministic integer IDs for gradient
+ownership. Check the mapping instead of replacing noise-slot labels casually.
+No additional random draws may enter guidance construction.
+
+Load each full prompt path through existing byte-preserving directional-prompt
+handling. Any documented single-line adaptation already required by the current
+loader must be recorded consistently; never invent new prompt wording.
+
+Require full pixel coverage and connected supported-edge graphs, using existing
+checks. Geometry-only checks may be cached safely. No extra cameras, synthetic
+edges or silent hole filling.
+
+Explicitly verify last_fraction=0.0, zero replays/time travel, and no hidden native
+refinement. Each 20-step trajectory has 20 coupled fusions plus one terminal fuse.
+
+Expected generation-region counts with current FLUX/Old89 setup:
+  denoiser = 1780
+  VAE encode = 3560
+  VAE decode = 1869
+  Poisson solves = 21
+
+Verify measured counters; do not just print expected values. Diagnostics must not
+introduce extra model/VAE calls or be hidden in generation-only timing.
+
+6. VALIDATION BEFORE THE 90-CASE LAUNCH
+
+Run focused CPU/unit tests, relevant existing regression tests, and a bounded
+GPU numerical/integration smoke. Required checks:
+
+- Alpha validation: finite scalar in [0,1]; invalid values fail clearly.
+- Alpha=0 reproduces existing poisson_mean guidance; alpha=1 reproduces existing
+  poisson_max guidance on identical inputs, within declared numerical tolerance.
+- Alpha=.25/.5/.75 match the stated arithmetic from the same contributions.
+- Identical sources remain unchanged; mixing does not create contrast gain.
+- Zero and opposite-signed gradients are handled correctly, including cancellation.
+- Max copies one signed RGB vector with stable ties and valid endpoint support.
+- Camera-order changes stay within baseline reduction tolerance; duplicating all
+  sources or scaling all positive confidences preserves the intended guidance.
+- Invalid-region NaNs and very small positive weights do not contaminate results.
+- Horizontal wrap, vertical boundaries, connected support, and tiny FP64 reference
+  reconstructions agree with the established operators.
+- Both reference modes receive the mixed field and their configured alpha at every
+  interval and terminal fusion, with correct measured call counts.
+- Diagnostics/capture enabled or disabled leave the numerical result unchanged.
+- Legacy modes and original anchor semantics remain reproducible.
+- Manifest has exactly 90 unique cases, 15 correct full prompt paths, six variants
+  per prompt, 15 per reference/alpha combination, all Old89/FLUX20/seed0/no-tail.
+
+No new full-generation endpoint controls. If a full-size trajectory is needed
+for smoke/first-result validation, use an actual matrix row and count it once.
+Freeze production settings before accepting that row for reuse. A tiny numerical
+smoke is not one of the 90 images and must not be mislabeled as such.
+
+7. EXECUTION, RESOURCE BUDGET, CACHES AND PRESERVATION
+
+Suggested output root:
+  outputs/mean-max-old89-flux90/seed0-v1/
+
+Case paths/keys must contain full prompt identity, reference mode, new gradient
+mode and alpha, plus semantic hashes including camera, noise, schedule, checkpoint,
+solver settings and disabled refinement. Suggested stable alpha labels:
+  alpha025, alpha050, alpha075.
+
+Treat all 90 as NEW trajectories unless an exact verified mean-max match already
+exists locally. Existing mean, max, select, RGB, Uniform89 or other-alpha outputs
+are not substitutes. Never create these images by blending cached final outputs.
+Reuse compatible historical controls only for optional labeled report comparisons,
+without adding new generation or claiming mismatched groups are controlled pairs.
+
+Preserve all historical 64/28/20-prompt results, source attribution, metrics,
+manifests, retry records and symlink targets. Create fresh gates for changed code;
+do not rewrite old hashes to make incompatible source checks pass.
+
+Do not edit shared code under active frozen jobs. Wait appropriately or use an
+isolated immutable checkout/worktree. Record the exact source used by each job.
+
+At 40 minutes/image, 90 images estimate to 60 GPU-hours, or approximately 30 hours
+of generation with two continuously available GPUs, excluding queue/setup/tests/
+evaluation/retries. This is a planning estimate, not a completion guarantee.
+Use the established Slurm account, partitions and model environments. Limit this
+suite to at most two simultaneous generation GPU jobs, accounting for unrelated
+jobs and current allocation. Do not cancel other work or obtain extra resources
+without authorization.
+
+Freeze the manifest and implementation after tests. Launch only missing rows;
+use atomic statuses, per-case locks, exact cache validation, active-job detection,
+explicit retries and resumable launch/status commands. Choose walltime using actual
+prior logs and the first valid mixed-guidance profile, not an optimistic 40-minute
+hard limit. Do not reduce resolution, steps, precision or scope silently.
+
+The previous wider weekly plan is superseded for this first experiment: do NOT
+also queue its extra camera comparison, single-patch study or RMS-cap sweep.
+
+Set up evaluation and reporting while generation runs, with appropriate scheduler
+dependencies and honest partial-status reporting. If blocked by compute/access,
+finish runnable code/manifests and give the exact blocker; do not claim submission
+or completion that did not happen.
+
+8. REQUIRED EVALUATION AND DELIVERABLES
+
+Actually run the existing frozen DS, CS and IS evaluator on these final results.
+Do not stop at writing evaluation scripts. Keep metric definitions, checkpoints,
+preprocessing, directional text association and view/split protocol unchanged.
+
+Required main counts:
+  90 per-image DS scores
+  90 per-image CS scores
+  6 matched collection-level IS scores, one per reference/alpha group on ALL 15
+    prompts, using the existing view/split procedure.
+
+Do not average per-image IS, pool different alphas/reference modes, mix old 20/21-
+prompt collections into these groups, or present unmatched aggregates as paired.
+Also provide descriptive subset summaries for the SAME 11 original prompts and
+SAME four new prompts. Compute any subset IS directly from that subset's features,
+not by averaging other IS values. Keep effective panorama/view counts explicit.
+
+Use factor-aware, suite-local caches keyed by image/prompt content and full
+method/protocol identity. Missing values remain null. Label partial evaluation
+provisional; refresh after completed retries. No new FAED/FID research or checkpoint
+recovery is required for this task.
+
+Save:
+  manifest.json and resolved per-case configurations/status/provenance
+  final.png and unclamped FP32 final ERP for each case
+  terminal ordinary RGB reference, labeled as THIS trajectory's reference
+  measured counts, stage/generation/solver times, peak memory, convergence,
+    correction statistics, raw range/outliers and mean-color diagnostics
+  evaluation/per_image_scores.csv
+  evaluation/summary_scores.csv
+  evaluation/subset_scores.csv
+  evaluation/metrics.json and metric_protocol.json
+  report.md and a six-row LaTeX table
+
+Main table:
+  Reference | Max coefficient alpha | N | DS down | CS up | IS up | Time
+
+Make one six-panel comparison for every prompt:
+  top row: screened/lambda_blending at alpha .25, .50, .75
+  bottom row: coarse_color at alpha .25, .50, .75
+
+Use the same exposure/PNG conversion and fixed perspective/detail/seam crops.
+Do not normalize contrast separately. Report sharper edges together with noise,
+double edges, halos, color drift and seams; greater high-frequency energy alone
+is not evidence of improvement.
+
+The study is complete only after 90 valid images, 90 DS, 90 CS and six complete
+15-prompt collection IS scores, or an explicit report of unresolved failures.
+
+Finish by reporting changed files, exact formula/defaults, tests actually passed,
+manifest counts, completed/reused/failed/pending cases, actual job IDs, paths and
+reproduction/resume commands. Distinguish observations from hypotheses. No extra
+production configurations are authorized by this request.
