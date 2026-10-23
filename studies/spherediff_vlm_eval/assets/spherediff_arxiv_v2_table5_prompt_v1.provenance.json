@@ -1,0 +1,39 @@
+{
+  "asset": "spherediff_arxiv_v2_table5_prompt_v1.txt",
+  "asset_sha256": "c7899680c0aafdc76c05389e869b11d3f8e3435c73382ce8bea1b86c21e83540",
+  "source_title": "SphereDiff: Tuning-free 360° Static and Dynamic Panorama Generation via Spherical Latent Representation",
+  "authors": [
+    "Minho Park",
+    "Taewoong Kang",
+    "Jooyeol Yun",
+    "Sungwon Hwang",
+    "Jaegul Choo"
+  ],
+  "source_url": "https://arxiv.org/pdf/2504.14396v2",
+  "source_abstract_url": "https://arxiv.org/abs/2504.14396v2",
+  "arxiv_version": 2,
+  "version_date": "2025-11-13",
+  "table": "5",
+  "prompt_pdf_page": 17,
+  "preprocessing_appendix": "F.2",
+  "preprocessing_pdf_page": 19,
+  "source_pdf_sha256": "ff25a1a7a6ed9c71a799a8ad09ebaa7b8f9d5f27ac1f8e8b43553fcf455ec39e",
+  "source_pdf_bytes": 6827723,
+  "license": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "license_evidence": "arXiv v2 abstract page view-license link points to https://creativecommons.org/licenses/by/4.0/",
+  "verification_date": "2026-10-16",
+  "verification_status": "exact_published_wording_verified",
+  "verification_methods": [
+    "Read arXiv v2 Table 5 and Appendix F.2 using browser PDF text extraction",
+    "Visually inspected local renders of PDF pages 17 and 19 after browser screenshot errors",
+    "Asserted whitespace-insensitive text asset equals locally extracted Table 5 body"
+  ],
+  "text_normalization": "Retained all words, punctuation, Unicode arrow, rating scale, criteria, instructions and {image} placeholder; normalized PDF line wrapping, bold styling and spacing around arrows; added terminal newline. Table heading/caption excluded.",
+  "changes": "Formatting normalization only; no wording changes. Camera order, 512px resolution and pole yaw0 are fixed implementation choices; F.2 specifies the 14 camera directions and 90-degree FOV.",
+  "screenshots": {
+    "spherediff_arxiv_v2_page_17.png": "7ae551c41334400bebd4a2d0ef7535f20cff912a97609a8c489f4280b3b4f2a7",
+    "spherediff_arxiv_v2_page_19.png": "8f3281d7b85cfed80dcb60bb2e6051ad074b7b689d791abf477d98ad5fe8fbca"
+  },
+  "attribution": "Evaluation prompt and paper-page images © the SphereDiff authors, reproduced under CC BY 4.0. This reproduction is not endorsed by the authors."
+}

@@ -1,0 +1,14 @@
+You are an evaluator assessing an image generation model based on a single image at a time. Your evaluation is based on the following four criteria:
+1. Image Quality: Assess the overall quality of the image.
+2. Aesthetic Appeal: Evaluate how visually pleasing the image is.
+3. Distortion Level: Determine whether the image appears distorted. If it does not resemble a photo taken with a normal camera, it will receive a lower score.
+4. Connectivity: Check if the middle of the image appears disconnected. If there is a noticeable break, the score will be lower.
+Each criterion is rated on a five-point scale: Excellent (5), Good (4), Fair (3), Poor (2), and Awful (1).
+You will receive one image at a time. For each criterion, provide a concise reason for the score before listing the rating.
+Format your response as follows:
+- Image Quality: (Brief reason) → Score
+- Aesthetic Appeal: (Brief reason) → Score
+- Distortion Level: (Brief reason) → Score
+- Connectivity: (Brief reason) → Score
+{image}
+Please evaluate the image with the given criteria.

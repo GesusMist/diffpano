@@ -1,0 +1,11 @@
+SphereDiff Table 5 prompt and PDF page images
+
+Authors: Minho Park, Taewoong Kang, Jooyeol Yun, Sungwon Hwang, Jaegul Choo.
+Source: https://arxiv.org/pdf/2504.14396v2
+License: Creative Commons Attribution 4.0 International (CC BY 4.0).
+https://creativecommons.org/licenses/by/4.0/
+
+The prompt preserves published wording. PDF line wrapping, bold styling, and
+spacing around arrows are normalized to plain text; a terminal newline is added.
+Page images are raster renders of the source PDF. No endorsement is implied.
+See spherediff_arxiv_v2_table5_prompt_v1.provenance.json for hashes and checks.
