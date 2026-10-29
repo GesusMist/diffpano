@@ -1,0 +1,432 @@
+DIFFPANO: SINGLE CODEX MASTER PROMPT
+Nima project | 26 October 2026
+Repository: https://github.com/GesusMist/diffpano/tree/no_sphere
+Last inspected revision: f9b321a0fa8877c1eec3d94d120e1fa609da6fa2
+
+ONE TASK: IMPLEMENT, EXECUTE, AND REPORT
+Treat this entire document as one implementation-and-execution request. Read it completely before starting. The six phases below are internal parts of this assignment. Advance automatically as their dependencies are satisfied; do not ask me to paste the next phase or repeatedly approve work already authorized here.
+
+Start with Phase 1. After the inventory, protocol registry and shared interfaces are established, implement Phases 2, 3 and 4 concurrently where safe, using disjoint file ownership and one shared resource/budget ledger. Evaluate existing outputs immediately. Launch Phase 5 after its required configuration and dataset manifests are frozen, without waiting for unrelated blocked metrics. Evaluate new outputs incrementally as they finish. Maintain a partial report throughout and finalize Phase 6 with the available evidence.
+
+Maintain durable progress in the versioned paper_eval_v2 run directory: dependency graph, selected generation tier, protocol decisions and hashes, exact case IDs, artifact locations, scheduler IDs, API ledger, completed/failed/pending states, and next executable actions. Use atomic updates and locking for shared mutable state. Save a concise RESUME.md with the exact implemented CLI commands. Keep protocol decisions and scientific state out of conversational memory alone.
+
+At every restart, reconcile saved state with actual artifacts and scheduler/accounting evidence. Continue from the first unmet dependency and reuse valid results; do not restart whole phases, duplicate jobs, or rebill cached requests. Keep job submission, output verification, scoring and reporting as separate completion states.
+
+The execution and research scope are already authorized by this request. Continue every unblocked task while respecting actual permissions, allocations and configured API caps. If credentials, credits, compute access, a dataset or a checkpoint are missing, isolate that dependency and finish independent work. A waiting scheduler job or missing human rating must remain explicitly pending. If the interactive session ends, leave resumable jobs and exact restart commands; do not claim the assistant will continue operating after that session or that queued jobs have completed.
+
+Use the core generation tier by default. Combining all six phases into one request does not select every optional experiment. Select full only when I explicitly request full, or the saved user-selected run configuration already specifies it. Preserve that selection on resume.
+
+
+The user explicitly wants GPT-4o and GPT-6 Sol through OpenRouter for Group 3. GPT-4o is the predeclared primary judge; GPT-6 Sol is the secondary judge. Do not replace either with Qwen or another model.
+
+Runtime environment:
+  OPENROUTER_API_KEY
+  OPENROUTER_EVAL_BUDGET_USD
+  OPENROUTER_EVAL_MAX_REQUESTS
+
+The last two variables are user-configured cumulative limits covering the entire evaluation run, both judges, pilots, repeats, caption calls if any, retries, and uncertain attempts. No additional permission dialogue is needed once the key and positive limits are provided. With missing credentials or limits, complete preparation and every independent task, and leave only paid execution pending. The user-managed private credential file described below is allowed. Never print the key or persist it in repository files, logs, reports, manifests, caches, command arguments, scheduler submission text, or task state.
+
+PRIVATE OPENROUTER CONFIGURATION
+The user will save a private shell environment file on the execution host at:
+  $HOME/.config/diffpano/openrouter.env
+An explicitly supplied DIFFPANO_OPENROUTER_ENV_FILE may override this path. Use the actual execution account's HOME; do not assume GRACE and FASTER share it. Directory mode should be 700 and file mode 600. Do not create a symlink to an unverified shared location.
+
+The file contains only these user-configured exports:
+  OPENROUTER_API_KEY
+  OPENROUTER_EVAL_BUDGET_USD
+  OPENROUTER_EVAL_MAX_REQUESTS
+
+The actual evaluation launcher must load this file privately before starting the client. Do not rely on an already-running VS Code extension or a separate batch job inheriting a later terminal export. Support equivalent already-set environment variables when the private file is absent. Evaluator code reads credentials from OPENROUTER_API_KEY.
+
+Disable shell tracing before sourcing the trusted user-owned file. Do not cat, head, print, log, or otherwise expose its contents in the agent transcript. Programmatic loading without displaying the value is permitted. Do not run env/printenv/set dumps or log authorization headers/full client settings. Verify only file accessibility/permissions, key presence and positive numeric limits. Do not change or replace the user's key.
+
+For Slurm, include the private file path/loading step in the evaluation job wrapper, not the literal secret in job scripts, sbatch command arguments or submission metadata. Have only API workers load it. Verify the file is available on the execution host; report a localized configuration blocker if it is absent. Do not upload or commit this file with project artifacts.
+
+Generation tiers:
+  core: 24 fresh scenes x 3 methods = 72 ERPs
+  seeds: 8 preselected scenes x 1 extra seed x 3 methods = 24 ERPs
+  trained: DiT360 on the same 24 fresh scenes = 24 ERPs
+  generality: 8 scenes x 2 seeds x 2 SANA methods = 32 ERPs
+  full: all four tiers = 152 ERPs
+These are nominal new-study slots before valid reuse; missing development cases are additional and must be enumerated. Native-reference generation is separate: two banks x 24 development scenes x 5 directions = 240 ordinary perspective images. The fresh real confirmation set is a different cohort and does not implicitly trigger another native-reference bank.
+Default to core. Implement and manifest every extension; launch extensions when their tier is selected. This preserves the earlier distinction between required and optional experiments.
+
+======================================================================
+PHASE 1 — AUDIT, FREEZE THE PROTOCOL, AND BUILD THE EXECUTION MANIFEST
+======================================================================
+
+Work in the existing GesusMist/diffpano project, branch no_sphere. This task is implementation and execution, not just a proposed plan. Build a reproducible publication evaluation workflow, reusing existing scientific code and valid outputs. Preserve the user's current work.
+
+Read AGENTS.md and relevant repository instructions. Locate the actual checkout, output symlink, shared SCRATCH, generation and evaluation environments, available GPU allocations, active jobs, and migration mappings. Do not assume /home/shig is the correct current location. The last inspected revision was f9b321a0fa8877c1eec3d94d120e1fa609da6fa2; record actual HEAD and local modifications instead of resetting to that revision.
+
+Shared rules for all six stages:
+- Keep historical PNGs, metadata, configurations, source freezes, scores, and manifests immutable.
+- Never rewrite an old hash to make historical evidence pass a new code check. Verify an old output against its actual saved execution evidence and compatible scientific settings.
+- If current jobs depend on frozen source, implement in an isolated checkout/worktree. Preserve dirty work; do not reset, discard, or silently stash it.
+- Prefer a new studies/paper_eval_v2 package and a versioned outputs/paper-eval-v2 run directory. Extend existing readers/renderers/metrics instead of creating conflicting duplicate implementations.
+- Freeze relevant scientific files before generation. Subsequent report changes must not modify files frozen by active jobs.
+- Use compute allocations for heavy CPU/GPU work. Share one global limit of at most two generation GPUs plus one evaluation GPU across all launchers, counting standalone-reference generation as generation. Respect stricter actual cluster limits.
+- Make jobs finite, resumable, and idempotent. Record submissions before retrying; reconcile ambiguous submissions with scheduler/accounting data. Do not resubmit completed work.
+- Run meaningful targeted checks for provenance, geometry, numerical correctness, caching and accounting. Do not launch unrelated exhaustive test grids.
+- Continue independent work when a dataset, model, checkpoint, key or budget is unavailable. Missing data stay missing, never zero.
+- Do not send emails/messages, contact authors, publish a site, or push/merge remote changes.
+
+Inspect:
+studies/panorama_metrics
+studies/gradient_score_refresh
+studies/layout24
+studies/perspective24
+studies/followup24
+studies/mean_max_old89
+studies/standalone_fid
+studies/standalone_fid_five
+studies/standalone_fid_max
+studies/spherediff_vlm_eval
+studies/faster_uniform_resume
+studies/refinement28 and refinement28_resume
+studies/report1023_comparisons
+diffpano/conditioning.py
+and their actual output manifests.
+
+Audit real files, rather than trusting expected counts in source:
+1. Resolve the exact 20+4 canonical prompt paths from the existing manifest/module, and the 11+4 mean-max subset. Preserve five-line text, original/effective hashes, aliases, and subset membership. Do not infer prompt identity from basename alone.
+2. Inventory the nine layout24 variants and the additional mean-max/refinement studies. Record method, checkpoint identity, seed, schedule, step count, camera bank and count, FOV, local/ERP dimensions, noise, fusion, reference, alpha, solver tolerance, refinement, source revision, image hashes, completion evidence and runtime.
+3. Verify the historical claim of 120 logical standalone slots and 85 unique PNGs. Record duplicate aliases and prompt-line multiplicities; do not delete or regenerate old images.
+4. Distinguish the five-view and twenty-view native-reference FID pipelines, and the 15-scene versus 24-scene cohorts.
+5. Locate and validate the saved 4,260-image SUN360 manifest/cache. Identify its actual release and split.
+6. Classify every case as complete, missing, invalid, ambiguous or configuration-incompatible, with reasons.
+
+Create a machine-readable protocol registry:
+- legacy: exact historical definitions, untouched.
+- common_v2: ERP width 2048, height 1024; one fixed periodic-longitude resampling implementation; eight 90-degree 512-square horizontal views for ordinary crop metrics and fourteen 90-degree 512-square views for VLM/MUSIQ. Record native output resolution and any upsampling; do not imply upsampling creates native detail.
+- native_five_v2: sample the original native ERP using yaw 0 and pitches +90,+10,0,-10,-90, 80-degree FOV, 1024-square views, one view per pole. Record source ERP dimensions. This measures native system output fidelity, including resolution effects. A common-ERP-resolution sensitivity result must have a separate protocol ID.
+- faed_rgb: the verified checkpoint's required full-ERP preprocessing.
+Cache identities must include all relevant rendering, feature-model and scoring settings. Never reuse a cache solely because filenames or metric names match.
+
+Freeze development cohorts with explicit IDs: development15 is the common 15-scene fusion comparison, and development24 is the 24-scene main development set. Name the later fresh real-scene cohort confirmation24; never interchange these identities. Primary candidates are official SphereDiff FLUX20, Old89 RGB, screened poisson_select Old89, and screened poisson_mean_max Old89 alpha 0.50. In this code alpha is the maximum-gradient coefficient. Treat other alpha/reference/camera/refinement variants as labeled ablations, not interchangeable primary rows.
+
+Produce:
+docs/paper_eval_v2_plan.md
+protocol_registry.json
+inventory.csv and provenance_audit.json
+cohorts.json
+missing_cases.csv
+generation_plan.json
+resource_plan.json
+status.json
+
+The plan must expose exact expected and reusable counts, metric direction/units, primary versus secondary outcomes, judge identities, generation tiers, and all localized blockers. Add a resumable CLI for inventory, prepare, evaluate, launch, status and report. Finish the audit and runnable scaffolding now; do not stop at a to-do list.
+
+======================================================================
+PHASE 2 — GROUP 1: DS, IS, CS, MUSIQ, AND PAIRED STATISTICS
+======================================================================
+
+Continue from the saved paper_eval_v2 plan and protocol registry. Implement and run Group 1 on every currently valid relevant output; export partial coverage without inventing complete comparisons. Reuse compatible cached features.
+
+DS:
+- Preserve and label the existing first-order Scharr adaptation, including normalized grayscale, kernel, c=0.1, last-three/first-three seam strip and vertical boundary convention.
+- Reproduce historical native-4K results in a legacy namespace. Compute the new common_v2 DS separately; do not mix resolutions in one column.
+- Keep wrap position fixed. Do not rotate outputs to minimize DS.
+- Verify seam response using simple analytic/controlled images, including constant images, a deliberately broken boundary and blur. Explain that DS measures wrap discontinuity and may favor smoothness.
+- Keep Seam-SSIM and Seam-Sobel as supplementary diagnostics. The current Sobel statistic measures edge-adjacent texture gradients, not complete geometric consistency.
+
+CS:
+- Preserve historical ViT-B/32, 100-times-raw-cosine normalization, eight horizontal views, middle-line assignment, polar diagnostics and long-text handling.
+- Freeze separate IDs for common_v2 scores or any new text policy.
+- Produce CS-H, CS-north, CS-south and CS-polar.
+- Add directional CS on the fourteen-view bank with deterministic assignment to the five prompt bands. Average within each band before averaging the five bands.
+- Use the same canonical scoring descriptions for all methods; never tailor scoring captions after seeing outputs. Record tokenization and any truncation/chunking.
+- Keep generation prompts distinct from short scoring descriptions.
+
+IS:
+- Use the existing pinned Inception-compatible extractor and one collection-level score with the frozen split policy.
+- Do not average per-image IS. Do not pool different ablation methods.
+- Mark tiny four-scene collections descriptive. Split/subset variation is not the confidence interval for a method comparison.
+
+MUSIQ:
+- Add a verified pretrained MUSIQ evaluator, with pinned code/weight identities and exact preprocessing.
+- Run on the same fourteen common_v2 views; report overall and polar means.
+- Preserve the model's native score scale. If its weights are unavailable, record that blocker and complete the remaining metrics.
+
+Statistics:
+- Average views inside each panorama, then seeds inside each prompt, then prompts equally.
+- Use a fixed-seed paired prompt-cluster bootstrap, 2,000 replicates, for means and method differences. Resample the same prompt IDs across compared methods. Retain all within-prompt observations together.
+- Report mean differences, 95% intervals, sample counts and per-prompt distributions. Do not treat crops as independent scenes.
+- Freeze the primary comparisons and outcomes before ranking methods; present additional tests as exploratory.
+- Report failed/missing coverage per method. Compute a comparison only on an explicitly identified common cohort.
+
+Run targeted regression checks against a small historical cached subset, validating exact legacy reproduction within documented numerical tolerances. No diffusion generation is needed in this stage.
+
+Deliver per_view_metrics, per_panorama_metrics, group_metrics, paired_comparisons, coverage/failure tables, protocol hashes, a concise interpretation report and LaTeX tables. Label development-set results as development evidence and do not select a final configuration solely by the lowest DS.
+
+======================================================================
+PHASE 3 — GROUP 2: NATIVE REFERENCES, REAL DATA, FID/KID/OMNIFID/FAED
+======================================================================
+
+Continue from paper_eval_v2. Implement both native-model distribution preservation and real-panorama distribution evaluation, with separate names and reference manifests. Complete every available computation and localize unavailable checkpoints.
+
+A. Repair native references
+- Preserve the historical 120 logical/85 unique audit and all old scores.
+- For each comparison, match reference scene identities and directional weights to the evaluated cohort. A 15-scene comparison uses its 75 directional slots per reference bank, not references from all 24 scenes.
+- Generate two fresh banks A and B for development24, each with 24 scenes x five directions = 120 standalone FLUX images; total 240 ordinary images. Derive development15 references from those banks. These banks are not references for confirmation24; do not add another 240-image bank automatically.
+- Use the existing native standalone runner with the verified FLUX20 checkpoint/schedule/conditioning and one terminal decode. No panorama coupling, VAE bridge, Poisson operation or refinement.
+- Derive distinct deterministic seeds from canonical prompt identity, direction index and bank identity using a stable hash. Save the seed map and check collisions. Do not reset all images to seed 0.
+- Preserve equal scene-direction weights. Record exact duplicates without deleting valid draws or pretending that uniqueness proves independence.
+- Execute through the shared generation budget and resume completed native cases.
+- Use bank A as primary, bank B as reference-sampling sensitivity, and A-versus-B as a native-to-native diagnostic. Do not subtract the latter from method FID. Any pooled A+B result needs a separate label.
+- Render generated panorama samples with native_five_v2. Record that native text-to-image references have no guaranteed physical 80-degree FOV and that equal seeds do not imply aligned ground truth.
+
+B. Prepare the fresh real-panorama benchmark
+- Prefer ODI-SR obtained through the official LAU-Net release linked by SpheRoPE.
+- Validate downloaded file identities, dimensions, source split and duplicates. A published link is not proof of successful acquisition.
+- If ODI-SR cannot be obtained, use the existing verified SUN360 release, naming its actual split. Choose this fallback before generation/scoring; never switch datasets because scores look better.
+- Build a deterministic 24-scene set named confirmation24, targeting six indoor and eighteen outdoor scenes, and preselect eight of these for a second seed. Use scene metadata/content, not model outputs, for selection. Prevent repeated captures of the same scene where identifiable.
+- Call it our ODI-SR-24 or SUN360-24 subset. Do not call it the original dataset's official 24-image test split or claim exact replication of another paper's full benchmark.
+- Keep these scenes outside development/model-selection work.
+
+For every real scene, create:
+1. A global generation description preserving essential scene facts.
+2. Five image-grounded directional descriptions using the existing prompt-band convention.
+3. Short canonical scoring descriptions compatible with the frozen CLIP policy.
+Do not duplicate the same caption five times. Avoid inventing objects, and avoid claiming an object appears at every yaw when observed in only one. Freeze original captions, conversion rules, hashes and a review contact sheet. Use an available local captioner or GPT-4o through the same bounded OpenRouter ledger; do not add a separate untracked API bill.
+
+C. Implement distribution metrics
+- Use the same pinned Inception feature extractor and exact preprocessing on both sides.
+- FID-real/KID-real use eight fixed horizontal common_v2 views from both real and generated ERPs.
+- FID-native/KID-native use the declared native_five_v2 comparison. Never mix the two reference types in files, columns, or rankings.
+- Retain full feature dimensionality and numerically stable float64 statistics. Do not use arbitrary PCA merely to lower FID.
+- Freeze KID kernel, subset count/size, RNG and units. Preserve finite negative estimates.
+- Keep the existing correct OmniFID: average four horizontal feature vectors within each panorama, calculate horizontal/up/down FIDs, then average the three distances. Do not replace it with pooled horizontal crops or six separately averaged FIDs.
+- Implement prompt-cluster bootstrap differences, recomputing collection metrics inside each replicate. Resample matched methods and their condition-linked references consistently. A fixed large reference distribution and a jointly sampled paired reference set are different estimands; identify which each result uses.
+- Label compact FID/KID/OmniFID exploratory. More crops do not create more independent scenes; ordinary KID unbiasedness does not directly follow for dependent crop samples. Subset SD is not comparison uncertainty.
+- Use efficient exact low-rank/cached feature calculations. If full distribution bootstrap exceeds the configured CPU allocation, report the achieved replicate count and unfinished uncertainty rather than inventing intervals or substituting crop-level independence.
+
+D. Conditional metrics
+- Try to recover the official PanFusion RGB FAED checkpoint from its documented source or a verifiable existing local copy. Record hash, architecture, provenance and expected preprocessing.
+- FAED uses full real/generated ERPs with the correct latitude-weighted encoder features, not generic CLIP/VAE embeddings.
+- If unavailable, keep FAED blank with a checkpoint blocker; do not retrain an encoder automatically in this stage.
+- Check the official PanoDecouple release for Distort-CLIP/Distort-FID. Implement only if verified code and weights exist. Otherwise leave pending, without substituting standard CLIP-FID.
+- Do not request gated dataset access or contact authors on the user's behalf.
+
+Deliver native_reference_manifest, reference_seed_map, real_dataset_manifest, captions, real features, available native scores, metric status, numerical validation and paper-ready tables. Fresh real-method scores will be filled incrementally after Phase 5; finish all preparation and existing-output results now.
+
+======================================================================
+PHASE 4 — GROUP 3: GPT-4o AND GPT-6 SOL THROUGH OPENROUTER
+======================================================================
+
+Implement and execute a dual-judge VLM study, extending the existing studies/spherediff_vlm_eval workflow and the new paper_eval_v2 registry.
+
+User decision:
+- Primary judge: GPT-4o, exact requested OpenRouter model openai/gpt-4o.
+- Secondary judge: GPT-6 Sol, exact requested OpenRouter model openai/gpt-6-sol.
+- Read credentials from OPENROUTER_API_KEY after the private loading procedure above.
+- Keep all legacy results and the original published SphereDiff prompt asset intact.
+- Do not substitute Qwen, GPT-6.1, another GPT-6 variant, or a different model.
+
+1. Discover and freeze API capabilities
+Use https://openrouter.ai/api/v1/models and each requested model's endpoints metadata. Verify exact IDs and image input in architecture.input_modalities. Save timestamped relevant catalog entries, canonical slug, endpoint tag, pricing and supported parameters. Do not interpret supports_image_reference as the image-input capability flag.
+
+The GPT-6 Sol canonical slug observed during planning was openai/gpt-6-sol-20260922. Treat canonical_slug as provenance, not automatically a valid model ID. Use a dated API ID only if independently verified as routable. Do not claim immutable snapshot pinning when the provider exposes only an alias.
+
+Prefer the discovered standard OpenAI provider endpoint for each model, with explicit routing restrictions, allow_fallbacks=false and require_parameters=true. Do not silently change provider/service tier on failure. Record returned provider/model and reconcile available generation metadata. Model or provider drift must not silently share a statistical run.
+
+2. Implement model-specific requests
+Use the OpenRouter-compatible Chat Completions endpoint at https://openrouter.ai/api/v1/chat/completions. Send one PNG viewport per request using a base64 data URL, plus the frozen rubric. Send no method names, source filenames, generation settings, previous ratings or competing images. No tools, web search, or other optional paid capabilities.
+
+GPT-4o: retain temperature=0, top_p=1 and seed=0 only where the selected endpoint supports them. Start with the existing 700-token output ceiling.
+GPT-6 Sol: do not copy temperature/top_p from the old client; they are absent from its current supported-parameter list. Freeze reasoning effort medium, seed=0 if supported, and start the pilot with a 4096-total-completion-token ceiling that accounts for reasoning. Map parameter names to the actual endpoint's supported schema. Request only short visible score explanations; do not request hidden reasoning.
+Pilot truncation may justify a documented token-ceiling change before production protocol freeze. Do not change settings midway through a scored production cohort.
+
+3. Freeze one shared rubric for the two judges
+Preserve the original SphereDiff prompt and any prior scores as legacy. For this new run, create a clearly named nima_four_criteria_v2 adaptation used identically by both models, with:
+- Image quality: visible detail, blur, noise, exposure, and rendering artifacts.
+- Aesthetic appeal: composition and visual appeal, separate from physical realism.
+- Geometric distortion: unnatural deformation, stretching and inconsistent proportions in the perspective view. Do not lower geometry solely because content is artistic or imaginary.
+- Local continuity: visible tears, misaligned/doubled structures and abrupt texture/lighting transitions that are not natural object boundaries.
+
+Use integer scores 1 through 5, all higher-is-better, with explicit severity anchors and one brief visible justification per criterion. Freeze exact rubric text, output schema and parser before production. Use the same structured schema if supported by both endpoints; otherwise use the same strict text format. This is an adaptation, not a claim of reproducing SphereDiff's exact numeric scores. Do not tune wording based on which model favors our method.
+
+4. Render and identify the input cohort
+Use common_v2: 14 perspective views at 90-degree FOV and 512x512, yaw 0/90/180/270 at pitch -45/0/+45, plus one view per pole.
+Validate seam/pole conventions with analytic patterns. In the existing convention yaw180 centers the ERP wrap seam; verify this before labeling the seam subset.
+Cache exact rendered bytes once and feed identical bytes to both judges. Evaluation cameras are independent of generation cameras.
+
+Start on the complete paired 15-scene fusion cohort: SphereDiff FLUX20, RGB, screened select, screened mean-max alpha0.50. Extend to the valid 24-scene primary cohort and later fresh outputs without rerunning identical requests.
+Expected unique requests before pilots/repeats:
+  15 scenes x 4 methods x 14 views x 2 judges = 1680
+  24 scenes x 4 methods x 14 views x 2 judges = 2688
+Calculate actual unique counts after cache and cohort resolution; do not add these overlapping cohorts blindly.
+
+5. Calibrate before final scoring
+Create a small fixed real-viewport calibration set separate from the confirmation benchmark, with five severity levels of seam displacement and geometric warp, plus blur/noise and geometry-preserving style/content controls where available. Use precise deterministic image operations, save their parameters, and do not use generated outputs to choose favorable corruption examples.
+Check image transmission, valid-score rate, corruption sensitivity and style confounding.
+Retain both requested judges regardless of which produces a more favorable method ranking. If calibration exposes a problem, report it and fix a demonstrable protocol/implementation error before freezing; do not conceal disagreement.
+Preselect a small repeatability subset, e.g. 5% of production image identities, before scores are known. Repeats have their own replicate IDs and count toward the same budget. Primary statistics use the first valid planned observation; repeats diagnose variability rather than selecting the best score.
+
+6. Execute within one persistent budget
+Require positive OPENROUTER_EVAL_BUDGET_USD and OPENROUTER_EVAL_MAX_REQUESTS. These are cumulative run-wide caps, not per-process/per-model allowances. If missing, finish discovery, rendering, calibration asset creation, mock tests, cost estimates and reports; mark paid calls pending.
+Once key and limits exist, this prompt authorizes the pilot and production execution within those bounds without another confirmation question.
+
+Use a locked persistent ledger. Reserve a conservative maximum before each request, including image/input charges and the full permitted output/reasoning budget; reconcile actual usage.cost and usage details. Use current selected-endpoint pricing rather than legacy hardcoded GPT-4o prices. No assumed cache discounts.
+Predeclare balanced execution ordering across judges and methods. Interleave both judges per image and finish all required methods/views for one prompt before starting the next. Preflight and reserve sufficient remaining cost/request allowance for the complete paired prompt block, with valid cached requests deducted; a reservation is released or reconciled as the block completes. Do not exhaust the budget on one judge first. An interruption may still leave partial records; retain them, report coverage and resume the same block before starting new ones.
+Record all attempts, including billed failures and ambiguous timeouts. Reconcile known generation IDs with OpenRouter generation metadata; do not repeat a generation merely to recover usage.
+Apply bounded retries for transient errors and honor Retry-After. Authentication/credit/permission failures should pause the affected execution. Check JSON errors even on HTTP200.
+No automatic retries for valid low scores. Refusal, invalid parsing, truncation and out-of-range values remain explicit failures; never convert them to zero or overwrite a valid result.
+Limit total API concurrency conservatively across both judges, initially two. Stop cleanly at either cap and produce an exact resume command.
+
+7. Cache and aggregate correctly
+Cache identity includes image hash, complete rubric/schema hash, view/renderer identity, model/canonical metadata, provider restriction, decoding/reasoning parameters, seed, token limits and protocol hash.
+Persist sanitized request metadata, raw final response, parsed scores, model/provider/request IDs, usage/cost and error state. Never serialize credentials or authentication headers.
+Use all-view image quality, aesthetics and distortion; polar distortion separately; and wrap continuity from the verified seam-centered pitch -45/0/+45 views. All-view continuity is a separate diagnostic.
+Average views within panoramas and seeds within prompts, then equal-weight prompts; bootstrap paired prompt clusters.
+Produce separate GPT-4o and GPT-6 Sol tables. On their common completed cohort report rank agreement, score agreement, paired-method ordering and concrete disagreement examples.
+Never average the judges into one score, fill one judge's failure with the other's result, or compare these numbers directly with historical published GPT-4o tables.
+
+Run mocked offline checks for payload construction, supported-parameter filtering, parsing, cache separation, crash/resume, ledger concurrency and budget enforcement, then the bounded real pilot.
+Deliver raw responses, view/panorama/group tables, paired intervals, judge-agreement report, failure coverage, cost ledger, reproducible CLI and updated overall status.
+
+======================================================================
+PHASE 5 — COMPLETE MISSING GENERATION AND ADD THE COMPARISON METHODS
+======================================================================
+
+Continue from the frozen paper_eval_v2 plan. Implement all required baseline adapters and finite launch manifests, then run the selected generation tier within the established allocation. Reevaluate completed outputs incrementally with Phases 2-4. Do not stop after writing launch scripts.
+
+Default tier is core. Enable seeds, trained and generality separately or select full. Expose the complete nominal bill:
+core72 + seeds24 + trained24 + generality32 = 152 ERP slots, before valid reuse and additional enumerated missing development cases.
+The two fresh native-reference banks are 240 ordinary perspective-image slots and share the generation queue. Do not silently add old24 runs of every new baseline or another full factorial.
+
+A. Freeze the final method using development evidence
+Use the matched 15/24-scene development results and actual runtime/memory. Keep the components and alpha/reference variants explicit.
+Choose a fixed final configuration through a documented rule considering perceptual quality, geometry, semantics and cost; never choose solely by DS or by the judge that favors us.
+If results do not identify one winner, carry the predeclared primary screened-select configuration into confirmation, report the ambiguity, and leave mean-max as an ablation. Do not use confirmation results to choose alpha or cameras.
+Record whether refinement is included. If the selected method is refined, keep the unrefined core-fusion comparison and explicitly account for the refinement budget.
+
+Complete only the missing development cases required for the chosen final configuration. For example, an existing15-scene final variant needs at most nine additional scene slots to cover the established24 set if all15 are valid. Do not extend every alpha/reference mode automatically.
+
+B. Add and validate baselines
+- SphereDiff: reuse verified official FLUX20 development outputs. For fresh scenes use the original algorithm, representation, cameras, noise and decoding; preserve relevant author-default settings. Keep FLUX28 as a separately labeled control where available.
+- SpheRoPE: use official https://github.com/orhir/SpheRoPE, pin code and base weights. Use FLUX.1 for the main comparison. The primary quality setting is ERP2048x1024 and50 steps, reflecting the paper description; the public FLUX.1 default1024x512/28 is a separately labeled fast setting, not an invisible substitution. Verify execution on the available hardware; record any required deviation and do not change resolution/model silently.
+- DiT360: implement official https://github.com/Insta360-Research-Team/DiT360 with the released FLUX.1 panorama LoRA, pinned revisions and published inference settings. Label it trained.
+- LF-MultiDiffusion: check https://ahykw.github.io/lfmd/ and its official repository for runnable author code. If still unavailable, record blocked_upstream_release. Do not label a speculative reimplementation as official, and do not delay unrelated results.
+- PanFusion is an optional separately declared indoor/low-resolution comparator, not required for the core tier.
+- Nima's PanoDreamer starts from an image and is outside the text-to-full-sphere main table. Do not add a mismatched task to inflate the baseline count.
+- How I Warped Your Noise is an initialization ablation, not a standalone panorama row.
+
+Verify underlying FLUX weight equivalence between our mirror and official baseline loaders before calling a comparison same-backbone. Document differences that cannot be resolved.
+
+C. Run fresh confirmation
+Use the24 frozen real-scene caption records from Phase 3, after final-method freeze:
+final DiffPano + SphereDiff + SpheRoPE, seed0 =72 ERPs.
+These are all-scene numerical comparisons, not selected best images.
+Pass the frozen global/five-line formats according to each method's supported interface, retaining the same essential scene information. Do not rewrite prompts after inspecting outcomes.
+Evaluate real-reference metrics and all available reference-free metrics on identical scene cohorts.
+
+Extensions:
+- seeds: second seed on the eight preselected scenes for the same three methods,24 ERPs.
+- trained: DiT360 on all24 fresh scenes,24 ERPs.
+- generality: eight fixed prompts x two seeds x SphereDiff/ours using SANA,32 ERPs. Use the same frozen algorithmic design, not per-backbone test-set tuning.
+Run the selected extensions; report unselected tiers explicitly rather than calling them failed or complete.
+
+D. Reuse ablations efficiently
+Build tables from existing Old/Uniform89/70/50, reference/alpha and refinement studies wherever compatible.
+For the core fusion claim compare RGB, screened mean, screened select and mean-max with all other settings fixed.
+Use existing alpha0.25/0.50/0.75 and endpoint cases where present; manifest only scientifically essential missing endpoints.
+For a shared-noise claim compare independent/native, prior shared-noise and GWTF on a compact matched subset.
+For refinement report total denoiser/VAE work, not step labels alone.
+Do not launch these additional missing ablation rows until they are explicitly enumerated in the selected execution tier and resource plan.
+
+E. Timing and execution
+Record same-hardware end-to-end generation time including decode/encode, warps, fusion, Poisson solves and refinement; separate loading/I/O. Also record peak GPU memory, batch size, view/token dimensions and denoiser/VAE calls.
+Quality-versus-time plots must distinguish hardware, resolution and inference settings. Equal diffusion steps do not imply equal compute.
+Validate finite outputs, expected dimensions and counts, required coverage, solver convergence and provenance.
+Preserve failures and timeouts; do not silently replace failed seeds with nicer seeds.
+Check live queue, accounting, balance and shared concurrency before submission. If resources are insufficient, complete available evaluation/reporting and give exact pending case IDs plus resume commands.
+
+Deliver actual completed outputs, runtime records, updated metric tables, all submission/completion evidence, and an honest completion ledger. Pending scheduler jobs are pending, not final scientific results.
+
+======================================================================
+PHASE 6 — HUMAN-STUDY MATERIALS AND THE PAPER-READY EVALUATION PACKAGE
+======================================================================
+
+Consolidate the completed paper_eval_v2 results. Verify every table row is traceable to actual output hashes, a frozen protocol, an explicit cohort and valid evaluation records. Finish the available report even when specific dependencies remain blocked.
+
+Human-study materials:
+- Prepare final DiffPano versus SphereDiff and versus SpheRoPE on24 matched scenes.
+- Target five ratings per pair:24 scenes x2 comparisons x5 ratings =240 pair evaluations.
+- Build a local/offline synchronized panorama viewer with anonymous A/B labels, balanced left/right assignments, shared viewing direction, and front/seam/pole presets.
+- Use equal display conditions and declare source/evaluation resolution. Keep native-detail inspection separate if it uses different resolutions.
+- Ask separate A/B/tie questions for overall visual quality, geometry/continuity and prompt adherence.
+- Generate assignments, participant instructions, rating schema/CSV and ingestion/analysis scripts. Keep the method key outside the participant-facing page.
+- Do not recruit/contact participants or publish the viewer. Do not fabricate ratings. Mark human results awaiting collection until real ratings exist.
+- Account for repeated prompts and raters in uncertainty; report ties and missing responses.
+
+Produce separate paper tables:
+1. Main objective/perceptual comparison: DS, CS, MUSIQ, runtime and memory; include collection-level IS with its cohort size and small-sample qualification.
+2. GPT-4o: quality, aesthetics, distortion, polar distortion and wrap continuity.
+3. GPT-6 Sol: the same columns, plus cross-judge agreement on the common cohort.
+4. Real-data FID/KID/OmniFID, with FAED only if verified.
+5. Native-reference FID/KID, bank sensitivity and native-to-native diagnostics.
+6. Matched fusion/reference/alpha, camera-count and refinement ablations.
+7. Seed robustness and SANA generality only for actually executed tiers.
+8. Human preference only when real ratings are available.
+
+For every table record prompt/panorama/crop/reference counts, directions and units, dataset/model hashes, comparison scope and uncertainty method. Do not copy published numbers into locally evaluated rows or mix15-scene and24-scene collections.
+Keep raw KID units explicit. Separate native-model preservation from real-data realism and seam measurements from whole-panorama geometry.
+No p-value fishing or cherry-picked subset selection. Summarize predeclared primary paired contrasts and clearly label secondary/exploratory results.
+
+Produce:
+report.md and a readable PDF
+results.tex and methods_evaluation.tex
+machine-readable CSV/JSON tables
+protocol_registry.json and reproduction commands
+quality-versus-time figures
+per-prompt plots and representative, rule-selected seam/pole/detail panels
+failure and missing-work reports
+API usage/cost summary by judge and stage
+human-study materials and pending-rating status
+a compact claims-versus-evidence table
+
+The report must state what changed, what was run, which old artifacts were reused, how implementations were checked, observed tradeoffs, and what remains uncertain. Distinguish code readiness, job submission, output completion, evaluation completion and scientific evidence.
+Do not claim a universal quality win from DS or a tiny FID difference alone. Do not make FAED/Distort-FID/LF availability or missing human responses block finished results.
+Update status.json and RESUME.md. End with exact remaining case IDs/dependencies and one reproducible resume command per blocked component. Complete the authorized available work instead of ending with an offer to continue.
+
+======================================================================
+PRIMARY REFERENCE LINKS
+======================================================================
+
+User repository:
+https://github.com/GesusMist/diffpano/tree/no_sphere
+
+OpenRouter (verify current metadata at execution):
+https://openrouter.ai/api/v1/models
+https://openrouter.ai/docs/api/reference/authentication
+https://openrouter.ai/openai/gpt-4o
+https://openrouter.ai/openai/gpt-6-sol
+https://openrouter.ai/api/v1/models/openai/gpt-4o/endpoints
+https://openrouter.ai/api/v1/models/openai/gpt-6-sol/endpoints
+https://openrouter.ai/docs/guides/overview/multimodal/image-understanding
+https://openrouter.ai/docs/guides/routing/provider-selection
+https://openrouter.ai/docs/cookbook/administration/usage-accounting
+https://openrouter.ai/docs/api/api-reference/generations/get-generation
+
+Papers and official code:
+SphereDiff: https://arxiv.org/html/2504.14396v2
+SphereDiff code: https://github.com/pmh9960/SphereDiff
+LF-MultiDiffusion: https://arxiv.org/html/2609.01997v1
+LF project: https://ahykw.github.io/lfmd/
+SpheRoPE: https://arxiv.org/html/2606.32033v1
+SpheRoPE code/evaluation: https://github.com/orhir/SpheRoPE
+https://github.com/orhir/SpheRoPE/blob/main/EVAL.md
+DiT360: https://github.com/Insta360-Research-Team/DiT360
+ODI-SR source: https://github.com/wangh-allen/LAU-Net
+SUN360 release: https://github.com/csm-kr/Upright-Adjustment-With-Graph-Convolutional-Networks
+PanFusion: https://arxiv.org/html/2404.07949v1
+https://github.com/chengzhag/PanFusion
+DS/OmniFID: https://arxiv.org/html/2407.18207v1
+https://github.com/Anderschri/OmniFID
+PanoDecouple/Distort-FID: https://arxiv.org/html/2503.18420v1
+https://github.com/iSEE-Laboratory/PanoDecouple
+FID/IS finite-sample bias:
+https://openaccess.thecvf.com/content_CVPR_2020/html/Chong_Effectively_Unbiased_FID_and_Inception_Score_and_Where_to_Find_CVPR_2020_paper.html
+KID: https://arxiv.org/abs/1801.01401
+
